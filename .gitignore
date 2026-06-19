@@ -1,0 +1,38 @@
+# ── Node / Next.js ──
+node_modules/
+.next/
+out/
+build/
+*.tsbuildinfo
+next-env.d.ts
+
+# ── Env / secrets ──
+.env
+.env.local
+.env.*.local
+.env.development
+.env.production
+
+# ── Python ──
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.python-version
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# ── Garmin Connect tokens (NEVER commit) ──
+.garminconnect/
+**/.garminconnect/
+
+# ── Supabase local ──
+supabase/.branches/
+supabase/.temp/
+
+# ── OS / editor ──
+.DS_Store
+.idea/
+*.swp
