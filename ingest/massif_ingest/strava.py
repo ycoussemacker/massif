@@ -53,6 +53,18 @@ def _epoch_to_iso(epoch: int | None) -> str | None:
     return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat()
 
 
+def _start_epoch(act: dict) -> int:
+    """Unix epoch of a summary activity's start (UTC). Used to decide whether it's recent enough to
+    warrant the per-activity stream/detail fetches during a deep historical backfill."""
+    try:
+        dt = datetime.fromisoformat(act["start_date"])
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp())
+    except Exception:
+        return 0
+
+
 def get_access_token(s: Settings) -> str:
     """Exchange the refresh token for a short-lived access token.
 
@@ -257,11 +269,20 @@ def _normalize_streams(streams: dict[str, list]) -> dict[str, list]:
     return {k: v for k, v in streams.items() if k in _DB_STREAM_TYPES and v}
 
 
-def sync(after_days: int = 30) -> int:
-    """Pull recent Strava activities, normalize, compute load, upsert. Returns count."""
+def sync(after_days: int = 30, stream_days: int | None = None) -> int:
+    """Pull Strava activities created in the last `after_days`, normalize, compute load, upsert.
+
+    `stream_days` bounds the EXPENSIVE per-activity calls (streams + climbing detail) to activities
+    within that many days; older ones load from the summary alone. This makes a deep historical
+    backfill (after_days=3650) rate-limit-safe — recent activities keep full D-/stream accuracy
+    (they drive ATL/TSB), while the long tail just feeds the CTL warm-up where D- precision matters
+    far less. None = fetch streams for every eligible activity (the original behaviour). Returns count.
+    """
     s = Settings.load()
     token = get_access_token(s)
-    after_epoch = int(time.time()) - after_days * 86400
+    now_epoch = int(time.time())
+    after_epoch = now_epoch - after_days * 86400
+    stream_cutoff = now_epoch - stream_days * 86400 if stream_days is not None else None
 
     summaries = fetch_activities(token, after_epoch)
     sport_map = db.load_sport_map()
@@ -276,8 +297,12 @@ def sync(after_days: int = 30) -> int:
         if sport_type not in sport_map:
             sport_map[sport_type] = db.get_or_create_sport(sport_type)
         base_sport = sport_map[sport_type]
+
+        # Skip the per-activity API calls (streams + detail) for old activities during a deep backfill.
+        recent = stream_cutoff is None or _start_epoch(act) >= stream_cutoff
+
         # For climbing, fetch the activity detail to read the description (bloc / voie salle / falaise).
-        if base_sport.get("taxonomy_group") == "technical_strength":
+        if recent and base_sport.get("taxonomy_group") == "technical_strength":
             detail = fetch_activity_detail(token, act["id"])
             if detail.get("description"):
                 act["description"] = detail["description"]
@@ -286,7 +311,7 @@ def sync(after_days: int = 30) -> int:
         # altitude stream — and load.compute_load needs it to size the eccentric (neuromuscular) cost.
         streams: dict[str, list] = {}
         descent_m: float | None = None
-        if base_sport.get("uses_distance") or base_sport.get("uses_hr"):
+        if recent and (base_sport.get("uses_distance") or base_sport.get("uses_hr")):
             streams = _normalize_streams(fetch_streams(token, act["id"]))
             if "altitude" in streams:
                 descent_m = vertical_loss_from_altitude(streams["altitude"])

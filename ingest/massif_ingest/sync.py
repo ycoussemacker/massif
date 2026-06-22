@@ -122,6 +122,10 @@ def rollup_daily_metrics(ctl_days: int = 42, atl_days: int = 7) -> int:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Massif nightly ingestion + rollup")
     parser.add_argument("--strava-days", type=int, default=30)
+    parser.add_argument("--stream-days", type=int, default=None,
+                        help="fetch per-activity streams/detail only for activities within N days "
+                             "(older load from the summary only) — for a rate-limit-safe deep backfill, "
+                             "e.g. --strava-days 3650 --stream-days 90")
     parser.add_argument("--garmin-days", type=int, default=7)
     parser.add_argument("--skip-pull", action="store_true", help="only recompute the rollup")
     parser.add_argument("--recompute-loads", action="store_true",
@@ -150,7 +154,7 @@ def main() -> None:
         # One provider failing (bad creds, API 4xx/5xx, network blip) must not abort the other
         # pull OR the rollup below — the nightly job stays resilient and always recomputes.
         try:
-            n = strava.sync(after_days=args.strava_days)
+            n = strava.sync(after_days=args.strava_days, stream_days=args.stream_days)
             print(f"strava: {n} activities")
         except Exception as e:
             print(f"strava: skipped ({type(e).__name__}: {e})")
