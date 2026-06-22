@@ -57,11 +57,20 @@ big descent adds real neuromuscular cost on top of a calm-HR aerobic load. See `
   `IMPACT_FRAC`, `ASCENT_AEROBIC_PER_1000M`) are population starting points — TODO to personalize.
   After editing them, re-score history: `python -m massif_ingest.sync --recompute-loads`
   (re-applies the model to all stored activities from their persisted fields, then rolls up — no
-  provider re-pull). `web/src/lib/load.ts` MIRRORS the session_rpe path — keep in sync.
+  provider re-pull). `web/src/lib/load.ts` now MIRRORS the FULL `compute_load` (the `computeLoad`
+  export + the whole method ladder, not just session_rpe), and `web/src/lib/rollup.ts` mirrors
+  `rollup_daily_metrics`'s EWMA — both power the on-demand TS sync (see Status). Python stays the
+  source of truth (the nightly cron recomputes identically); KEEP load.ts/rollup.ts in sync with
+  load.py/sync.py — parity verified on real data (395/395 activities, latest CTL exact).
 - **RPE hybrid**: `needs_manual_rpe=true` sports prompt for a post-session RPE; others auto-estimate.
 - **daily_metrics** is written by two column-scoped upserts (load rollup vs Garmin recovery) keyed
   on `local_date` — they must not include each other's columns. The rollup writes a contiguous
   daily spine (zero-load rest days included) so the EWMAs have no gaps.
+- **PostgREST 1000-row cap** (bit us once): the cloud project caps each REST response at **1000 rows**.
+  An *unbounded* `.order(…,{ascending:true})` silently returns only the OLDEST 1000 — the `daily_metrics`
+  spine (>1000 days) stopped ~2 years back, freezing the dashboard charts + CTL/ATL tiles at that date.
+  Always BOUND history reads by date range (the dashboard uses a rolling 2-month window
+  `DASHBOARD_WINDOW_MONTHS`; `/analyse` bounds to the compared range) or page via `.range()`.
 - **RLS** is now **ON** (migration `…0001_enable_rls`): every public table has RLS enabled with NO
   anon/authenticated policy → deny-all to the publishable/anon key (verified live: anon read `[]`,
   write `42501`). The app is unaffected — all reads/writes go through the **service-role** server
@@ -188,10 +197,18 @@ coach went 🔴 repos → 🟡 récup active on the same day). Hardening: Strava
 dashboard (`StravaLink` in `web/src/components/brand.tsx`), a cron failure-verify step (red job → email),
 and a DB-counted coach-chat rate-limit (`enforceCoachRateLimit` in `actions.ts`, 3/min·50/day) + a hard
 monthly cap to set on the Anthropic console. Secrets live in Vercel (web) + GitHub Actions secrets (cron).
-Runbook: `ops/PHONE_ACCESS.md`. NEXT (decided): an on-demand **Strava "refresh" button** (per-user pull,
-preferred over a Strava webhook — the webhook is blocked on the multi-user model since it needs `owner_id`
-routing; open question is whether the on-demand pull triggers the cloud workflow in a sync-only mode or a
-ported TS pull). Then the full multi-user epic.
+Runbook: `ops/PHONE_ACCESS.md`.
+
+**ON-DEMAND SYNC shipped (TS, no Mac/cron wait).** Refresh Strava + the fitness model the instant the
+athlete asks: `web/src/lib/strava-sync.ts` (`syncStrava`, a recent-window mirror of strava.py — token
+refresh, activities, altitude-stream D-, `computeLoad`, upsert) + `web/src/lib/rollup.ts`
+(`rollupDailyMetrics`, EWMA mirror of sync.py) → the `syncNow()` server action (`web/src/app/actions.ts`)
+→ `web/src/components/sync-refresh.tsx` (a desktop floating button + mobile **pull-to-refresh**, mounted
+ONCE in `Nav`). Parity with Python verified (395/395 activities, CTL exact), so on-demand numbers match
+the nightly cron. **Garmin recovery is NOT refreshed here** (no API; python-garminconnect only) — it
+stays on the morning cron, which is fine since sleep/HRV/readiness are morning metrics. A real-time
+Strava **webhook** was deferred: it's blocked on the multi-user model (one subscription per app, events
+routed by `owner_id` → needs `athlete_id`). NEXT: the full multi-user epic.
 
 **Design system v1 implemented + build-verified.** Formalised from the logo (blue→orange gradient = the two
 load channels). `web/src/app/globals.css` now carries the `@theme` token layer (Alpine + Summit ramps,
@@ -201,3 +218,29 @@ forced `Arial` over Geist) is gone. Consolidated 3 blues → **Alpine** and fixe
 which was wrongly drawn in amber (= the `caution` state) → now **Summit** orange. Charts/gauges read colours
 from `web/src/lib/theme.ts`. Canonical reference + do/don't: `docs/DESIGN_SYSTEM.md` (binding); a project agent
 `.claude/agents/frontend.md` is bound to it. Rendered charte: an artifact under claude.ai/code/artifact.
+
+**DATA-VIZ v2 shipped (interactive charts + 2 new pages).** Three additions, all on the design system
+(colours via `theme.ts`, sports = glyph+name never coloured, `tabular-nums`, bordered-not-shadowed):
+1. **Interactive dashboard charts** (`web/src/components/charts-section.tsx`, a `"use client"` island that
+   replaced the static charts from `charts.tsx` — `charts.tsx` now only exports `Gauge`). Click/tap a
+   bar/point (or ←/→, Échap) → a per-day **detail panel** (`day-detail-panel.tsx`) lists the activities
+   that make up that day's score (glyph + FR name + Strava title + aéro/neuro split + Strava deep-link).
+   The two **Forme** charts (CTL/ATL + TSB) are **fused into one card** with the detail panel, and share
+   a single selected date (synced crosshair) AND a synced horizontal scroll (`ScrollGroup`); the channel
+   chart is a separate card with the same synced cursor. Charts are bounded to a rolling **2-month window**
+   (`DASHBOARD_WINDOW_MONTHS` in `data.ts`) — deeper history lives in `/analyse`.
+2. **`/activites`** (`web/src/app/activites/`, server component + `activity-filters.tsx` client island):
+   browse ALL activities with URL-driven filters (sport chips, date range, load range, RPE-pending) +
+   **keyword search** over the Strava name AND description, a summary strip, and pagination.
+3. **`/analyse`** (`web/src/app/analyse/`, + `period-picker.tsx`): **A-vs-B period comparison** (presets
+   7/28/90 j · semaine · mois · dates libres) — KPI table with Δ (B vs A: load + aéro/neuro, volumes,
+   TSB/CTL/ACWR + recovery averages), per-sport paired bars (neutral stone, A vs B by shade), and an
+   aligned cumulative-load overlay (A solid / B dashed — period is not a physiology, so neutral + texture).
+**Shared foundation** (reused across all three + the dashboard): `web/src/lib/{activities,aggregate,format}.ts`
+(`listActivities` filter/search, pure aggregation/grouping/diff, formatters) + `web/src/components/activity-row.tsx`
+(`ActivityCard`/`ActivityRow`/`ActivityTableHead`); `data.ts` exposes `enrichActivities` + `ACTIVITY_COLS`.
+Nav gained **Activités** + **Analyse** desktop tabs (mobile bottom island stays 2 tabs; reached via
+contextual links on the dashboard). **Keyword search needs no migration**: it ORs over `sport_specific->>strava_name`
+and `raw_payload->>description` (JSONB). `strava.py` now fetches activity detail for ALL recent activities
+(was climbing-only) so descriptions land in `raw_payload` — **full description coverage requires a re-sync**
+(`python -m massif_ingest.sync`); until then only climbing activities (already detailed) are description-searchable.

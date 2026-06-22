@@ -301,8 +301,11 @@ def sync(after_days: int = 30, stream_days: int | None = None) -> int:
         # Skip the per-activity API calls (streams + detail) for old activities during a deep backfill.
         recent = stream_cutoff is None or _start_epoch(act) >= stream_cutoff
 
-        # For climbing, fetch the activity detail to read the description (bloc / voie salle / falaise).
-        if recent and base_sport.get("taxonomy_group") == "technical_strength":
+        # Fetch the full activity for its `description` (the summary omits it). Used for the dashboard's
+        # keyword search over descriptions AND to classify climbing discipline (bloc / voie salle /
+        # falaise). Done for every recent activity; the `recent`/stream_days gate keeps a deep historical
+        # backfill rate-limit-safe (older activities load from the summary alone, no description).
+        if recent:
             detail = fetch_activity_detail(token, act["id"])
             if detail.get("description"):
                 act["description"] = detail["description"]

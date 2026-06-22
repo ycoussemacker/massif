@@ -7,6 +7,8 @@ import { sessionRpeLoad } from "@/lib/load";
 import { generateCoachReply, COACH_MODEL, type ChatTurn } from "@/lib/coach-chat";
 import { todayLocal, whenLabelFr } from "@/lib/coach-context";
 import { sanitizeCoachSettings, type CoachSettings } from "@/lib/coach-settings";
+import { syncStrava } from "@/lib/strava-sync";
+import { rollupDailyMetrics } from "@/lib/rollup";
 
 /** Log a post-session RPE (1–10) for an activity and recompute its load via session_rpe.
  *  Writes the two channels (never the generated total) + rpe_source='user' so the next sync keeps it.
@@ -182,4 +184,19 @@ export async function saveCoachSettings(input: CoachSettings): Promise<void> {
   if (error) throw new Error(error.message);
   revalidatePath("/coach");
   revalidatePath("/");
+}
+
+// ── On-demand sync (pull-to-refresh / "Synchroniser" button) ────────────────────────────────────
+
+/** Pull the athlete's recent Strava activities + recompute the fitness model, entirely in TS
+ *  (mirror of the Python sync — see lib/strava-sync.ts + lib/rollup.ts). For instant freshness when
+ *  the athlete just finished a session, without waiting for the nightly cron. Garmin recovery is NOT
+ *  pulled here (no API; it stays on the cron). Returns a short summary for the UI toast. */
+export async function syncNow(): Promise<{ pulled: number; newest: string | null; days: number }> {
+  const sb = await createServiceClient();
+  const { pulled, newest } = await syncStrava(sb);
+  const days = await rollupDailyMetrics(sb);
+  revalidatePath("/");
+  revalidatePath("/coach");
+  return { pulled, newest, days };
 }

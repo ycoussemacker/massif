@@ -1,12 +1,24 @@
 import Link from "next/link";
+import { SyncRefresh } from "@/components/sync-refresh";
 
-type Tab = "dashboard" | "coach" | "profil";
+type Tab = "dashboard" | "activites" | "analyse" | "coach" | "profil";
 
 const svg = "h-5 w-5";
 const IconDashboard = (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className={svg} aria-hidden>
     <path d="M3 3v18h18" />
     <path d="M18 17V9" /><path d="M13 17V5" /><path d="M8 17v-3" />
+  </svg>
+);
+const IconActivites = (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className={svg} aria-hidden>
+    <line x1="8" y1="6" x2="21" y2="6" /><line x1="8" y1="12" x2="21" y2="12" /><line x1="8" y1="18" x2="21" y2="18" />
+    <line x1="3" y1="6" x2="3.01" y2="6" /><line x1="3" y1="12" x2="3.01" y2="12" /><line x1="3" y1="18" x2="3.01" y2="18" />
+  </svg>
+);
+const IconAnalyse = (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className={svg} aria-hidden>
+    <rect x="3" y="4" width="7" height="16" rx="1" /><rect x="14" y="4" width="7" height="16" rx="1" />
   </svg>
 );
 const IconCoach = (
@@ -23,12 +35,15 @@ const IconProfil = (
 
 const TABS: { key: Tab; href: string; label: string; short: string; icon: React.ReactNode }[] = [
   { key: "dashboard", href: "/", label: "Tableau de bord", short: "Accueil", icon: IconDashboard },
+  { key: "activites", href: "/activites", label: "Activités", short: "Activités", icon: IconActivites },
+  { key: "analyse", href: "/analyse", label: "Analyse", short: "Analyse", icon: IconAnalyse },
   { key: "coach", href: "/coach", label: "Coach", short: "Coach", icon: IconCoach },
   { key: "profil", href: "/profil", label: "Profil", short: "Profil", icon: IconProfil },
 ];
-// Mobile bottom bar excludes Coach on purpose: a fixed nav must never sit under the chat input
-// (keyboard behaviour). On mobile the coach is reached from the top-bar icon instead.
-const BOTTOM_TABS = TABS.filter((t) => t.key !== "coach");
+// Mobile bottom island stays at TWO thumb-reach tabs (design-system rule): Accueil + Profil. The other
+// destinations are reached from the desktop bar or contextual links on the dashboard. Coach is excluded
+// too — a fixed nav must never sit under the chat input.
+const BOTTOM_TABS = TABS.filter((t) => t.key === "dashboard" || t.key === "profil");
 
 /** The Massif wordmark — lowercase grotesque + a Summit-orange dot (mirrors the brand hero). */
 function Wordmark() {
@@ -53,6 +68,9 @@ export function Nav({ current }: { current: Tab }) {
 
   return (
     <>
+      {/* On-demand sync: desktop floating button + mobile pull-to-refresh (mounted once, global). */}
+      <SyncRefresh />
+
       {/* Desktop / paysage : app-bar haute (wordmark + onglets, indicateur Alpine sur l'actif) */}
       <nav className="mb-6 hidden items-center justify-between gap-4 border-b border-stone-200 md:flex dark:border-stone-800">
         <Wordmark />

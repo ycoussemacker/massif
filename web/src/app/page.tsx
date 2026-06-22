@@ -1,47 +1,16 @@
 import Link from "next/link";
-import { getDashboard, latestModel, type DailyMetric, type Activity } from "@/lib/data";
-import { FitnessChart, FormChart, ChannelChart, Gauge, type Zone } from "@/components/charts";
-import { RpeControl } from "@/components/rpe";
-import { StravaLink } from "@/components/brand";
+import { getDashboard, latestModel, DASHBOARD_WINDOW_MONTHS, type DailyMetric } from "@/lib/data";
+import { Gauge, type Zone } from "@/components/charts";
+import { ChartsSection } from "@/components/charts-section";
+import { ActivityCard, ActivityRow, ActivityTableHead } from "@/components/activity-row";
 import { Nav } from "@/components/nav";
 import { GoalBadge } from "@/components/goal-badge";
 import { CoachHero } from "@/components/coach-hero";
-import { sportName, sportIcon, aerobicSourceFr, neuroSourceFr } from "@/lib/labels";
 import { todayLocal } from "@/lib/coach-context";
+import { fmt, avgLoadRecent } from "@/lib/format";
 import { STATE } from "@/lib/theme";
 
 export const dynamic = "force-dynamic"; // toujours refléter le dernier sync / run du coach
-
-function fmt(n: number | null | undefined, d = 0): string {
-  return n == null ? "—" : n.toFixed(d);
-}
-function dur(s: number | null): string {
-  if (!s) return "—";
-  const m = Math.round(s / 60);
-  return m >= 60 ? `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, "0")}` : `${m} min`;
-}
-function isoMinusDays(iso: string, days: number): string {
-  const d = new Date(iso + "T00:00:00Z");
-  d.setUTCDate(d.getUTCDate() - days);
-  return d.toISOString().slice(0, 10);
-}
-/** Moyenne des points par séance sur les `days` derniers jours (réf. du code couleur), ou null si aucune.
- *  Calculée sur les activités déjà chargées — la liste (15 dernières) couvre largement la fenêtre ici. */
-function avgLoadRecent(
-  activities: { local_date: string; training_load: number | null }[], today: string, days: number,
-): number | null {
-  const cutoff = isoMinusDays(today, days - 1); // fenêtre [today-(days-1) … today]
-  const recent = activities.filter((a) => a.local_date >= cutoff && a.training_load != null);
-  return recent.length ? recent.reduce((s, a) => s + (a.training_load ?? 0), 0) / recent.length : null;
-}
-/** Score d'une séance vs la moyenne récente : ambre = + lourd, bleu alpin = - lourd, neutre dans ±50 %. */
-function loadVsAvgColor(load: number | null | undefined, avg: number | null): string | undefined {
-  if (load == null || avg == null || avg <= 0) return undefined;
-  const r = load / avg;
-  if (r >= 1.5) return STATE.caution;
-  if (r <= 0.5) return STATE.cool;
-  return undefined;
-}
 
 // Zones colorées (bon ↔ risqué) pour les jauges.
 const tsbZones = (v: number, min: number, max: number): Zone[] => [
@@ -64,12 +33,9 @@ const readyZones: Zone[] = [
 ];
 
 function latestRecovery(metrics: DailyMetric[]): DailyMetric | null {
-  // Use the last row with a FINALIZED night (sleep OR overnight HRV present). training_readiness can
-  // land alone early in the morning, BEFORE the night's sleep/stress/HRV sync — picking such a partial
-  // row would blank the whole card, so fall back to the last complete night instead.
   for (let i = metrics.length - 1; i >= 0; i--) {
     const m = metrics[i];
-    if (m.sleep_score != null || m.hrv_overnight_ms != null) return m;
+    if (m.hrv_overnight_ms != null || m.sleep_score != null || m.training_readiness != null) return m;
   }
   return null;
 }
@@ -99,17 +65,14 @@ const cStress = (v: number | null) => (v == null ? undefined : v <= 25 ? OK : v 
 const cReadiness = (v: number | null) => (v == null ? undefined : v >= 65 ? OK : v >= 40 ? WARN : BAD);
 const cBattery = (high: number | null) => (high == null ? undefined : high >= 70 ? OK : high >= 40 ? WARN : BAD);
 
-/** Activity date — plain, tabular text. The deep-link to the original activity lives in its own
- *  explicit "Strava ↗" affordance (see StravaLink), so the date stays a neutral timestamp. */
-function ActivityDate({ a, className }: { a: Activity; className: string }) {
-  return <span className={`tabular-nums ${className}`}>{a.local_date}</span>;
-}
+const linkCls =
+  "inline-flex shrink-0 items-center gap-1 text-sm font-medium text-stone-500 transition-colors hover:text-alpine-700 dark:text-stone-400 dark:hover:text-alpine-300";
 
 export default async function Dashboard() {
-  const { profile, topGoal, metrics, briefing, activities } = await getDashboard();
+  const { profile, topGoal, metrics, briefing, activities, allActivities } = await getDashboard();
   const latest = latestModel(metrics);
   const rec = latestRecovery(metrics);
-  const avgLoad = avgLoadRecent(activities, todayLocal(), 15);
+  const avgLoad = avgLoadRecent(allActivities, todayLocal(), 15);
 
   const tsb = latest?.tsb ?? null;
   const acwr = latest?.acwr ?? null;
@@ -169,15 +132,11 @@ export default async function Dashboard() {
           </div>
         </section>
 
-        {/* Graphiques */}
+        {/* Graphiques (cliquables : un clic sur une barre/point ouvre le détail du jour) */}
         {metrics.length > 1 ? (
-          <section className="mb-6 grid gap-4 lg:grid-cols-2">
-            <FitnessChart metrics={metrics} />
-            <FormChart metrics={metrics} />
-            <div className="lg:col-span-2">
-              <ChannelChart metrics={metrics} />
-            </div>
-          </section>
+          <div className="mb-6">
+            <ChartsSection metrics={metrics} activities={allActivities} avgLoad={avgLoad} />
+          </div>
         ) : (
           <p className="mb-6 text-sm text-stone-500">Pas encore assez de jours de données pour les courbes.</p>
         )}
@@ -210,96 +169,29 @@ export default async function Dashboard() {
         <section className="rounded-2xl border border-stone-200 bg-white p-5 dark:border-stone-800 dark:bg-stone-900">
           <div className="mb-3 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
             <h2 className="text-sm font-medium text-stone-700 dark:text-stone-300">Activités récentes</h2>
-            {avgLoad != null && (
-              <span className="text-xs text-stone-500 dark:text-stone-400"
-                title="Moyenne des points par séance sur les 15 derniers jours. Un score nettement au-dessus s'affiche en ambre (séance plus lourde que d'habitude), nettement en-dessous en bleu.">
-                intensité moy. 15 j ·{" "}
-                <span className="font-semibold tabular-nums text-stone-700 dark:text-stone-300">{fmt(avgLoad, 0)}</span> pts
-              </span>
-            )}
+            <div className="flex items-baseline gap-3">
+              {avgLoad != null && (
+                <span className="text-xs text-stone-500 dark:text-stone-400"
+                  title="Moyenne des points par séance sur les 15 derniers jours. Un score nettement au-dessus s'affiche en ambre (séance plus lourde que d'habitude), nettement en-dessous en bleu.">
+                  intensité moy. 15 j ·{" "}
+                  <span className="font-semibold tabular-nums text-stone-700 dark:text-stone-300">{fmt(avgLoad, 0)}</span> pts
+                </span>
+              )}
+              <Link href="/activites" className={linkCls}>Voir tout →</Link>
+            </div>
           </div>
           {/* Mobile (portrait) : cartes pleine largeur, sans scroll horizontal */}
           <div className="space-y-3 md:hidden">
-            {activities.map((a) => (
-              <div key={a.id} className="rounded-xl border border-stone-200 p-3 dark:border-stone-800">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-medium">
-                    <span className="mr-1.5" aria-hidden>{sportIcon(a.sport_code)}</span>
-                    {sportName(a.sport_code, a.sport)}
-                  </span>
-                  <ActivityDate a={a} className="text-xs text-stone-400" />
-                </div>
-                <div className="mt-2 flex items-baseline gap-3">
-                  <span className="text-xl font-semibold tabular-nums"
-                    style={loadVsAvgColor(a.training_load, avgLoad) ? { color: loadVsAvgColor(a.training_load, avgLoad) } : undefined}>
-                    {fmt(a.training_load, 0)}<span className="ml-1 text-xs font-normal text-stone-400">pts</span>
-                  </span>
-                  <span className="text-xs text-stone-500 dark:text-stone-400">
-                    aéro {fmt(a.aerobic_load, 0)} <span className="text-stone-400 dark:text-stone-500">({aerobicSourceFr(a.load_method_used)})</span>
-                    {" · "}neuro {fmt(a.neuromuscular_load, 0)} <span className="text-stone-400 dark:text-stone-500">({neuroSourceFr(a)})</span>
-                  </span>
-                </div>
-                <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-stone-500 dark:text-stone-400">
-                  <span>⏱ {dur(a.duration_s)}</span>
-                  <span>D+ {a.vertical_gain_m != null ? Math.round(a.vertical_gain_m) : "—"} / D− {a.vertical_loss_m != null ? Math.round(a.vertical_loss_m) : "—"}</span>
-                  {a.avg_hr != null && <span>FC {a.avg_hr}</span>}
-                  {a.needs_manual_rpe && <RpeControl activityId={a.id} value={a.perceived_rpe} />}
-                  <StravaLink source={a.source} sourceActivityId={a.source_activity_id} className="ml-auto" />
-                </div>
-              </div>
-            ))}
+            {activities.map((a) => <ActivityCard key={a.id} a={a} avgLoad={avgLoad} />)}
             {activities.length === 0 && <p className="text-sm text-stone-500">Aucune activité.</p>}
           </div>
 
           {/* Paysage / desktop : tableau */}
           <div className="hidden overflow-x-auto md:block">
             <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-stone-200 text-left text-xs uppercase tracking-wide text-stone-500 dark:border-stone-700">
-                  <th className="py-2 pr-3 font-medium">Date</th>
-                  <th className="py-2 pr-3 font-medium">Sport</th>
-                  <th className="py-2 pr-3 text-right font-medium">Charge</th>
-                  <th className="py-2 pr-3 text-right font-medium">Aéro / Neuro</th>
-                  <th className="py-2 pr-3 text-right font-medium">Durée</th>
-                  <th className="py-2 pr-3 text-right font-medium">D+ / D−</th>
-                  <th className="py-2 pr-3 text-right font-medium">FC</th>
-                  <th className="py-2 pr-3 font-medium">RPE</th>
-                  <th className="py-2 text-right font-medium"><span className="sr-only">Lien Strava</span></th>
-                </tr>
-              </thead>
+              <ActivityTableHead />
               <tbody>
-                {activities.map((a) => (
-                  <tr key={a.id} className="border-b border-stone-100 last:border-0 dark:border-stone-800">
-                    <td className="py-2 pr-3"><ActivityDate a={a} className="text-stone-500" /></td>
-                    <td className="py-2 pr-3 whitespace-nowrap">
-                      <span className="mr-1.5" aria-hidden>{sportIcon(a.sport_code)}</span>
-                      {sportName(a.sport_code, a.sport)}
-                    </td>
-                    <td className="py-2 pr-3 text-right font-medium tabular-nums"
-                      style={loadVsAvgColor(a.training_load, avgLoad) ? { color: loadVsAvgColor(a.training_load, avgLoad) } : undefined}>
-                      {fmt(a.training_load, 0)}</td>
-                    <td className="py-2 pr-3 text-right text-stone-500 whitespace-nowrap">
-                      <span className="tabular-nums">{fmt(a.aerobic_load, 0)}</span>{" "}
-                      <span className="text-stone-400 dark:text-stone-500">{aerobicSourceFr(a.load_method_used)}</span>
-                      {" / "}
-                      <span className="tabular-nums">{fmt(a.neuromuscular_load, 0)}</span>{" "}
-                      <span className="text-stone-400 dark:text-stone-500">{neuroSourceFr(a)}</span>
-                    </td>
-                    <td className="py-2 pr-3 text-right tabular-nums text-stone-500">{dur(a.duration_s)}</td>
-                    <td className="py-2 pr-3 text-right tabular-nums text-stone-500">
-                      {a.vertical_gain_m != null ? Math.round(a.vertical_gain_m) : "—"} / {a.vertical_loss_m != null ? Math.round(a.vertical_loss_m) : "—"}
-                    </td>
-                    <td className="py-2 pr-3 text-right tabular-nums text-stone-500">{a.avg_hr ?? "—"}</td>
-                    <td className="py-2 pr-3">
-                      {a.needs_manual_rpe
-                        ? <RpeControl activityId={a.id} value={a.perceived_rpe} />
-                        : <span className="text-stone-300 dark:text-stone-600">—</span>}
-                    </td>
-                    <td className="py-2 text-right whitespace-nowrap">
-                      <StravaLink source={a.source} sourceActivityId={a.source_activity_id} />
-                    </td>
-                  </tr>
-                ))}
+                {activities.map((a) => <ActivityRow key={a.id} a={a} avgLoad={avgLoad} />)}
                 {activities.length === 0 && (
                   <tr><td colSpan={9} className="py-4 text-center text-stone-500">Aucune activité.</td></tr>
                 )}
@@ -309,7 +201,7 @@ export default async function Dashboard() {
         </section>
 
         <footer className="mt-8 text-center text-xs text-stone-400">
-          Massif · {metrics.length} jours de modèle · {activities.length} activités récentes
+          Massif · graphiques sur {DASHBOARD_WINDOW_MONTHS} mois ({metrics.length} jours) · historique complet dans Analyse
         </footer>
       </div>
     </div>

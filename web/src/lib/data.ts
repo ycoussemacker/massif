@@ -1,6 +1,17 @@
 /** Dashboard data access — server-side reads via the service-role client (RLS is off, local-first). */
 import { createServiceClient } from "./supabase/server";
 import { pickTopGoal, type GoalHeader } from "./profile-types";
+import { todayLocal } from "./coach-context";
+
+/** Calendar date `n` months before `iso` (handles month lengths). */
+function monthsAgo(iso: string, n: number): string {
+  const d = new Date(iso + "T00:00:00Z");
+  d.setUTCMonth(d.getUTCMonth() - n);
+  return d.toISOString().slice(0, 10);
+}
+
+/** Rolling window (in months) shown by the dashboard charts. Deeper history lives in /analyse. */
+export const DASHBOARD_WINDOW_MONTHS = 2;
 
 export type DailyMetric = {
   local_date: string;
@@ -51,7 +62,29 @@ export type Activity = {
   avg_hr: number | null;
   perceived_rpe: number | null;
   rpe_source: string | null;
+  strava_name: string | null; // Strava activity title (from sport_specific->>strava_name)
 };
+
+/** Column list for an activities select that yields a full Activity (after enrichment). */
+export const ACTIVITY_COLS =
+  "id,local_date,started_at,source,source_activity_id,sport_id,training_load,aerobic_load,neuromuscular_load," +
+  "load_method_used,duration_s,distance_m,vertical_gain_m,vertical_loss_m,carried_load_kg,avg_hr,perceived_rpe," +
+  "rpe_source,strava_name:sport_specific->>strava_name";
+
+/** Attach sport display fields (FR-friendly name/code, taxonomy, RPE flag) to raw activity rows.
+ *  Shared by getDashboard and lib/activities.listActivities so both enrich identically. */
+export function enrichActivities(rows: any[], sportById: Map<number, any>): Activity[] {
+  return rows.map((a: any) => {
+    const s = sportById.get(a.sport_id);
+    return {
+      ...a,
+      sport: s?.display_name ?? s?.code ?? "—",
+      sport_code: s?.code ?? null,
+      taxonomy_group: s?.taxonomy_group ?? null,
+      needs_manual_rpe: !!s?.needs_manual_rpe,
+    } as Activity;
+  });
+}
 
 export type Briefing = {
   briefing_date: string;
@@ -83,20 +116,23 @@ export type Dashboard = {
   topGoal: GoalHeader | null;
   metrics: DailyMetric[];
   briefing: Briefing | null;
-  activities: Activity[];
+  activities: Activity[];     // 15 most recent (newest first) — recents table
+  allActivities: Activity[];  // full charted-window set (oldest first) — feeds the interactive charts
 };
 
 export async function getDashboard(): Promise<Dashboard> {
   const sb = await createServiceClient();
-  const [pm, mm, bm, am, sm, gm] = await Promise.all([
+  // The dashboard shows a rolling window (today − N months); deeper history is in /analyse. Bounded
+  // queries also stay under PostgREST's per-response row cap.
+  const windowStart = monthsAgo(todayLocal(), DASHBOARD_WINDOW_MONTHS);
+  const [pm, mm, bm, chartActs, recents, sm, gm] = await Promise.all([
     sb.from("athlete_profile").select("*").limit(1).maybeSingle(),
-    sb.from("daily_metrics").select("*").order("local_date", { ascending: true }),
+    sb.from("daily_metrics").select("*").gte("local_date", windowStart).order("local_date", { ascending: true }),
     sb.from("coach_briefings").select("*").order("created_at", { ascending: false }).limit(1).maybeSingle(),
-    sb.from("activities")
-      .select("id,local_date,started_at,source,source_activity_id,sport_id,training_load,aerobic_load,neuromuscular_load," +
-              "load_method_used,duration_s,distance_m,vertical_gain_m,vertical_loss_m,carried_load_kg,avg_hr,perceived_rpe,rpe_source")
-      .order("started_at", { ascending: false })
-      .limit(15),
+    // Activities within the chart window (oldest first) — feeds the per-day detail panel.
+    sb.from("activities").select(ACTIVITY_COLS).gte("local_date", windowStart).order("started_at", { ascending: true }),
+    // 15 most recent activities (any date) — the recents table.
+    sb.from("activities").select(ACTIVITY_COLS).order("started_at", { ascending: false }).limit(15),
     sb.from("sports").select("id,code,display_name,taxonomy_group,needs_manual_rpe"),
     sb.from("goals").select("title,sport_id,target_date,target_horizon,target_detail")
       .eq("status", "active").order("priority_rank", { ascending: true }).limit(1),
@@ -104,23 +140,14 @@ export async function getDashboard(): Promise<Dashboard> {
 
   const sportById = new Map<number, any>((sm.data ?? []).map((s: any) => [s.id, s]));
   const sportCodeById = new Map<number, string>((sm.data ?? []).map((s: any) => [s.id, s.code]));
-  const activities: Activity[] = (am.data ?? []).map((a: any) => {
-    const s = sportById.get(a.sport_id);
-    return {
-      ...a,
-      sport: s?.display_name ?? s?.code ?? "—",
-      sport_code: s?.code ?? null,
-      taxonomy_group: s?.taxonomy_group ?? null,
-      needs_manual_rpe: !!s?.needs_manual_rpe,
-    };
-  });
 
   return {
     profile: (pm.data as Profile) ?? null,
     topGoal: pickTopGoal(gm.data, sportCodeById),
     metrics: (mm.data as DailyMetric[]) ?? [],
     briefing: (bm.data as Briefing) ?? null,
-    activities,
+    activities: enrichActivities(recents.data ?? [], sportById),
+    allActivities: enrichActivities(chartActs.data ?? [], sportById),
   };
 }
 
