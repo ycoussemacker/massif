@@ -64,9 +64,12 @@ const readyZones: Zone[] = [
 ];
 
 function latestRecovery(metrics: DailyMetric[]): DailyMetric | null {
+  // Use the last row with a FINALIZED night (sleep OR overnight HRV present). training_readiness can
+  // land alone early in the morning, BEFORE the night's sleep/stress/HRV sync — picking such a partial
+  // row would blank the whole card, so fall back to the last complete night instead.
   for (let i = metrics.length - 1; i >= 0; i--) {
     const m = metrics[i];
-    if (m.hrv_overnight_ms != null || m.sleep_score != null || m.training_readiness != null) return m;
+    if (m.sleep_score != null || m.hrv_overnight_ms != null) return m;
   }
   return null;
 }
