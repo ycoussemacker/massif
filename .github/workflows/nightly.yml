@@ -96,8 +96,30 @@ jobs:
 
       - name: Pull + roll up (Strava + Garmin + model)
         if: steps.gate.outputs.proceed == 'true'
-        run: python -m massif_ingest.sync
+        run: |
+          python -m massif_ingest.sync | tee /tmp/sync.log
+          # Surface a degraded (but non-fatal) pull as a GitHub warning annotation.
+          grep -qiE "(strava|garmin): skipped" /tmp/sync.log \
+            && echo "::warning::A provider pull was skipped — the briefing may use stale data (see log)" || true
 
       - name: Coach briefing + morning push
         if: steps.gate.outputs.proceed == 'true'
         run: pnpm -C coach coach
+
+      - name: Verify briefing landed
+        if: steps.gate.outputs.proceed == 'true'
+        run: |
+          python - <<'PY'
+          import sys
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          from massif_ingest.config import Settings
+          from massif_ingest import db
+          s = Settings.load()
+          today = datetime.now(ZoneInfo(s.timezone)).date().isoformat()
+          rows = db.client().table("coach_briefings").select("id").eq("briefing_date", today).limit(1).execute().data
+          if not rows:
+              print(f"::error::No coach briefing for {today} after a proceed run — pipeline degraded")
+              sys.exit(1)
+          print(f"verify: briefing present for {today}")
+          PY

@@ -32,6 +32,8 @@ export type Activity = {
   id: string;
   local_date: string;
   started_at: string;
+  source: string;
+  source_activity_id: string | null;
   sport_id: number;
   sport: string;
   sport_code: string | null;
@@ -91,7 +93,7 @@ export async function getDashboard(): Promise<Dashboard> {
     sb.from("daily_metrics").select("*").order("local_date", { ascending: true }),
     sb.from("coach_briefings").select("*").order("created_at", { ascending: false }).limit(1).maybeSingle(),
     sb.from("activities")
-      .select("id,local_date,started_at,sport_id,training_load,aerobic_load,neuromuscular_load," +
+      .select("id,local_date,started_at,source,source_activity_id,sport_id,training_load,aerobic_load,neuromuscular_load," +
               "load_method_used,duration_s,distance_m,vertical_gain_m,vertical_loss_m,carried_load_kg,avg_hr,perceived_rpe,rpe_source")
       .order("started_at", { ascending: false })
       .limit(15),

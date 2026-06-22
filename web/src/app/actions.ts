@@ -57,6 +57,24 @@ async function loadHistory(sb: SupabaseClient): Promise<ChatTurn[]> {
   return (data ?? []).map((m: any) => ({ role: m.role, content: m.content }));
 }
 
+/** Cheap abuse/cost guard on the Anthropic-backed coach: the chat sits behind only the shared
+ *  password, so a leaked password could otherwise spam paid Claude calls. Counts recent user turns
+ *  (works on serverless — shared DB state, not in-memory) and throws over the burst/day limits.
+ *  Belt for the hard ceiling set on the Anthropic console. */
+async function enforceCoachRateLimit(sb: SupabaseClient): Promise<void> {
+  const now = Date.now();
+  const since1m = new Date(now - 60_000).toISOString();
+  const since1d = new Date(now - 86_400_000).toISOString();
+  const [burst, daily] = await Promise.all([
+    sb.from("coach_messages").select("id", { count: "exact", head: true })
+      .eq("role", "user").gte("created_at", since1m),
+    sb.from("coach_messages").select("id", { count: "exact", head: true })
+      .eq("role", "user").gte("created_at", since1d),
+  ]);
+  if ((burst.count ?? 0) >= 3) throw new Error("Doucement — attends quelques secondes avant de relancer le coach.");
+  if ((daily.count ?? 0) >= 50) throw new Error("Limite quotidienne atteinte (50 messages/jour au coach).");
+}
+
 /** Send a free-text message to the coach and persist the exchange.
  *  History is read BEFORE inserting so the new turn isn't double-counted in the prompt. */
 export async function sendCoachMessage(text: string): Promise<void> {
@@ -65,6 +83,7 @@ export async function sendCoachMessage(text: string): Promise<void> {
   if (content.length > 4000) throw new Error("Message trop long (4000 caractères max)");
 
   const sb = await createServiceClient();
+  await enforceCoachRateLimit(sb);
   const history = await loadHistory(sb);
 
   const ins = await sb.from("coach_messages").insert({ role: "user", kind: "chat", content });
@@ -84,6 +103,7 @@ export async function commentActivities(localDate: string): Promise<void> {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(localDate ?? "")) throw new Error("Date invalide");
 
   const sb = await createServiceClient();
+  await enforceCoachRateLimit(sb);
   const today = todayLocal();
   const whenLabel = whenLabelFr(localDate, today);
 

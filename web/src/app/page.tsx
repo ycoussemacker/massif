@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { getDashboard, latestModel, type DailyMetric } from "@/lib/data";
+import { getDashboard, latestModel, type DailyMetric, type Activity } from "@/lib/data";
 import { FitnessChart, FormChart, ChannelChart, Gauge, type Zone } from "@/components/charts";
 import { RpeControl } from "@/components/rpe";
 import { Nav } from "@/components/nav";
@@ -94,6 +94,27 @@ const cHrv = (status: string | null) => {
 const cStress = (v: number | null) => (v == null ? undefined : v <= 25 ? OK : v <= 50 ? WARN : BAD);
 const cReadiness = (v: number | null) => (v == null ? undefined : v >= 65 ? OK : v >= 40 ? WARN : BAD);
 const cBattery = (high: number | null) => (high == null ? undefined : high >= 70 ? OK : high >= 40 ? WARN : BAD);
+
+/** Activity date — a link to the original Strava activity when available, plain text otherwise.
+ *  `className` carries the size/colour from the call site; hover tints to the Strava partner colour. */
+function ActivityDate({ a, className }: { a: Activity; className: string }) {
+  const href =
+    a.source === "strava" && a.source_activity_id
+      ? `https://www.strava.com/activities/${a.source_activity_id}`
+      : null;
+  if (!href) return <span className={`tabular-nums ${className}`}>{a.local_date}</span>;
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      title="Voir sur Strava"
+      className={`tabular-nums underline-offset-2 transition-colors hover:text-strava hover:underline ${className}`}
+    >
+      {a.local_date} <span aria-hidden>↗</span>
+    </a>
+  );
+}
 
 export default async function Dashboard() {
   const { profile, topGoal, metrics, briefing, activities } = await getDashboard();
@@ -217,7 +238,7 @@ export default async function Dashboard() {
                     <span className="mr-1.5" aria-hidden>{sportIcon(a.sport_code)}</span>
                     {sportName(a.sport_code, a.sport)}
                   </span>
-                  <span className="text-xs tabular-nums text-stone-400">{a.local_date}</span>
+                  <ActivityDate a={a} className="text-xs text-stone-400" />
                 </div>
                 <div className="mt-2 flex items-baseline gap-3">
                   <span className="text-xl font-semibold tabular-nums"
@@ -258,7 +279,7 @@ export default async function Dashboard() {
               <tbody>
                 {activities.map((a) => (
                   <tr key={a.id} className="border-b border-stone-100 last:border-0 dark:border-stone-800">
-                    <td className="py-2 pr-3 tabular-nums text-stone-500">{a.local_date}</td>
+                    <td className="py-2 pr-3"><ActivityDate a={a} className="text-stone-500" /></td>
                     <td className="py-2 pr-3 whitespace-nowrap">
                       <span className="mr-1.5" aria-hidden>{sportIcon(a.sport_code)}</span>
                       {sportName(a.sport_code, a.sport)}
