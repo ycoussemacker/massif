@@ -2,6 +2,7 @@ import Link from "next/link";
 import { getDashboard, latestModel, type DailyMetric, type Activity } from "@/lib/data";
 import { FitnessChart, FormChart, ChannelChart, Gauge, type Zone } from "@/components/charts";
 import { RpeControl } from "@/components/rpe";
+import { StravaLink } from "@/components/brand";
 import { Nav } from "@/components/nav";
 import { GoalBadge } from "@/components/goal-badge";
 import { CoachHero } from "@/components/coach-hero";
@@ -95,25 +96,10 @@ const cStress = (v: number | null) => (v == null ? undefined : v <= 25 ? OK : v 
 const cReadiness = (v: number | null) => (v == null ? undefined : v >= 65 ? OK : v >= 40 ? WARN : BAD);
 const cBattery = (high: number | null) => (high == null ? undefined : high >= 70 ? OK : high >= 40 ? WARN : BAD);
 
-/** Activity date — a link to the original Strava activity when available, plain text otherwise.
- *  `className` carries the size/colour from the call site; hover tints to the Strava partner colour. */
+/** Activity date — plain, tabular text. The deep-link to the original activity lives in its own
+ *  explicit "Strava ↗" affordance (see StravaLink), so the date stays a neutral timestamp. */
 function ActivityDate({ a, className }: { a: Activity; className: string }) {
-  const href =
-    a.source === "strava" && a.source_activity_id
-      ? `https://www.strava.com/activities/${a.source_activity_id}`
-      : null;
-  if (!href) return <span className={`tabular-nums ${className}`}>{a.local_date}</span>;
-  return (
-    <a
-      href={href}
-      target="_blank"
-      rel="noreferrer"
-      title="Voir sur Strava"
-      className={`tabular-nums underline-offset-2 transition-colors hover:text-strava hover:underline ${className}`}
-    >
-      {a.local_date} <span aria-hidden>↗</span>
-    </a>
-  );
+  return <span className={`tabular-nums ${className}`}>{a.local_date}</span>;
 }
 
 export default async function Dashboard() {
@@ -255,6 +241,7 @@ export default async function Dashboard() {
                   <span>D+ {a.vertical_gain_m != null ? Math.round(a.vertical_gain_m) : "—"} / D− {a.vertical_loss_m != null ? Math.round(a.vertical_loss_m) : "—"}</span>
                   {a.avg_hr != null && <span>FC {a.avg_hr}</span>}
                   {a.needs_manual_rpe && <RpeControl activityId={a.id} value={a.perceived_rpe} />}
+                  <StravaLink source={a.source} sourceActivityId={a.source_activity_id} className="ml-auto" />
                 </div>
               </div>
             ))}
@@ -273,7 +260,8 @@ export default async function Dashboard() {
                   <th className="py-2 pr-3 text-right font-medium">Durée</th>
                   <th className="py-2 pr-3 text-right font-medium">D+ / D−</th>
                   <th className="py-2 pr-3 text-right font-medium">FC</th>
-                  <th className="py-2 font-medium">RPE</th>
+                  <th className="py-2 pr-3 font-medium">RPE</th>
+                  <th className="py-2 text-right font-medium"><span className="sr-only">Lien Strava</span></th>
                 </tr>
               </thead>
               <tbody>
@@ -299,15 +287,18 @@ export default async function Dashboard() {
                       {a.vertical_gain_m != null ? Math.round(a.vertical_gain_m) : "—"} / {a.vertical_loss_m != null ? Math.round(a.vertical_loss_m) : "—"}
                     </td>
                     <td className="py-2 pr-3 text-right tabular-nums text-stone-500">{a.avg_hr ?? "—"}</td>
-                    <td className="py-2">
+                    <td className="py-2 pr-3">
                       {a.needs_manual_rpe
                         ? <RpeControl activityId={a.id} value={a.perceived_rpe} />
                         : <span className="text-stone-300 dark:text-stone-600">—</span>}
                     </td>
+                    <td className="py-2 text-right whitespace-nowrap">
+                      <StravaLink source={a.source} sourceActivityId={a.source_activity_id} />
+                    </td>
                   </tr>
                 ))}
                 {activities.length === 0 && (
-                  <tr><td colSpan={8} className="py-4 text-center text-stone-500">Aucune activité.</td></tr>
+                  <tr><td colSpan={9} className="py-4 text-center text-stone-500">Aucune activité.</td></tr>
                 )}
               </tbody>
             </table>
