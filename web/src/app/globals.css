@@ -1,26 +1,113 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+/* ─────────────────────────────────────────────────────────────────────────────
+   Massif — design tokens.  Single source of truth (see docs/DESIGN_SYSTEM.md).
+   Principle: colour encodes PHYSIOLOGY, never category.
+     · Alpine (blue)  = aerobic / fitness / fresh        (the cold valley pole)
+     · Summit (orange)= neuromuscular / fatigue          (the warm summit pole)
+     · ready/caution/rest (green·amber·red) = readiness state only
+   Sports are identified by glyph + name, NOT colour.
+   ──────────────────────────────────────────────────────────────────────────── */
+@theme {
+  /* Brand — Alpine (azur) */
+  --color-alpine-50:  #eef5fd;
+  --color-alpine-100: #d9e9fb;
+  --color-alpine-200: #b6d3f5;
+  --color-alpine-300: #88b6ec;
+  --color-alpine-400: #5594df;
+  --color-alpine-500: #2b7bcc;
+  --color-alpine-600: #1f63ab;
+  --color-alpine-700: #1d5089;
+  --color-alpine-800: #1d4068;
+  --color-alpine-900: #1b3350;
+  --color-alpine-950: #122236;
+
+  /* Brand — Summit (orange) */
+  --color-summit-50:  #fff5ec;
+  --color-summit-100: #ffe8d4;
+  --color-summit-200: #ffcca3;
+  --color-summit-300: #ffab6e;
+  --color-summit-400: #fb8838;
+  --color-summit-500: #f3700f;
+  --color-summit-600: #db5d09;
+  --color-summit-700: #b5470c;
+  --color-summit-800: #903910;
+  --color-summit-900: #763110;
+  --color-summit-950: #401705;
+
+  /* Semantic aliases — referenced by var() so dark mode can shift them.
+     Readiness (ready/caution/rest) IS the Tailwind emerald/amber/red ramp: the tokens point at the
+     same scale the markup uses (`bg-emerald-500` ≡ `--color-ready`), so the SVG layer (theme.ts STATE.*)
+     and the class layer stay locked to ONE source. caution-soft = yellow-500 (recovery mid step). */
+  --color-aerobic:      var(--color-alpine-500);
+  --color-neuro:        var(--color-summit-500);
+  --color-ready:        var(--color-emerald-500);
+  --color-caution:      var(--color-amber-500);
+  --color-caution-soft: var(--color-yellow-500);
+  --color-rest:         var(--color-red-500);
+
+  /* Partner brands */
+  --color-strava: #fc4c02;
+  --color-garmin: #007cc3;
+
+  /* Surfaces & ink */
+  --color-page: #f7f5f1;   /* warm paper — echoes the icon's cream ground */
+  --color-ink:  #1b2330;   /* charcoal-navy — the wordmark colour */
+
+  /* Type — Geist (loaded in layout.tsx) with a system grotesque fallback */
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  /* Shape */
+  --radius-card: 0.75rem;
+  --radius-hero: 1rem;
+
+  /* Motion — the active nav pill gently pops in on each page load (respects reduced-motion). */
+  --animate-nav-pop: nav-pop 0.2s ease-out;
+
+  /* Brand gradient — valley blue → summit orange (the logo signature). The #6f6fa8 mid-stop is a
+     deliberate neutral-purple bridge so the blue→orange blend doesn't mud through grey. */
+  --gradient-massif: linear-gradient(95deg, #1d4068 0%, #2b7bcc 27%, #6f6fa8 54%, #db5d09 80%, #f3700f 100%);
+
+  /* Message gradient — readability-tuned variant of the brand gradient for the athlete's own chat
+     bubbles (white text). Anchored on the DARK halves (alpine-600 / summit-700) so white stays ≥5:1
+     AA across the whole blend — never the vivid summit-500, which fails contrast under white text. */
+  --gradient-message: linear-gradient(125deg, var(--color-alpine-600) 0%, var(--color-summit-700) 100%);
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+/* The brand gradient as a utility (used on the primary coach CTA). */
+@utility bg-massif {
+  background-image: var(--gradient-massif);
 }
 
+/* The athlete's own chat bubbles (coach-chat). Readability-tuned (see --gradient-message). */
+@utility bg-message {
+  background-image: var(--gradient-message);
+}
+
+/* Dark mode: warm paper → night; brand accents brighten one step for legibility. */
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+    --color-page:    #0c0a09;
+    --color-ink:     #f5f5f4;
+    --color-aerobic: var(--color-alpine-400);
+    --color-neuro:   var(--color-summit-400);
   }
 }
 
+@keyframes nav-pop {
+  from { opacity: 0; transform: scale(0.82); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+/* Always reserve the vertical scrollbar gutter so centred content (e.g. the desktop nav) doesn't
+   shift horizontally between a scrolling page (dashboard) and a viewport-height one (coach). */
+html {
+  scrollbar-gutter: stable;
+}
+
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--color-page);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
 }

@@ -1,0 +1,97 @@
+/** Assemble the ONE unified training picture from the DB — shared by the briefing run and Q&A. */
+import {
+  ATHLETE_TZ, todayLocal, daysBetween, dateMinusDays,
+  loadProfile, loadSports, loadDailyMetrics, loadRecentActivities, loadUpcomingPlanned, loadGoals,
+} from "./db.js";
+
+/** Map raw goal rows → the coach's compact, ranked goal view (sport code + days-to / fuzzy horizon). */
+export function mapGoals(goals: any[], codeById: Map<number, string>, today: string) {
+  return (goals ?? []).map((g) => ({
+    title: g.title,
+    sport: g.sport_id != null ? (codeById.get(g.sport_id) ?? null) : null,
+    kind: g.kind ?? null,
+    rank: g.priority_rank,
+    detail: g.target_detail ?? null,
+    date: g.target_date ?? null,
+    days_to: g.target_date ? daysBetween(today, g.target_date) : null,
+    horizon: g.target_horizon ?? null,
+  }));
+}
+
+export function recoveryLatest(dm: any[]): any | null {
+  for (let i = dm.length - 1; i >= 0; i--) {
+    const d = dm[i];
+    if (d.hrv_overnight_ms != null || d.sleep_score != null || d.training_readiness != null) {
+      return {
+        date: d.local_date,
+        sleep_score: d.sleep_score,
+        sleep_duration_h: d.sleep_duration_s != null ? Math.round((d.sleep_duration_s / 3600) * 10) / 10 : null,
+        hrv_overnight_ms: d.hrv_overnight_ms, hrv_status: d.hrv_status, resting_hr: d.resting_hr,
+        body_battery_high: d.body_battery_high, body_battery_low: d.body_battery_low,
+        stress_avg: d.stress_avg, training_readiness: d.training_readiness,
+      };
+    }
+  }
+  return null;
+}
+
+export interface Picture {
+  today: string;
+  sports: any[];
+  context: Record<string, unknown>;
+}
+
+/** Read profile + 21d of daily metrics + 14d of activities + upcoming plan → one compact picture. */
+export async function assemblePicture(): Promise<Picture> {
+  const today = todayLocal();
+  const [profile, sports, dm, goals] = await Promise.all([
+    loadProfile(), loadSports(), loadDailyMetrics(21), loadGoals(),
+  ]);
+  const acts = await loadRecentActivities(dateMinusDays(today, 14));
+  const upcoming = await loadUpcomingPlanned(today);
+
+  const codeById = new Map<number, string>(sports.map((s) => [s.id, s.code]));
+  const mappedGoals = mapGoals(goals, codeById, today);
+  // The last calendar row is often a Garmin recovery-only upsert (no rollup past the last activity),
+  // so its CTL/ATL/TSB are null — use the most recent row that actually has the computed model.
+  let latest: any = null;
+  for (let i = dm.length - 1; i >= 0; i--) {
+    if (dm[i].ctl != null) { latest = dm[i]; break; }
+  }
+  const since7 = dateMinusDays(today, 7);
+  const acts7 = acts.filter((a) => a.local_date >= since7);
+  const sum = (xs: any[], k: string) => Math.round(xs.reduce((t, a) => t + Number(a[k] || 0), 0) * 10) / 10;
+
+  const context = {
+    today,
+    athlete_tz: ATHLETE_TZ,
+    // Ranked objectives (most important first). Each may be sport-linked and may have a structured
+    // date (days_to) and/or a fuzzy horizon (e.g. "avant mes 30 ans"); some have neither.
+    goals: mappedGoals,
+    primary_goal: mappedGoals[0] ?? null,
+    thresholds: {
+      max_hr: profile.max_hr, resting_hr: profile.resting_hr, lthr: profile.lthr, weight_kg: profile.weight_kg,
+    },
+    fitness_model_latest: latest && {
+      date: latest.local_date, ctl: latest.ctl, atl: latest.atl, tsb: latest.tsb,
+      ctl_aerobic: latest.ctl_aerobic, atl_aerobic: latest.atl_aerobic,
+      ctl_neuromuscular: latest.ctl_neuromuscular, atl_neuromuscular: latest.atl_neuromuscular,
+      acwr: latest.acwr,
+    },
+    recovery_latest: recoveryLatest(dm),
+    daily_load_21d: dm.map((d) => ({
+      date: d.local_date, load: d.daily_load, aerobic: d.daily_aerobic_load, neuro: d.daily_neuromuscular_load,
+      by_group: d.load_by_group, dplus: d.vertical_gain_m, dminus: d.vertical_loss_m,
+    })),
+    recent_activities_14d: acts.map((a) => ({
+      date: a.local_date, sport: codeById.get(a.sport_id) ?? "unknown",
+      load: a.training_load, aerobic: a.aerobic_load, neuro: a.neuromuscular_load,
+      method: a.load_method_used, dur_min: Math.round((a.duration_s || 0) / 60),
+      dplus: a.vertical_gain_m, dminus: a.vertical_loss_m, avg_hr: a.avg_hr, rpe: a.rpe_source,
+    })),
+    trailing_7d: { d_plus_m: sum(acts7, "vertical_gain_m"), d_minus_m: sum(acts7, "vertical_loss_m") },
+    upcoming_planned: upcoming,
+  };
+
+  return { today, sports, context };
+}

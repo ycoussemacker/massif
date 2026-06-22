@@ -1,0 +1,70 @@
+# Massif nightly — cloud replacement for nightly.sh/morning.sh (runs without the Mac).
+#
+# Pulls Strava + Garmin, rolls up the unified load model, runs the coach briefing, and the coach
+# delivers the morning Web Push. Garmin has no official API + an MFA-gated first login, so its OAuth
+# token is seeded ONCE from the Mac into Supabase (integration_tokens, provider='garmin') and the
+# Python ingest rehydrates it here — see ops/PHONE_ACCESS.md. The coach is idempotent per day
+# (COACH_SKIP_IF_DONE) so the two scheduled attempts never double-notify.
+#
+# Schedule is UTC. These two fire ≈07:30 / 08:30 Paris in summer (CEST) and ≈06:30 / 07:30 in winter
+# (CET) — late enough that the overnight watch sync is in. Adjust the cron lines to taste.
+name: massif-nightly
+
+on:
+  schedule:
+    - cron: "30 5 * * *"
+    - cron: "30 6 * * *"
+  workflow_dispatch: {} # manual "Run workflow" button
+
+concurrency:
+  group: massif-nightly
+  cancel-in-progress: false
+
+jobs:
+  nightly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      STRAVA_CLIENT_ID: ${{ secrets.STRAVA_CLIENT_ID }}
+      STRAVA_CLIENT_SECRET: ${{ secrets.STRAVA_CLIENT_SECRET }}
+      STRAVA_REFRESH_TOKEN: ${{ secrets.STRAVA_REFRESH_TOKEN }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      COACH_MODEL: ${{ secrets.COACH_MODEL || 'claude-sonnet-4-6' }}
+      ATHLETE_TZ: ${{ secrets.ATHLETE_TZ || 'Europe/Paris' }}
+      VAPID_PUBLIC_KEY: ${{ secrets.VAPID_PUBLIC_KEY }}
+      VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
+      VAPID_SUBJECT: ${{ secrets.VAPID_SUBJECT || 'mailto:coach@massif.app' }}
+      COACH_SKIP_IF_DONE: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ingest
+        run: pip install -e ingest
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: coach/pnpm-lock.yaml
+
+      - name: Install coach deps
+        run: pnpm -C coach install --no-frozen-lockfile
+
+      - name: Pull + roll up (Strava + Garmin + model)
+        run: python -m massif_ingest.sync
+
+      - name: Coach briefing + morning push
+        run: pnpm -C coach coach

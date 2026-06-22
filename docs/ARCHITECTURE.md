@@ -20,13 +20,27 @@ number is split into **two channels that partition the total**:
 | **neuromuscular / structural** | limit climbing, heavy strength, **descents (D-)**, technical alpinism | ❌ largely invisible | 24–72h+ (tendons: weeks) |
 
 `activities.training_load` is a **generated column** = `aerobic_load + neuromuscular_load`, so the
-invariant can never drift. This is what lets the coach reason: a hard climbing day has low HR (low
-aerobic load) but high neuromuscular load, so it still spends the next day's "hard" budget — the
-coach must not stack a hard run on top just because HRV looks green.
+invariant can never drift. Crucially the two channels are computed **independently and summed**, NOT
+one number sliced by a fixed per-sport ratio: the aerobic channel comes from the cardiac engine
+(power/HR/pace), the neuromuscular channel from stressors wearables can't see — the eccentric
+**descent (D−)**, carried mass, and the impact of the locomotion. A long descent therefore adds real
+neuromuscular cost *on top of* a calm-HR aerobic load instead of being invisible (the old "pick one
+method, split by ratio" model under-counted descents — e.g. a 3000 m-D− trail scored below a smaller
+hike). This is what lets the coach reason: a hard climbing day has low HR (low aerobic load) but high
+neuromuscular load, so it still spends the next day's "hard" budget — the coach must not stack a hard
+run on top just because HRV looks green.
 
 Three stressable systems with different recovery kinetics (aerobic / neuromuscular-CNS /
 structural-tissue) are tracked so the coach gates hard days on **both** the recovery composite
 (HRV, sleep, RHR, Body Battery) **and** the load-channel history.
+
+## Design system
+
+The visual language mirrors this core idea: the logo's **blue→orange gradient is the two load channels**.
+Blue (Alpine) = aerobic / fitness / fresh; orange (Summit) = neuromuscular / fatigue. Green·amber·red = the
+readiness state; sports carry no colour. The full token system, rules, and do/don't live in
+[`DESIGN_SYSTEM.md`](DESIGN_SYSTEM.md) (binding for all `web/` work) — values in `web/src/app/globals.css`
+(`@theme`), chart colours in `web/src/lib/theme.ts`.
 
 ## Components
 
@@ -59,15 +73,42 @@ structural-tissue) are tracked so the coach gates hard days on **both** the reco
 - **`planned_sessions`** — the plan the coach reshapes; per-channel targets, intra-day ordering,
   `system_tag` = which budget the session spends.
 - **`coach_briefings`** — audit log of every agentic run.
-- **`integration_tokens`** — Strava OAuth tokens.
+- **`athlete_profile`** — single-row identity (name, birthdate, sex, height, weight) + physiological
+  baselines (max_hr, lthr, resting_hr, hrv_baseline) + training preferences (`weekly_structure`,
+  `constraints` jsonb). Edited from the **Profil** page (`web/src/app/profil/`); nothing re-syncs it.
+- **`goals`** — flexible, **ranked, multi-sport** objectives (replaces the old single
+  `athlete_profile.goal_*` columns, kept only for back-compat). `sport_id` is nullable (a goal need
+  not target a sport); `priority_rank` orders them by the athlete's importance; the deadline is
+  **optional and either** a structured `target_date` (drives days-to math) **or** a fuzzy
+  `target_horizon` ("cette année", "avant mes 30 ans"). The coach reads them in priority order.
+- **`integration_tokens`** — provider OAuth tokens. Strava is now connected from the **Profil** page
+  (web OAuth → writes the `strava` row); `ingest/strava.py` reads the refresh token from here first
+  (falling back to `STRAVA_REFRESH_TOKEN` in `.env`) and persists Strava's rotated token back. Garmin
+  re-auth stays in the CLI (interactive MFA → `python-garminconnect`).
 
-### The load ladder
+### The load ladder & the two channels
 
-`sports.load_method_ladder` is ordered; `load.compute_load` uses the first method whose inputs are
-present, always ending in a fallback so no load is ever NULL:
+`sports.load_method_ladder` is ordered; `load.compute_load` walks it to pick the **aerobic-engine**
+method — the first whose inputs are present, always ending in a fallback so no load is ever NULL:
 
-`tss` (power) → `hrtss` (HR) → `rtss` (pace) → `vertical_duration` (mountain) → `grade_volume`
+`tss` (power) → `hrtss` (HR) → `rtss` (pace) → `vertical_duration` (no-HR mountain) → `grade_volume`
 (climbing) → `tonnage_rpe` (strength) → `session_rpe` (RPE × duration) → `duration_fallback`.
+
+`vertical_duration` is the **no-HR mountain estimate** (duration + ascent × carried-mass); it defers to
+`hrtss` whenever HR is usable, so the climb's aerobic cost isn't double-counted. The chosen method's
+points are the **aerobic** channel. The **neuromuscular** channel is then built additively and summed
+(see `load.py`):
+
+- **aerobic-engine sports** (run/bike/hike/swim…): `neuromuscular = impact_frac × aerobic + descent_term`,
+  where `descent_term = (D− / 1000) × DESCENT_LOAD_PER_1000M × mass_factor` — independent of HR, so a big
+  descent registers even when the heart stayed calm. `impact_frac` is the small HRV-blind cost of the
+  locomotion itself (foot-strike, uphill muscular).
+- **strength / technical sports** (`STRUCTURAL_EFFORT_GROUPS`): no aerobic engine, so the session effort
+  (sRPE / grade / tonnage) is split aerobic : neuromuscular by taxonomy (mostly neuromuscular).
+
+Coefficients (`DESCENT_LOAD_PER_1000M`, `IMPACT_FRAC`, `ASCENT_AEROBIC_PER_1000M`, the strength split) are
+population starting points — calibrate per athlete (see "personalization"). After editing them, re-apply
+to history with `python -m massif_ingest.sync --recompute-loads`.
 
 **RPE is hybrid**: `sports.needs_manual_rpe = true` for sports without reliable HR
 (climbing/strength/alpinism) → a one-tap post-session prompt; auto-estimated elsewhere.
@@ -88,6 +129,9 @@ Encode these into the Coach Brain system prompt when Phase 6 lands:
 - Treat big mountain days as multi-system bombs; use D- as a structural-injury guardrail.
 - Substitute, don't just cancel (cooked legs → easy cycling, not forced rest).
 - Account for pack weight & altitude as load multipliers / recovery confounders.
+- Weigh objectives in the athlete's **priority order** (`goals[]`); give richer, sport-specific
+  feedback when a session matches a goal's sport; weight nearer deadlines (`days_to`) more, while
+  honoring goals that carry only a fuzzy `horizon`.
 
 ## Deferred (documented future migrations / phases)
 
@@ -95,7 +139,12 @@ Encode these into the Coach Brain system prompt when Phase 6 lands:
   reproducible after a threshold/FTP change. Interim: snapshot the values used into
   `activities.sport_specific.computed_with`.
 - **`training_blocks` / mesocycle parent** for `planned_sessions` (atomic week reshaping).
-- **Auth + RLS** migration before any public/cloud deploy (currently local-first, RLS off).
+- **Multi-user accounts + Auth + RLS** before any public/cloud deploy (currently local-first,
+  single-row `athlete_profile`, RLS off). Product vision: let several people (e.g. the author's
+  roommates) each use the app in their own sports. The **Profil** UI is already account-ready
+  (per-athlete fields + goals), but multi-tenancy requires an `athletes`/user concept, threading an
+  `athlete_id` FK through `athlete_profile`/`goals`/`activities`/`daily_metrics`/`planned_sessions`,
+  and RLS policies. Deferred intentionally — not implemented in the local-first phase.
 - **Load-model personalization**: fit the channel-split ratios and TRIMP→points scaling to the
   user's own RPE-vs-Garmin history; current constants are population starting points.
 - Alias curation: validate `sports.source_aliases` against real Strava `sport_type` / Garmin
@@ -108,7 +157,8 @@ Encode these into the Coach Brain system prompt when Phase 6 lands:
 3. Garmin ingestion (`python-garminconnect`) → daily_metrics recovery.
 4. Metrics — decoupling, time-in-zone, refine the load model.
 5. Dashboard — activities, recovery, load/fitness trends.
-6. Athlete profile + plan UI.
+6. Athlete profile (✅ Profil page: identity/personal/baselines/prefs + ranked multi-sport goals +
+   Strava OAuth connect) + plan-edit UI + manual RPE.
 7. Coach Brain (Claude) — daily briefing + plan reshaping.
 8. Scheduling (cron → nightly.sh).
 9. Migrate hosting → Vercel + personal Supabase cloud (+ auth/RLS).

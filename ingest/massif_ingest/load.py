@@ -1,39 +1,72 @@
 """Cross-sport training-load computation — the heart of Massif.
 
-Every activity gets ONE comparable load (TSS-style anchor: 100 points = 1h at threshold),
-split into two channels that PARTITION the total:
-  - aerobic_load        : cardiovascular cost (HRV/RHR-visible, recovers fast)
-  - neuromuscular_load  : CNS + structural/tissue cost (HRV-blind, recovers slowly, injury vector)
+Every activity gets ONE comparable load, split into two channels that PARTITION the total — but the
+channels are computed INDEPENDENTLY and summed, never one number sliced by a fixed ratio:
 
-The DB derives training_load = aerobic_load + neuromuscular_load (generated column), so this
-module writes only the two channels.
+  - aerobic_load        : the cardiometabolic engine cost (power/HR/pace; or, with no HR, a
+                          duration + ascent estimate). HRV / RHR / Body Battery see it; recovers fast.
+                          Anchor: 100 points ≈ 1 h at threshold on THIS channel.
+  - neuromuscular_load  : the structural / CNS cost, built from stressors the wearables are blind to —
+                          the eccentric DESCENT (D-), plus a small impact fraction of the aerobic
+                          effort. HRV-blind, recovers slowly (tendons: weeks), an injury vector.
 
-`compute_load` walks the sport's ordered `load_method_ladder` and uses the first method whose
-inputs are present, guaranteeing a non-NULL load for every activity.
+The DB derives training_load = aerobic_load + neuromuscular_load (generated column), so this module
+writes only the two channels.
+
+WHY ADDITIVE (not "one method → fixed split"): a long descent loads the quads/tendons eccentrically
+while the heart stays calm. Under a HR-only method that cost is invisible; under a fixed taxonomy
+split it is merely a fraction of the (HR-blind) total. Computing the descent term separately and
+ADDING it is what lets a 3000 m-descent trail correctly outscore a smaller hike even when both ran
+at a moderate HR. Pure strength/technical sports have no aerobic engine, so for them the session
+effort itself is split (mostly neuromuscular) — see STRUCTURAL_EFFORT_GROUPS.
+
+`compute_load` walks the sport's ordered `load_method_ladder` to pick the aerobic-engine method
+(first whose inputs are present), guaranteeing a non-NULL load for every activity.
 
 NOTE: the coefficients/ratios below are population starting points. For a single athlete they
 should be personalized from the user's own RPE-vs-Garmin history over the first few weeks
-(see docs/ARCHITECTURE.md → "personalization"). Treat early output as provisional.
+(see docs/ARCHITECTURE.md → "personalization"). Treat early output as provisional. Two known
+calibration gaps to revisit with real data:
+  - ASCENT_AEROBIC_PER_1000M (no-HR mountain estimate) credits a fixed cost per 1000 m of D+
+    regardless of how easy the climb was, so a HR-less hike can read higher than the same hike via
+    hrtss. Most outings have HR (→ hrtss), so this only affects HR-less mountain days.
+  - For needs_manual_rpe mountain sports (alpinism / via_ferrata), the descent term is added on top
+    of an RPE-derived aerobic number; the RPE may already partly reflect the descent, so its marginal
+    attribution there is a calibration item, not a clean independent signal (unlike the HR/power path).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-# Default aerobic : neuromuscular split per taxonomy group (must sum to 1.0).
-# A zone-2 run is mostly aerobic; limit bouldering is mostly neuromuscular; a big alpine
-# day is high in both. These are refined per-session by intensity in TODO below.
+# Sports with no real aerobic engine: the session effort (sRPE / grade / tonnage) is itself mostly
+# muscular, so it is split aerobic : neuromuscular by taxonomy (must sum to 1.0) rather than treated
+# as a cardiac cost. Everything else is an "aerobic-engine" sport (additive channels, see below).
+STRUCTURAL_EFFORT_GROUPS = {"technical_strength", "resistance"}
 CHANNEL_SPLIT: dict[str, tuple[float, float]] = {
-    "paced_endurance":    (0.85, 0.15),
-    "mountain_vertical":  (0.60, 0.40),  # long aerobic + heavy eccentric descent / pack load
     "technical_strength": (0.15, 0.85),  # climbing: fingers/forearms/CNS
-    "resistance":         (0.10, 0.90),
-    "aquatic":            (0.90, 0.10),
-    "other":              (0.70, 0.30),
+    "resistance":         (0.10, 0.90),  # heavy strength
+    "other":              (0.70, 0.30),  # conservative fallback for an unclassified effort sport
+}
+
+# Aerobic-engine sports — the HRV-blind structural cost of the locomotion itself, as a fraction of
+# the aerobic load (running impact, uphill muscular work, posture). The big eccentric cost of
+# descending is handled separately by DESCENT_LOAD_PER_1000M, so these stay modest.
+IMPACT_FRAC: dict[str, float] = {
+    "paced_endurance":   0.15,
+    "mountain_vertical": 0.20,
+    "aquatic":           0.10,
+    "other":             0.25,
 }
 
 # Default intensity factor when nothing better is known (used by duration_fallback / sRPE base).
 DEFAULT_IF = 0.55  # ~ easy aerobic effort
+# Eccentric structural cost per 1000 m of DESCENT (D-), scaled by carried mass — the neuromuscular
+# stressor wearables can't see. Population start; calibrate from the athlete's RPE/soreness history.
+DESCENT_LOAD_PER_1000M = 70.0
+# Aerobic cost per 1000 m of ASCENT (D+) credited ONLY when there is no usable HR (the no-HR mountain
+# estimate). With HR present, hrtss already captures the climb, so this is not added (no double count).
+ASCENT_AEROBIC_PER_1000M = 100.0
 
 
 @dataclass
@@ -57,6 +90,22 @@ def _tss_from_if(duration_s: int, intensity_factor: float) -> float:
 def _hr_fraction(hr: float, rhr: float, max_hr: float) -> float:
     denom = max_hr - rhr
     return (hr - rhr) / denom if denom > 0 else 0.0
+
+
+def _mass_factor(activity: dict, profile: dict) -> float:
+    """Carried-mass amplifier (1.0 = bodyweight only). A 14 kg pack on a 64 kg athlete → 1.22."""
+    weight = profile.get("weight_kg") or 70.0
+    return 1.0 + (activity.get("carried_load_kg") or 0.0) / weight
+
+
+def _descent_load(activity: dict, profile: dict) -> float:
+    """Eccentric/structural cost of descending (D-) — the HRV-blind neuromuscular stressor, computed
+    independently of the aerobic engine and ADDED to the neuromuscular channel. Descending brakes the
+    body weight eccentrically (quads/tendons) while the heart stays calm, so this must not be
+    discounted just because HR — and hence the aerobic load — was low. Linear in D-, scaled by mass.
+    `vertical_loss_m` may be absent (no altitude stream / non-GPS sport) → 0, degrading gracefully."""
+    vloss = activity.get("vertical_loss_m") or 0.0
+    return (vloss / 1000.0) * DESCENT_LOAD_PER_1000M * _mass_factor(activity, profile)
 
 
 # ── per-method computations: each returns (load_points, IF) or None if inputs are missing ──
@@ -89,21 +138,19 @@ def _method_rtss(a: dict, p: dict) -> tuple[float, float] | None:
 
 
 def _method_vertical_duration(a: dict, p: dict) -> tuple[float, float] | None:
-    # Long low-intensity mountain load: duration aerobic base + vertical work scaled by carried mass.
+    # No-HR mountain AEROBIC estimate: duration base + the climb's aerobic cost (ascent × mass). When
+    # HR is usable, hrtss is more faithful (it already reflects the climb), so compute_load skips this
+    # method in favour of hrtss — but ONLY when the ladder actually offers hrtss, so ladders without an
+    # hrtss step (alpinism / via_ferrata) still get this ascent supplement instead of stranding on
+    # duration_fallback. The eccentric DESCENT cost is added separately in compute_load, regardless of
+    # which aerobic method wins.
     dur = a.get("duration_s")
     if not dur:
         return None
     vgain = a.get("vertical_gain_m") or 0.0
-    weight = p.get("weight_kg") or 70.0
-    mass_factor = 1.0 + (a.get("carried_load_kg") or 0.0) / weight
     base = _tss_from_if(dur, DEFAULT_IF)
-    vertical_points = (vgain / 100.0) * 10.0 * mass_factor  # ~100 pts per 1000 m climbed
-    # Blend with HR-based estimate if HR is available; take the larger (design rule).
-    hr = _method_hrtss(a, p)
-    total = base + vertical_points
-    if hr:
-        total = max(total, hr[0])
-    return total, DEFAULT_IF
+    ascent_points = (vgain / 1000.0) * ASCENT_AEROBIC_PER_1000M * _mass_factor(a, p)
+    return base + ascent_points, DEFAULT_IF
 
 
 def _method_session_rpe(a: dict, p: dict) -> tuple[float, float] | None:
@@ -145,12 +192,24 @@ _METHODS = {
 
 
 def compute_load(activity: dict, sport: dict, profile: dict) -> LoadResult:
-    """Walk the sport's load_method_ladder; use the first method whose inputs are present."""
+    """Pick the aerobic-engine method (first ladder method whose inputs exist), then build the two
+    channels INDEPENDENTLY (see module docstring) and let the DB sum them.
+
+    Aerobic-engine sports: the chosen method IS the aerobic load; the neuromuscular channel is the
+    eccentric descent (D-) plus a small impact fraction of that aerobic effort, added on top.
+    Strength/technical sports (STRUCTURAL_EFFORT_GROUPS): no aerobic engine, so the session effort is
+    split aerobic : neuromuscular by taxonomy (mostly neuromuscular)."""
     ladder = sport.get("load_method_ladder") or ["duration_fallback"]
     chosen_method, points, intensity = "duration_fallback", 0.0, DEFAULT_IF
     for method in ladder:
         fn = _METHODS.get(method)
         if fn is None:
+            continue
+        # Prefer HR over the no-HR vertical estimate when this ladder offers hrtss — so a valid HR
+        # reading is used (and the climb isn't double-counted), yet ladders without an hrtss step
+        # (alpinism / via_ferrata) still get vertical_duration's ascent supplement rather than falling
+        # through to duration_fallback. (Bug guard: HR must never LOWER a vertical day's load.)
+        if method == "vertical_duration" and "hrtss" in ladder and _method_hrtss(activity, profile):
             continue
         result = fn(activity, profile)
         if result is not None:
@@ -158,12 +217,20 @@ def compute_load(activity: dict, sport: dict, profile: dict) -> LoadResult:
             chosen_method = method
             break
 
-    # TODO: refine the split by session intensity (hard intervals shift a paced run toward
-    # the neuromuscular channel). For now use the taxonomy-group default.
-    a_ratio, n_ratio = CHANNEL_SPLIT.get(sport["taxonomy_group"], CHANNEL_SPLIT["other"])
+    group = sport["taxonomy_group"]
+    if group in STRUCTURAL_EFFORT_GROUPS:
+        a_ratio, n_ratio = CHANNEL_SPLIT.get(group, CHANNEL_SPLIT["other"])
+        aerobic, neuromuscular = points * a_ratio, points * n_ratio
+    else:
+        # `points` is the cardiometabolic cost → the aerobic channel in full. The neuromuscular
+        # channel is built additively from stressors the aerobic number can't see.
+        impact = points * IMPACT_FRAC.get(group, IMPACT_FRAC["other"])
+        aerobic = points
+        neuromuscular = impact + _descent_load(activity, profile)
+
     return LoadResult(
-        aerobic_load=round(points * a_ratio, 2),
-        neuromuscular_load=round(points * n_ratio, 2),
+        aerobic_load=round(aerobic, 2),
+        neuromuscular_load=round(neuromuscular, 2),
         load_method_used=chosen_method,
         intensity_factor=round(intensity, 3) if intensity is not None else None,
     )

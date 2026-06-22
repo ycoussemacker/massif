@@ -32,6 +32,9 @@ venv/
 supabase/.branches/
 supabase/.temp/
 
+# ── Nightly job logs (may contain training data) ──
+logs/
+
 # ── OS / editor ──
 .DS_Store
 .idea/

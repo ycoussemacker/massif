@@ -7,8 +7,26 @@ reshapes the plan each morning. Read `docs/ARCHITECTURE.md` first — it holds t
 ## Stack
 - **web/** — Next.js 16 (App Router, `src/`) · React 19 · Tailwind 4 · TypeScript · pnpm.
   Supabase via `@supabase/ssr` (`web/src/lib/supabase/{client,server}.ts`, mirrors `yziame_website`).
+  **Design system is BINDING — read `docs/DESIGN_SYSTEM.md` before any UI work.** TL;DR: colour encodes
+  *physiology, never category* — **Alpine** (blue, `alpine-*`/`aerobic`) = aerobic/fitness/fresh, **Summit**
+  (orange, `summit-*`/`neuro`) = neuromuscular/fatigue, green·amber·red (`ready`/`caution`/`rest`) = readiness
+  only; sports are glyph+name, never coloured. Tokens live in `web/src/app/globals.css` (`@theme`); chart/SVG
+  colours import from `web/src/lib/theme.ts` (`VIZ`/`STATE`/`AXIS`/`MUTED`). **Never** write a raw hex or a
+  `sky-*`/`blue-*`/`orange-*` class in a component. Neutral = `stone`; canvas = `bg-page` (warm paper); type =
+  Geist (`font-sans`/`font-mono`), every number `tabular-nums`; bordered-not-shadowed; the `bg-massif` gradient
+  is reserved for the primary coach CTA only.
 - **ingest/** — Python ≥3.11 package `massif_ingest` (Strava REST + `python-garminconnect` + pandas).
-- **coach/** — TypeScript (Anthropic SDK), run on a schedule. Empty until Phase 7.
+- **coach/** — TypeScript (Anthropic SDK). Phase-7 MVP: daily briefing `pnpm -C coach coach` (writes
+  `coach_briefings` + `planned_sessions`); interactive Q&A `pnpm -C coach ask ["question"]` (read-only).
+  Shared data assembly in `coach/src/context.ts`.
+
+**Phase 5 (Dashboard) MVP built + verified** in `web/` — server-component page (`web/src/app/page.tsx`,
+data in `web/src/lib/data.ts`, dependency-free SVG charts in `web/src/components/charts.tsx`) reading
+via the service-role client (RLS off). Shows: latest coach briefing, CTL/ATL/TSB/ACWR tiles,
+fitness/form/per-channel-load charts, Garmin recovery, recent activities. Runs on `pnpm -C web dev`
+→ **http://localhost:3100** (port pinned to dodge the parallel work project on 3000). Both `web/` and
+`coach/` need their `pnpm-workspace.yaml` `allowBuilds` set (sharp/unrs-resolver for web, esbuild for
+coach) or pnpm blocks the run. Next: Phase 8 (nightly cron), Phase 6 (plan UI + RPE), Phase 4 (metrics).
 - **supabase/** — SQL migrations (source of truth for the schema).
 - **DB** — Supabase Postgres. Local-first for now; a personal Supabase **cloud** project will be
   provisioned (org separate from the company "AFOODI V0" org).
@@ -18,6 +36,10 @@ Every activity gets ONE comparable `training_load`, split into two channels that
 `training_load` is a **generated column = aerobic_load + neuromuscular_load`. The coach reasons on
 both channels + recovery, because climbing/strength load the neuromuscular/structural system that
 HRV/Body Battery can't see. Don't break this invariant; write the two channels, never the total.
+The channels are computed **independently and summed** (not one method's points sliced by a fixed
+ratio): aerobic = the cardiac engine (power/HR/pace); neuromuscular = an independent **eccentric
+descent (D−)** term + carried-mass + impact (strength/climbing instead split their sRPE effort). So a
+big descent adds real neuromuscular cost on top of a calm-HR aerobic load. See `load.py` + ARCHITECTURE.md.
 
 ## Conventions & gotchas
 - **Strava**: read `sport_type`, NOT the legacy `type` (it returns 'Ride' for road/gravel/MTB/ebike
@@ -26,8 +48,12 @@ HRV/Body Battery can't see. Don't break this invariant; write the two channels, 
 - **Garmin**: no official API. `python-garminconnect`; tokens cached in `GARMIN_TOKEN_DIR`
   (`~/.garminconnect`) — **never commit them** (gitignored).
 - **Load**: `sports.load_method_ladder` is ordered; `load.compute_load` picks the first method
-  whose inputs exist. Coefficients/ratios in `load.py` are population starting points — TODO to
-  personalize per athlete.
+  whose inputs exist as the AEROBIC engine, then adds the neuromuscular channel additively (descent
+  D− + impact; strength/climbing split their sRPE). Coefficients in `load.py` (`DESCENT_LOAD_PER_1000M`,
+  `IMPACT_FRAC`, `ASCENT_AEROBIC_PER_1000M`) are population starting points — TODO to personalize.
+  After editing them, re-score history: `python -m massif_ingest.sync --recompute-loads`
+  (re-applies the model to all stored activities from their persisted fields, then rolls up — no
+  provider re-pull). `web/src/lib/load.ts` MIRRORS the session_rpe path — keep in sync.
 - **RPE hybrid**: `needs_manual_rpe=true` sports prompt for a post-session RPE; others auto-estimate.
 - **daily_metrics** is written by two column-scoped upserts (load rollup vs Garmin recovery) keyed
   on `local_date` — they must not include each other's columns. The rollup writes a contiguous
@@ -50,5 +76,86 @@ supabase db push                     # apply migrations
 ```
 
 ## Status
-Phase 1 (scaffold) done. Next: apply the migration to a Supabase project, then Phase 2 (Strava).
-See `docs/ARCHITECTURE.md` → Phase roadmap. Don't commit unless asked.
+Phase 1 done **and** migrations applied to the personal Supabase **cloud** project
+`yxoxvktfrlavsqcfcxmp` (its account is separate from the AFOODI MCP org — drive Massif's DB with the
+Supabase **CLI** only, *never* the MCP, which is reserved for the parallel work project). Env wired
+(`.env` at root + `web/.env.local`; uses new `sb_publishable_…`/`sb_secret_…` keys); ingest venv at
+`ingest/.venv` (`pip install -e ingest`, dev extra adds pytest), verified reading the 22 seeded
+sports from cloud.
+
+**Phase 2 (Strava) + Phase 3 (Garmin) ingestion now implemented** in `ingest/massif_ingest/`
+(`strava.sync`/`garmin.sync` are wired; pure helpers `_build_activity_row` / `_normalize` are
+unit-tested). Migration `…0003` made `activities_source_uniq` unconditional — the original PARTIAL
+index could not be inferred as an ON CONFLICT arbiter, so every upsert errored 42P10 (fixed +
+verified by a real double-upsert dedupe against cloud). Tests: `ingest/.venv/bin/python -m pytest
+ingest/tests` (19, all offline/pure). Garmin's `_normalize` is defensive guesswork, tuned against the first real pull.
+
+**Now running live** against cloud: Strava (19 activities, athlete 66964703) + Garmin recovery
+(sleep/HRV/Body Battery/RHR) + `athlete_profile` populated (max_hr 188, lthr 178, resting_hr 48,
+weight 64; goal Roubion-Nice 100K on 2026-09-24 — lthr/vo2max pulled from Garmin). Load is now
+HR-driven: `hrtss` for runs/trail, `vertical_duration` for hikes; climbing/surf stay
+`duration_fallback` until a manual RPE is entered (no RPE UI yet). Unknown provider sport_types now
+**auto-create** a conservative `taxonomy_group='other'` sport via `db.get_or_create_sport` (alias
+attached) instead of routing to `unknown`; `Workout` still maps to `unknown`. Garmin login gotcha:
+the FIRST login must be interactive (MFA prompt) and Garmin **429-rate-limits repeated logins** — once
+the token caches in `~/.garminconnect`, runs are unattended. Tests: `ingest/.venv/bin/python -m
+pytest ingest/tests` (20).
+
+**Phase 7 (Coach Brain) MVP built + verified live** in `coach/` (TypeScript, `@anthropic-ai/sdk`,
+run with `pnpm -C coach coach`; reads `COACH_MODEL`). It assembles the ONE unified picture
+(per-channel CTL/ATL/TSB + ACWR, trailing D±, Garmin recovery, recent sessions, goal/days-to-race),
+calls Claude with adaptive thinking + a structured-output briefing schema, then writes
+`coach_briefings` (audit) and replaces today's coach `planned_sessions` row (idempotent per day). The
+system prompt encodes the level-5 rules from `docs/ARCHITECTURE.md`, and generates all free text in
+**French** (the `system_tag` values stay the English DB enum — identifiers — and are translated for
+display in `web/`). `ask.ts` likewise answers in French. First real run nailed it: flagged
+a neuromuscular-channel overload (descent-driven, wearable-blind) → red/rest. Note: pnpm 11 needs
+`coach/pnpm-workspace.yaml` (`allowBuilds: esbuild: true`) so tsx's esbuild binary builds.
+**Phase 8 (nightly) done.** `nightly.sh` (repo root) runs Strava+Garmin pull → rollup → coach
+briefing unattended — it sets its own PATH (node is fnm-managed; python via the venv's absolute path)
+and reads secrets from `.env`, verified under a stripped `env -i`. The morning run is **event-driven**:
+`morning.sh` (the poller, scheduled by launchd every 30 min 06:30–09:30 via `ops/io.massif.nightly.plist`)
+fires `nightly.sh` once `garmin.sleep_ready()` shows last night's sleep is finalized (so the briefing
+uses that morning's recovery), forces at 09:30 otherwise, and self-gates with a per-day marker
+`logs/.done-YYYY-MM-DD`. No usable Garmin push API for personal use → polling is the practical trigger.
+Logs to `logs/` (gitignored). Garmin must have been logged in once interactively first (cached token).
+**Phase 6 (manual RPE) started:** the dashboard logs a post-session RPE on `needs_manual_rpe`
+activities (`web/src/components/rpe.tsx` → server action `web/src/app/actions.ts`), recomputing that
+session's load via session_rpe (`web/src/lib/load.ts` MIRRORS `load.py` — keep in sync; parity
+verified) and setting `rpe_source='user'`. `strava.sync` re-applies user RPEs on every pull
+(`db.load_user_rpes`) so they survive re-syncs; charts/CTL refresh on the next rollup.
+GOTCHA fixed: the last `daily_metrics` row is often a Garmin recovery-only upsert (CTL/ATL/TSB null
+past the last activity) — dashboard (`latestModel`) and coach (`context.ts`) now use the last row
+WITH a computed model, and the dashboard reads the latest briefing by `created_at`.
+Dashboard polished: time-series charts scroll horizontally (newest-first, `web/src/components/scroll-right.tsx`),
+sport icons + FR names + climbing-discipline labels, colour-coded recovery tiles (FC repos / VFC vs the
+athlete's baseline, sensible thresholds elsewhere), and `?` help tooltips (with the "points de charge"
+unit ≈ 1 h at threshold). Climbing discipline (bloc / voie salle / falaise) is inferred in `strava.py`
+(`_climbing_sport_code`) from the activity name + description (`fetch_activity_detail` — the summary
+lacks description), defaulting to indoor route → maps to bouldering / indoor_climbing / rock_climbing.
+**Phase 6 (Profil page) built:** `web/src/app/profil/` (route + `actions.ts`) with `web/src/lib/profile.ts`
+(reads) and components `profile-form` / `goals-editor` / `connections` (+ shared `nav` + `goal-badge`).
+Edits identity/personal/baselines/prefs on the single `athlete_profile` row, and manages **ranked,
+multi-sport `goals`** (new table, migration `…0002`; the old single `goal_*` columns were backfilled into
+it and are no longer read). Deadlines are optional: structured `target_date` (→ J−N) OR fuzzy
+`target_horizon` ("avant mes 30 ans"). Dashboard + coach headers now show the rank-1 goal (`GoalBadge`),
+and the coach context (`coach/src/context.ts` ↔ `web/src/lib/coach-context.ts`, kept in MIRROR) passes the
+ranked `goals[]` + `primary_goal`; the 3 coach prompts (coach.ts/ask.ts/coach-chat.ts) reason in priority
+order, give sport-specific feedback when a session matches a goal's sport, and weight nearer deadlines.
+**Strava connect from the UI:** Profil → "Connecter Strava" runs the OAuth flow (`web/src/app/api/strava/
+{authorize,callback}/route.ts`) and writes `integration_tokens`; `ingest/strava.get_access_token` now reads
+the refresh token from `integration_tokens` first (fallback `.env` STRAVA_REFRESH_TOKEN) and persists the
+rotated token (`db.load/save_integration_token`). Needs `STRAVA_CLIENT_ID/SECRET` in `web/.env.local` (copied
+from root `.env`) and the Strava app callback domain = `localhost`. Garmin re-auth stays CLI/MFA; the panel
+shows connection freshness (last Strava activity / last Garmin recovery). Tests: 26 (added token-precedence).
+Multi-user (colocs) is NOT built — single-row profile; hosting will need accounts + `athlete_id` + RLS (see
+ARCHITECTURE.md). Next: Phase 6 plan-edit UI, Phase 4 (metrics), Phase 9 (hosting + auth/RLS). Don't commit unless asked.
+
+**Design system v1 implemented + build-verified.** Formalised from the logo (blue→orange gradient = the two
+load channels). `web/src/app/globals.css` now carries the `@theme` token layer (Alpine + Summit ramps,
+semantic `aerobic`/`neuro`/`ready`/`caution`/`rest` aliases that shift in dark mode, `page`/`ink` surfaces,
+`strava`/`garmin` partner colours, `--gradient-massif` + `bg-massif` utility) — the old Next boilerplate (which
+forced `Arial` over Geist) is gone. Consolidated 3 blues → **Alpine** and fixed the neuromuscular channel
+which was wrongly drawn in amber (= the `caution` state) → now **Summit** orange. Charts/gauges read colours
+from `web/src/lib/theme.ts`. Canonical reference + do/don't: `docs/DESIGN_SYSTEM.md` (binding); a project agent
+`.claude/agents/frontend.md` is bound to it. Rendered charte: an artifact under claude.ai/code/artifact.
