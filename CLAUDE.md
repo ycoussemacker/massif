@@ -22,7 +22,7 @@ reshapes the plan each morning. Read `docs/ARCHITECTURE.md` first — it holds t
 
 **Phase 5 (Dashboard) MVP built + verified** in `web/` — server-component page (`web/src/app/page.tsx`,
 data in `web/src/lib/data.ts`, dependency-free SVG charts in `web/src/components/charts.tsx`) reading
-via the service-role client (RLS off). Shows: latest coach briefing, CTL/ATL/TSB/ACWR tiles,
+via the service-role client (RLS now ON; service-role bypasses it). Shows: latest coach briefing, CTL/ATL/TSB/ACWR tiles,
 fitness/form/per-channel-load charts, Garmin recovery, recent activities. Runs on `pnpm -C web dev`
 → **http://localhost:3100** (port pinned to dodge the parallel work project on 3000). Both `web/` and
 `coach/` need their `pnpm-workspace.yaml` `allowBuilds` set (sharp/unrs-resolver for web, esbuild for
@@ -46,7 +46,11 @@ big descent adds real neuromuscular cost on top of a calm-HR aerobic load. See `
   and 'Run' for road/trail). `sports.source_aliases` map provider strings → sport; unmatched →
   `unknown` (flagged). Strava 'Workout' is a generic catch-all → maps to `unknown`, not strength.
 - **Garmin**: no official API. `python-garminconnect`; tokens cached in `GARMIN_TOKEN_DIR`
-  (`~/.garminconnect`) — **never commit them** (gitignored).
+  (`~/.garminconnect`) — **never commit them** (gitignored). For the **cloud cron** (no Mac), the
+  token blob is mirrored into Supabase `integration_tokens.data` (`provider='garmin'`) and rehydrated
+  in CI: `garmin.hydrate_token` writes the file before login, `garmin.persist_token` saves any
+  refresh-rotation back. Seed once from the Mac: `sync --export-garmin-token`. If the refresh token
+  ever expires → redo an interactive MFA login locally, then re-export.
 - **Load**: `sports.load_method_ladder` is ordered; `load.compute_load` picks the first method
   whose inputs exist as the AEROBIC engine, then adds the neuromuscular channel additively (descent
   D− + impact; strength/climbing split their sRPE). Coefficients in `load.py` (`DESCENT_LOAD_PER_1000M`,
@@ -58,21 +62,34 @@ big descent adds real neuromuscular cost on top of a calm-HR aerobic load. See `
 - **daily_metrics** is written by two column-scoped upserts (load rollup vs Garmin recovery) keyed
   on `local_date` — they must not include each other's columns. The rollup writes a contiguous
   daily spine (zero-load rest days included) so the EWMAs have no gaps.
-- **RLS** is intentionally OFF (local-first). A later migration adds auth + RLS before any deploy.
+- **RLS** is now **ON** (migration `…0001_enable_rls`): every public table has RLS enabled with NO
+  anon/authenticated policy → deny-all to the publishable/anon key (verified live: anon read `[]`,
+  write `42501`). The app is unaffected — all reads/writes go through the **service-role** server
+  client (`createServiceClient`), which has BYPASSRLS. Per-user policies (`auth.uid()=athlete_id`)
+  come with the multi-user epic (Phase 9); until then deny-all is correct for a single-user, server-only app.
 - Secrets via `.env` (root) / `ingest/.env`; see `.env.example`. `COACH_MODEL` defaults to
   `claude-sonnet-4-6` (bump to `claude-opus-4-8` for heavy analyses).
 
 ## Run
+**Prod:** web on Vercel → `https://massif-omega.vercel.app` (Vercel Root Directory = `web`; login gate
+via `APP_PASSWORD`/`AUTH_SECRET`). The nightly pull+rollup+coach+push runs in the cloud via GitHub
+Actions (`.github/workflows/nightly.yml`) — no Mac needed. Full runbook: `ops/PHONE_ACCESS.md`.
 ```bash
-# web
-pnpm -C web dev                      # http://localhost:3000
+# web (local dev)
+pnpm -C web dev                              # http://localhost:3100  (port pinned off 3000)
 
-# ingest (after creating a venv + pip install -e ingest)
-python -m massif_ingest.sync                 # pull + rollup (pulls are stubbed until Phase 2/3)
+# ingest (venv at ingest/.venv; pip install -e ingest)
+python -m massif_ingest.sync                 # pull Strava+Garmin (30d) + rollup CTL/ATL/TSB
 python -m massif_ingest.sync --skip-pull     # recompute the daily fitness model only
+python -m massif_ingest.sync --recompute-loads                   # re-apply load.py to all activities, then roll up
+python -m massif_ingest.sync --strava-days 3650 --stream-days 90 # deep history backfill (rate-limit-safe)
+python -m massif_ingest.sync --export-garmin-token               # mirror the local Garmin token to Supabase
 
-# supabase (once a project/local stack exists)
-supabase db push                     # apply migrations
+# coach
+pnpm -C coach coach                          # daily briefing (+ web push); reads COACH_MODEL
+
+# supabase
+supabase db push                             # apply migrations to cloud (CLI ONLY, never the MCP)
 ```
 
 ## Status
@@ -150,6 +167,31 @@ from root `.env`) and the Strava app callback domain = `localhost`. Garmin re-au
 shows connection freshness (last Strava activity / last Garmin recovery). Tests: 26 (added token-precedence).
 Multi-user (colocs) is NOT built — single-row profile; hosting will need accounts + `athlete_id` + RLS (see
 ARCHITECTURE.md). Next: Phase 6 plan-edit UI, Phase 4 (metrics), Phase 9 (hosting + auth/RLS). Don't commit unless asked.
+
+**PHONE ACCESS + PRODUCTION shipped (no Mac required).** The app is LIVE on Vercel
+(`massif-omega.vercel.app`, Root Directory `web`) behind a single-password gate (`web/src/proxy.ts` —
+Next 16 `proxy` convention, NOT the deprecated `middleware`; HMAC cookie in `web/src/lib/auth.ts`;
+`APP_PASSWORD`/`AUTH_SECRET`, gate OFF locally when unset). Installable **PWA** (`web/src/app/manifest.ts`
++ generated `icon.tsx`/`apple-icon.tsx`; `appleWebApp` in `layout.tsx`) with **web push** of the morning
+briefing (`web/public/sw.js`, sender `coach/src/push.ts` via VAPID; subscriptions table `push_subscriptions`,
+opt-in `web/src/components/notification-opt-in.tsx` posting to `web/src/app/api/push`). iOS push needs the
+home-screen-installed PWA. The nightly job is now **cloud** (`.github/workflows/nightly.yml`) — `nightly.sh`/
+`morning.sh` + launchd are retired (unload the plist on cutover so the two don't race + double-write
+`daily_metrics`). A **morning gate** (`massif_ingest.morning`, exit 0=proceed/10=skip) replicates the old
+event-driven poller: the workflow fires across the morning and only generates once `garmin.sleep_ready()`
+is finalized, with a `--force` final slot (`0 7 * * *`); coach is idempotent per day via `COACH_SKIP_IF_DONE`.
+Garmin runs headless via the mirrored token (see Garmin gotcha). **RLS is ON** (see RLS gotcha). **History
+backfilled**: 395 Strava activities since 2021 (`sync --strava-days 3650 --stream-days 90`; `--stream-days`
+bounds per-activity stream/detail fetches to recent activities to stay under Strava rate limits) → CTL
+converged, fixing the short-history bias that inflated ACWR (2.54→1.31) and over-flagged overload (the
+coach went 🔴 repos → 🟡 récup active on the same day). Hardening: Strava activity deep-links on the
+dashboard (`StravaLink` in `web/src/components/brand.tsx`), a cron failure-verify step (red job → email),
+and a DB-counted coach-chat rate-limit (`enforceCoachRateLimit` in `actions.ts`, 3/min·50/day) + a hard
+monthly cap to set on the Anthropic console. Secrets live in Vercel (web) + GitHub Actions secrets (cron).
+Runbook: `ops/PHONE_ACCESS.md`. NEXT (decided): an on-demand **Strava "refresh" button** (per-user pull,
+preferred over a Strava webhook — the webhook is blocked on the multi-user model since it needs `owner_id`
+routing; open question is whether the on-demand pull triggers the cloud workflow in a sync-only mode or a
+ported TS pull). Then the full multi-user epic.
 
 **Design system v1 implemented + build-verified.** Formalised from the logo (blue→orange gradient = the two
 load channels). `web/src/app/globals.css` now carries the `@theme` token layer (Alpine + Summit ramps,
