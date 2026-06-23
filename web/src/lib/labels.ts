@@ -28,7 +28,8 @@ export const SPORT_FR: Record<string, string> = {
   nordic_skiing: "Ski de fond", ski_touring: "Ski de rando", downhill_skiing: "Ski piste",
   snowshoeing: "Raquettes", swimming: "Natation", surfing: "Surf", rowing: "Aviron",
   strength: "Renforcement", yoga: "Yoga & mobilité", walking: "Marche", elliptical: "Elliptique",
-  unknown: "Autre",
+  kayaking: "Kayak", kitesurf: "Kitesurf", table_tennis: "Tennis de table",
+  high_intensity_interval_training: "Fractionné", unknown: "Autre",
 };
 
 export const SPORT_ICON: Record<string, string> = {
@@ -36,8 +37,23 @@ export const SPORT_ICON: Record<string, string> = {
   bouldering: "🪨", indoor_climbing: "🧗", via_ferrata: "🪜", cycling: "🚴", gravel_cycling: "🚴",
   mountain_biking: "🚵", nordic_skiing: "🎿", ski_touring: "🎿", downhill_skiing: "⛷️",
   snowshoeing: "🥾", swimming: "🏊", surfing: "🏄", rowing: "🚣", strength: "🏋️", yoga: "🧘",
-  walking: "🚶", elliptical: "🌀", unknown: "🏅",
+  walking: "🚶", elliptical: "🌀", kayaking: "🛶", kitesurf: "🪁", table_tennis: "🏓",
+  high_intensity_interval_training: "🔥", unknown: "🏅",
 };
+
+// Regroupement FR des sports par famille physiologique (taxonomy_group) — pour ranger les chips
+// de filtre en sections lisibles plutôt qu'en mur de boutons. L'ordre fixe l'affichage.
+export const TAXONOMY_FR: Record<string, string> = {
+  paced_endurance: "Endurance",
+  mountain_vertical: "Montagne",
+  technical_strength: "Grimpe & technique",
+  resistance: "Force",
+  aquatic: "Eau",
+  other: "Autres",
+};
+export const TAXONOMY_ORDER = [
+  "paced_endurance", "mountain_vertical", "technical_strength", "resistance", "aquatic", "other",
+] as const;
 
 /** Plain-FR SOURCE of the aerobic channel, derived from load_method_used — i.e. how the cardiac cost
  *  was measured (and thus how much to trust it). "estimé" = no HR/power, a rougher duration-based guess. */
