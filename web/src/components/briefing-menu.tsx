@@ -1,19 +1,16 @@
 "use client";
 
-import { useEffect, useRef, useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
-import { generateBriefingNow } from "@/app/actions";
+import { useEffect, useRef, useState } from "react";
+import { useBriefingRegen } from "./briefing-regen";
 
 /** Discreet ⋮ menu on the coach card. Hides the deliberate, rate-limited "Régénérer le briefing"
  *  action (a paid Claude call): pulls fresh Strava + recomputes the model, then rewrites today's
  *  briefing in the chosen coach voice with the latest profile/goals. Distinct from the cheap, LLM-free
- *  pull-to-refresh (lib syncNow) — that stays the quick data refresh. A top toast gives feedback. */
+ *  pull-to-refresh (lib syncNow) — that stays the quick data refresh. The regeneration state (transition,
+ *  in-flight guard, top toast) lives in BriefingRegenProvider so the brief content can dim while it runs. */
 export function BriefingMenu() {
-  const router = useRouter();
+  const { regenerate, regenerating } = useBriefingRegen();
   const [open, setOpen] = useState(false);
-  const [pending, startTransition] = useTransition();
-  const [toast, setToast] = useState<string | null>(null);
-  const running = useRef(false);
   const rootRef = useRef<HTMLDivElement>(null);
 
   // Close on outside click / Échap.
@@ -33,25 +30,9 @@ export function BriefingMenu() {
     };
   }, [open]);
 
-  function regenerate() {
+  function onRegenerate() {
     setOpen(false);
-    if (running.current) return;
-    running.current = true;
-    setToast(null);
-    startTransition(async () => {
-      try {
-        const { briefing, pulled } = await generateBriefingNow();
-        const dot = { green: "🟢", amber: "🟡", red: "🔴" }[briefing.readiness] ?? "•";
-        const sync = pulled > 0 ? `${pulled} activité(s) · ` : "";
-        setToast(`${sync}${dot} Briefing régénéré`);
-        router.refresh();
-      } catch (e) {
-        setToast((e as Error)?.message ?? "Échec de la régénération");
-      } finally {
-        running.current = false;
-        window.setTimeout(() => setToast(null), 4500);
-      }
-    });
+    regenerate();
   }
 
   return (
@@ -62,10 +43,10 @@ export function BriefingMenu() {
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen((o) => !o)}
-        disabled={pending}
+        disabled={regenerating}
         className="flex h-8 w-8 items-center justify-center rounded-full text-stone-400 transition-colors hover:bg-stone-100 hover:text-stone-600 disabled:opacity-60 dark:hover:bg-stone-800 dark:hover:text-stone-300"
       >
-        {pending ? (
+        {regenerating ? (
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 animate-spin" aria-hidden>
             <path d="M21 12a9 9 0 1 1-6.219-8.56" />
           </svg>
@@ -84,7 +65,7 @@ export function BriefingMenu() {
           <button
             type="button"
             role="menuitem"
-            onClick={regenerate}
+            onClick={onRegenerate}
             className="flex w-full items-start gap-2.5 px-3.5 py-2.5 text-left transition-colors hover:bg-stone-50 dark:hover:bg-stone-800"
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="mt-0.5 h-4 w-4 shrink-0 text-stone-500 dark:text-stone-400" aria-hidden>
@@ -96,15 +77,6 @@ export function BriefingMenu() {
               <span className="block text-xs text-stone-500 dark:text-stone-400">Synchronise Strava puis recalcule la reco du jour</span>
             </span>
           </button>
-        </div>
-      )}
-
-      {/* Feedback haut d'écran (la régénération peut prendre ~15 s). */}
-      {(pending || toast) && (
-        <div className="pointer-events-none fixed inset-x-0 top-[calc(env(safe-area-inset-top)+0.5rem)] z-[60] flex justify-center">
-          <span className="rounded-full border border-stone-200 bg-white/90 px-3 py-1 text-xs font-medium text-stone-600 shadow-sm backdrop-blur dark:border-stone-700 dark:bg-stone-900/90 dark:text-stone-300">
-            {pending ? "Régénération du briefing…" : toast}
-          </span>
         </div>
       )}
     </div>

@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { CoachAvatar } from "./coach-avatar";
 import { BriefingMenu } from "./briefing-menu";
+import { BriefingBody, BriefingRegenProvider } from "./briefing-regen";
 import { BriefingDetail } from "./briefing-detail";
 import { READINESS, type Readiness } from "@/lib/labels";
 import { todayLocal, dateMinusDays, ATHLETE_TZ } from "@/lib/coach-context";
@@ -44,74 +45,99 @@ export async function CoachHero({ briefing }: { briefing: Briefing | null }) {
   const avatarSrc = personaAvatar(settings.persona, settings.persona_gender);
   const coachName = personaName(settings.persona, settings.persona_gender);
 
+  // Le briefing affiché n'est pas celui d'aujourd'hui → on signale qu'il est périmé.
+  const stale = !!briefing && briefing.briefing_date !== today;
+
   return (
-    <section className="mb-6 rounded-2xl border border-stone-200 bg-white p-5 dark:border-stone-800 dark:bg-stone-900">
-      {/* En-tête : avatar à gauche, bloc empilé à sa droite occupant pile la hauteur de l'avatar
-          (nom en haut, date en bas, pastille au milieu via justify-between). */}
-      <div className="flex items-stretch gap-3">
-        <Link href="/coach" aria-label="Discuter avec le coach" className="shrink-0">
-          <CoachAvatar size="hero" readiness={readiness} src={avatarSrc} />
-        </Link>
-        <div className="flex min-w-0 flex-1 flex-col justify-between">
-          {/* Nom du coach */}
-          <div className="truncate text-lg font-bold leading-tight tracking-tight text-stone-900 dark:text-stone-50 sm:text-xl">
-            {coachName}
+    <BriefingRegenProvider>
+      <section className="mb-6 rounded-2xl border border-stone-200 bg-white p-5 dark:border-stone-800 dark:bg-stone-900">
+        {/* En-tête : avatar à gauche, bloc empilé à sa droite occupant pile la hauteur de l'avatar
+            (nom en haut, date en bas, pastille au milieu via justify-between). */}
+        <div className="flex items-stretch gap-3">
+          <Link href="/coach" aria-label="Discuter avec le coach" className="shrink-0">
+            <CoachAvatar size="hero" readiness={readiness} src={avatarSrc} />
+          </Link>
+          <div className="flex min-w-0 flex-1 flex-col justify-between">
+            {/* Nom du coach */}
+            <div className="truncate text-lg font-bold leading-tight tracking-tight text-stone-900 dark:text-stone-50 sm:text-xl">
+              {coachName}
+            </div>
+            {/* Statut d'entraînement recommandé du jour — grisé pendant la régénération */}
+            {readiness && (
+              <BriefingBody>
+                <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-semibold ${READINESS_PILL[readiness]}`}>
+                  <span className={`inline-block h-1.5 w-1.5 rounded-full ${READINESS[readiness].dot}`} />
+                  {READINESS[readiness].label}
+                </span>
+              </BriefingBody>
+            )}
+            {/* Heure de génération + confiance — petit, gris */}
+            {briefing && (
+              <div className="flex min-w-0 items-center gap-1 text-[11px] text-stone-400 sm:text-xs">
+                {stale && (
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth={2}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    className="h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-400"
+                    role="img"
+                    aria-label="Briefing périmé"
+                  >
+                    <title>Ce briefing n&apos;est pas celui d&apos;aujourd&apos;hui — régénère-le pour la date du jour.</title>
+                    <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z" />
+                    <path d="M12 9v4" /><path d="M12 17h.01" />
+                  </svg>
+                )}
+                <span className="truncate" title="Heure de génération du briefing">
+                  Généré {genWhen(briefing, today)}
+                  {briefing.confidence != null && ` · confiance ${Math.round(briefing.confidence * 100)} %`}
+                </span>
+              </div>
+            )}
           </div>
-          {/* Statut d'entraînement recommandé du jour */}
-          {readiness && (
-            <div>
-              <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-semibold ${READINESS_PILL[readiness]}`}>
-                <span className={`inline-block h-1.5 w-1.5 rounded-full ${READINESS[readiness].dot}`} />
-                {READINESS[readiness].label}
-              </span>
-            </div>
-          )}
-          {/* Heure de génération + confiance — petit, gris */}
-          {briefing && (
-            <div className="truncate text-[11px] text-stone-400 sm:text-xs" title="Heure de génération du briefing">
-              Généré {genWhen(briefing, today)}
-              {briefing.confidence != null && ` · confiance ${Math.round(briefing.confidence * 100)} %`}
-            </div>
-          )}
+          {/* Menu discret — régénération du briefing à la demande */}
+          <div className="-mr-1 self-start">
+            <BriefingMenu />
+          </div>
         </div>
-        {/* Menu discret — régénération du briefing à la demande */}
-        <div className="-mr-1 self-start">
-          <BriefingMenu />
-        </div>
-      </div>
 
-      {/* Message du jour — pleine largeur sous l'en-tête */}
-      <div className="mt-4">
+        {/* Message du jour — pleine largeur sous l'en-tête */}
+        <div className="mt-4">
+          {/* Contenu dérivé du briefing : grisé + non interactif pendant la régénération */}
+          <BriefingBody>
+            {briefing ? (
+              <>
+                {briefing.today_session && (
+                  <p className="text-lg font-semibold text-stone-900 dark:text-stone-50">
+                    Aujourd&apos;hui → {briefing.today_session}
+                  </p>
+                )}
+                {/* `why` (1 phrase) rendu comme une bulle entrante (coin pointé vers l'avatar) */}
+                {briefing.why && (
+                  <p className="mt-2 rounded-2xl rounded-tl-sm bg-stone-100 px-3.5 py-2.5 text-sm text-stone-700 dark:bg-stone-800 dark:text-stone-200">
+                    {briefing.why}
+                  </p>
+                )}
+                {briefing.flag && (
+                  <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
+                    ⚠️ {briefing.flag}
+                  </p>
+                )}
+                {/* Détail replié : l'état complet (reasoning) + le squelette de semaine */}
+                <BriefingDetail reasoning={briefing.reasoning} weekSkeleton={briefing.week_skeleton} />
+              </>
+            ) : (
+              <p className="mt-1 rounded-2xl rounded-tl-sm bg-stone-100 px-3.5 py-2.5 text-sm text-stone-600 dark:bg-stone-800 dark:text-stone-300">
+                Je n&apos;ai pas encore analysé ta journée — lance-moi quand tu veux
+                {" ("}<code className="rounded bg-stone-200 px-1 dark:bg-stone-700">pnpm -C coach coach</code>{")."}
+              </p>
+            )}
+          </BriefingBody>
 
-          {briefing ? (
-            <>
-              {briefing.today_session && (
-                <p className="text-lg font-semibold text-stone-900 dark:text-stone-50">
-                  Aujourd&apos;hui → {briefing.today_session}
-                </p>
-              )}
-              {/* `why` (1 phrase) rendu comme une bulle entrante (coin pointé vers l'avatar) */}
-              {briefing.why && (
-                <p className="mt-2 rounded-2xl rounded-tl-sm bg-stone-100 px-3.5 py-2.5 text-sm text-stone-700 dark:bg-stone-800 dark:text-stone-200">
-                  {briefing.why}
-                </p>
-              )}
-              {briefing.flag && (
-                <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
-                  ⚠️ {briefing.flag}
-                </p>
-              )}
-              {/* Détail replié : l'état complet (reasoning) + le squelette de semaine */}
-              <BriefingDetail reasoning={briefing.reasoning} weekSkeleton={briefing.week_skeleton} />
-            </>
-          ) : (
-            <p className="mt-1 rounded-2xl rounded-tl-sm bg-stone-100 px-3.5 py-2.5 text-sm text-stone-600 dark:bg-stone-800 dark:text-stone-300">
-              Je n&apos;ai pas encore analysé ta journée — lance-moi quand tu veux
-              {" ("}<code className="rounded bg-stone-200 px-1 dark:bg-stone-700">pnpm -C coach coach</code>{")."}
-            </p>
-          )}
-
-          {/* CTA — l'entrée unique et évidente vers la discussion */}
+          {/* CTA — l'entrée unique et évidente vers la discussion (toujours utilisable) */}
           <div className="mt-4 flex flex-wrap items-center gap-3">
             <Link href="/coach"
               className="bg-massif inline-flex w-full items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:opacity-90 active:opacity-95 sm:w-auto">
@@ -121,7 +147,8 @@ export async function CoachHero({ briefing }: { briefing: Briefing | null }) {
               Pose-lui une question, commente ta séance
             </span>
           </div>
-      </div>
-    </section>
+        </div>
+      </section>
+    </BriefingRegenProvider>
   );
 }
