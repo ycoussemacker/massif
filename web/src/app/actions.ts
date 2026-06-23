@@ -3,13 +3,38 @@
 import { revalidatePath } from "next/cache";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { createServiceClient } from "@/lib/supabase/server";
-import { sessionRpeLoad } from "@/lib/load";
+import { listActivities } from "@/lib/activities";
+import type { DailyMetric, Activity } from "@/lib/data";
+import { sessionRpeLoad, activeDuration, activitySpanDays } from "@/lib/load";
 import { generateCoachReply, COACH_MODEL, type ChatTurn } from "@/lib/coach-chat";
-import { todayLocal, whenLabelFr } from "@/lib/coach-context";
+import { todayLocal, whenLabelFr, dateMinusDays } from "@/lib/coach-context";
 import { sanitizeCoachSettings, type CoachSettings } from "@/lib/coach-settings";
 import { syncStrava } from "@/lib/strava-sync";
 import { rollupDailyMetrics } from "@/lib/rollup";
 import { generateBriefing, type BriefingResult } from "@/lib/coach-briefing";
+
+/** Load an OLDER window of the Forme history on demand (dashboard infinite-scroll-back). Returns the
+ *  `months` of daily_metrics + activities ending the day BEFORE `beforeDate` (the current oldest day
+ *  loaded). Empty arrays mean we've hit the start of history. Never pre-fetched — only the
+ *  scroll-to-left-edge gesture calls this. */
+export async function loadOlderForme(
+  beforeDate: string, months = 2,
+): Promise<{ metrics: DailyMetric[]; activities: Activity[] }> {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(beforeDate)) return { metrics: [], activities: [] };
+  const m = Math.min(Math.max(Math.round(months), 1), 12);
+  const to = dateMinusDays(beforeDate, 1);
+  const start = new Date(beforeDate + "T00:00:00Z");
+  start.setUTCMonth(start.getUTCMonth() - m);
+  const from = start.toISOString().slice(0, 10);
+  if (from > to) return { metrics: [], activities: [] };
+
+  const sb = await createServiceClient();
+  const [mm, acts] = await Promise.all([
+    sb.from("daily_metrics").select("*").gte("local_date", from).lte("local_date", to).order("local_date", { ascending: true }),
+    listActivities({ from, to, order: "date_asc", limit: 1000 }),
+  ]);
+  return { metrics: (mm.data ?? []) as DailyMetric[], activities: acts.rows };
+}
 
 /** Log a post-session RPE (1–10) for an activity and recompute its load via session_rpe.
  *  Writes the two channels (never the generated total) + rpe_source='user' so the next sync keeps it.
@@ -20,7 +45,7 @@ export async function setRpe(activityId: string, rpe: number): Promise<void> {
   const sb = await createServiceClient();
   const { data: act, error } = await sb
     .from("activities")
-    .select("id,duration_s,sport_id,vertical_loss_m,carried_load_kg")
+    .select("id,started_at,duration_s,moving_s,sport_id,vertical_loss_m,carried_load_kg")
     .eq("id", activityId).single();
   if (error || !act) throw new Error("Activité introuvable");
 
@@ -29,7 +54,12 @@ export async function setRpe(activityId: string, rpe: number): Promise<void> {
   // weight feeds the carried-mass factor of the eccentric-descent term (mirror of load.py).
   const { data: profile } = await sb.from("athlete_profile").select("weight_kg").limit(1).single();
 
-  const load = sessionRpeLoad(act.duration_s ?? 0, rpe, sport?.taxonomy_group ?? null, {
+  // Score on ACTIVE time + flag multi-day, exactly like compute_load — so a multi-day manual-RPE
+  // outing (elapsed counts the nights) gets the moving-based load and is spread by the rollup, not a
+  // spike that waits for the nightly cron to correct it.
+  const activeS = activeDuration({ started_at: act.started_at, duration_s: act.duration_s, moving_s: act.moving_s });
+  const effectiveDays = activitySpanDays(act.started_at, act.duration_s, act.moving_s);
+  const load = sessionRpeLoad(activeS, rpe, sport?.taxonomy_group ?? null, {
     verticalLossM: act.vertical_loss_m,
     carriedLoadKg: act.carried_load_kg,
     weightKg: profile?.weight_kg,
@@ -42,6 +72,7 @@ export async function setRpe(activityId: string, rpe: number): Promise<void> {
     aerobic_load: load.aerobic_load,
     neuromuscular_load: load.neuromuscular_load,
     intensity_factor: load.intensity_factor,
+    effective_days: effectiveDays,
   }).eq("id", activityId);
   if (upErr) throw new Error(upErr.message);
 

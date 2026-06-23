@@ -86,6 +86,8 @@ export default async function Dashboard() {
   // Trend sparklines + a client-computed monotony (the DB doesn't persist monotony/strain).
   const ctlSeries = metrics.map((m) => m.ctl);
   const atlSeries = metrics.map((m) => m.atl);
+  const tsbAerobicSeries = metrics.map((m) => m.tsb_aerobic);
+  const tsbNeuroSeries = metrics.map((m) => m.tsb_neuromuscular);
   const monoSeries = rollingMonotony(metrics.map((m) => m.daily_load ?? 0));
   const latestMono = [...monoSeries].reverse().find((v) => v != null) ?? null;
   const monoColor = latestMono == null ? undefined : latestMono >= 2 ? STATE.rest : latestMono >= 1.5 ? STATE.caution : undefined;
@@ -150,13 +152,45 @@ export default async function Dashboard() {
               <Gauge label="ACWR · ratio de charge" value={acwr} min={0} max={acwrMax} zones={acwrZones(acwrMax)} />
               <Gauge label="Disponibilité (Garmin)" value={rec?.training_readiness ?? null} unit="" min={0} max={100} zones={readyZones} />
             </div>
+
+            {/* Fraîcheur par système : la forme (TSB) se sépare en deux canaux qui récupèrent à des
+                vitesses différentes. Positif = frais, négatif = fatigué. */}
+            <div>
+              <div className="mb-2 flex items-center gap-1.5">
+                <span className="text-xs font-medium text-stone-700 dark:text-stone-300">Fraîcheur par système</span>
+                <span
+                  className="cursor-help text-xs text-stone-400"
+                  title="La forme (TSB) se décompose en deux systèmes qui récupèrent à des vitesses différentes. La fatigue aérobie (cardiaque) s'efface en ~quelques jours et se voit dans la VFC / Body Battery. La fatigue neuromusculaire (tendons, structures, descentes excentriques) traîne ~2 semaines et reste invisible aux montres — son canal aigu est calculé sur un τ plus lent (~14 j), donc ce chiffre peut rester négatif après de grosses descentes même quand la fraîcheur aérobie et la récupération Garmin paraissent bonnes."
+                >
+                  ?
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <div className="text-xs uppercase tracking-wide text-stone-500">Fraîcheur aérobie</div>
+                  <div className="mt-1 text-2xl font-semibold tabular-nums" style={{ color: VIZ.aerobic }}>
+                    {fmt(latest?.tsb_aerobic, 1)}
+                  </div>
+                  <Sparkline values={tsbAerobicSeries} color={VIZ.aerobic} className="mt-1 w-full" />
+                  <div className="text-xs text-stone-400">récupère vite · visible par la VFC</div>
+                </div>
+                <div>
+                  <div className="text-xs uppercase tracking-wide text-stone-500">Fraîcheur neuromusculaire</div>
+                  <div className="mt-1 text-2xl font-semibold tabular-nums" style={{ color: VIZ.neuro }}>
+                    {fmt(latest?.tsb_neuromuscular, 1)}
+                  </div>
+                  <Sparkline values={tsbNeuroSeries} color={VIZ.neuro} className="mt-1 w-full" />
+                  <div className="text-xs text-stone-400">récupère lentement (~2 sem) · invisible à la VFC</div>
+                </div>
+              </div>
+            </div>
           </div>
         </section>
 
         {/* Graphiques (cliquables : un clic sur une barre/point ouvre le détail du jour) */}
         {metrics.length > 1 ? (
           <div className="mb-6">
-            <ChartsSection metrics={metrics} activities={allActivities} avgLoad={avgLoad} />
+            <ChartsSection key={`${metrics.length}-${metrics.at(-1)?.local_date ?? ""}`} metrics={metrics} activities={allActivities} avgLoad={avgLoad} />
           </div>
         ) : (
           <p className="mb-6 text-sm text-stone-500">Pas encore assez de jours de données pour les courbes.</p>

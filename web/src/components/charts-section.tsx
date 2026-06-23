@@ -1,17 +1,25 @@
 "use client";
 
-/** Interactive Forme charts for the dashboard. Dependency-free SVG, minimal style (faint gridlines,
- *  thin rounded lines — matching the indicator sparklines). The two "Forme" charts (fitness CTL/ATL
- *  and TSB) live in ONE fused card with the selected-day detail; they share a single selected date
- *  (synced crosshair) AND a synced horizontal scroll. The per-channel / per-sport time-series moved to
- *  /analyse. Colours come only from theme.ts. The detail panel renders OUTSIDE the scroll container. */
-import { useEffect, useMemo, useRef, useState } from "react";
+/** Interactive Forme charts for the dashboard. Dependency-free SVG, minimal style (no y-axis column,
+ *  no gridlines — matching the indicator sparklines). The two "Forme" charts (fitness CTL/ATL and TSB)
+ *  share ONE fused card with the selected-day detail, a synced cursor AND a synced horizontal scroll.
+ *
+ *  Two behaviours specific to this card:
+ *   • The vertical scale adapts to the VISIBLE window — only the points within the scroll viewport set
+ *     max/min, so an off-screen extreme never squashes what you're looking at. (We also only DRAW the
+ *     visible slice, so it stays fast no matter how much history is loaded.)
+ *   • History loads ON DEMAND only: scroll to the left edge → a loader shows → the previous 2 months
+ *     are fetched and prepended (scroll position preserved). Nothing older is fetched otherwise. */
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import type { DailyMetric, Activity } from "@/lib/data";
+import { loadOlderForme } from "@/app/actions";
 import { HelpButton, type HelpContent } from "./help";
 import { DayDetailPanel } from "./day-detail-panel";
-import { groupByDate } from "@/lib/aggregate";
+import { groupByDateSpanned } from "@/lib/aggregate";
 import { VIZ, STATE, AXIS } from "@/lib/theme";
+
+const LOAD_MONTHS = 2; // months fetched per scroll-to-edge
 
 const FITNESS_HELP: HelpContent = {
   title: "Forme : fitness (CTL) vs fatigue (ATL)",
@@ -25,8 +33,7 @@ const FITNESS_HELP: HelpContent = {
       "CTL(j) = CTL(j-1) + α·(charge_jour − CTL(j-1))",
       "α = 1 − e^(−1/42) ≈ 0,023   (ATL : 1/7 ≈ 0,13)",
     ] },
-    { type: "example", text: "Une grosse rando à 400 pts fait bondir l'ATL (7 j) bien plus que la CTL (42 j) : l'écart se creuse = fatigue accumulée." },
-    { type: "p", text: "Astuce : clique un point pour voir le jour exact et les activités qui composent la charge — le curseur et le défilement s'alignent sur les deux courbes." },
+    { type: "p", text: "L'échelle verticale s'adapte à ce qui est visible ; fais défiler vers la gauche jusqu'à la butée pour charger l'historique antérieur. Clique un point pour le détail du jour." },
   ],
 };
 
@@ -41,24 +48,19 @@ const TSB_HELP: HelpContent = {
       { k: "−30 à −10", v: "fatigue productive — normal en bloc d'entraînement." },
       { k: "< −30", v: "surcharge / risque de blessure (bande rouge)." },
     ] },
-    { type: "example", text: "CTL 35 et ATL 98 → TSB = −63 : grosse fatigue aiguë, repos conseillé. Clique une barre pour voir les séances du jour." },
+    { type: "example", text: "CTL 35 et ATL 98 → TSB = −63 : grosse fatigue aiguë, repos conseillé." },
   ],
 };
 
 const H = 150;
 const PX_PER_DAY = 20;
 const plotWidth = (n: number) => Math.max(620, n * PX_PER_DAY);
-const md = (iso: string) => iso.slice(5); // YYYY-MM-DD -> MM-DD
-
-function linePoints(values: (number | null)[], min: number, max: number, w: number) {
-  const span = max - min || 1;
-  const n = values.length;
-  return values
-    .map((v, i) => (v == null ? null : [(i / Math.max(1, n - 1)) * w, H - ((v - min) / span) * H]))
-    .filter((p): p is number[] => p !== null)
-    .map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`)
-    .join(" ");
-}
+const MONTHS_FR = ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc."];
+// Abscissa label for a month boundary — month name, plus the 2-digit year each January.
+const monthLabel = (iso: string) => {
+  const m = Number(iso.slice(5, 7));
+  return MONTHS_FR[m - 1] + (m === 1 ? ` ${iso.slice(2, 4)}` : "");
+};
 
 const Dot = ({ color, text }: { color: string; text: string }) => (
   <span className="flex items-center gap-1.5 text-xs text-stone-500 dark:text-stone-400">
@@ -66,40 +68,79 @@ const Dot = ({ color, text }: { color: string; text: string }) => (
   </span>
 );
 
-/** Shared scroll group: charts that share one keep identical horizontal scroll positions. */
-type ScrollGroup = { els: Set<HTMLDivElement>; lock: { v: boolean } };
-const newScrollGroup = (): ScrollGroup => ({ els: new Set(), lock: { v: false } });
+type Vis = { lo: number; hi: number };
+type RegisterScroll = (el: HTMLDivElement, onScroll: () => void) => () => void;
 
-/** Shared interactive shell. Controlled selection (by date) → synced crosshair; optional scrollGroup
- *  keeps horizontal scroll in lockstep; the selected column scrolls into view as the cursor moves. */
+/** Horizontal-scroll sync for sibling charts. Mutable state (the element set + a re-entrancy lock)
+ *  lives in refs touched only inside callbacks — never during render — so it's compiler-clean. */
+function useScrollSync(): { register: RegisterScroll; adjustAll: (dx: number) => void } {
+  // Lazily create the Set INSIDE the callbacks (not in the useRef initializer) so the compiler doesn't
+  // treat it — and the DOM nodes reachable from it — as render-frozen / immutable.
+  const elsRef = useRef<Set<HTMLDivElement> | null>(null);
+  const lock = useRef(false);
+  const register = useCallback<RegisterScroll>((el, onScroll) => {
+    const set = (elsRef.current ??= new Set<HTMLDivElement>());
+    set.add(el);
+    const handler = () => {
+      if (!lock.current) {
+        lock.current = true;
+        for (const o of set) if (o !== el) o.scrollLeft = el.scrollLeft;
+        requestAnimationFrame(() => { lock.current = false; });
+      }
+      onScroll();
+    };
+    el.addEventListener("scroll", handler, { passive: true });
+    return () => { el.removeEventListener("scroll", handler); set.delete(el); };
+  }, []);
+  const adjustAll = useCallback((dx: number) => {
+    const set = elsRef.current;
+    if (!set) return;
+    lock.current = true;
+    for (const el of set) el.scrollLeft += dx;
+    requestAnimationFrame(() => { lock.current = false; });
+  }, []);
+  return { register, adjustAll };
+}
+
+/** Shared interactive shell. Controlled selection (synced crosshair) + synced scroll (via `register`)
+ *  + visible-window scale (children/renderSelection receive the visible index range) + a
+ *  scroll-to-left-edge callback for on-demand history. */
 function InteractiveChart({
-  label, legend, help, max, min = 0, unit, metrics, selected, onSelect, children, renderSelection, bare = false, scrollGroup,
+  label, legend, help, unit, metrics, selected, onSelect, children, renderSelection, axis,
+  bare = false, register, onReachStart, loadingOlder = false,
 }: {
   label: string;
   legend?: React.ReactNode;
   help?: HelpContent;
-  max: number;
-  min?: number;
   unit: string;
   metrics: DailyMetric[];
   selected: string | null;
   onSelect: (date: string | null) => void;
-  children: React.ReactNode;
-  renderSelection?: (i: number) => React.ReactNode;
+  children: (vis: Vis) => React.ReactNode;
+  renderSelection?: (i: number, vis: Vis) => React.ReactNode;
+  axis: (vis: Vis) => { min: number; max: number };
   bare?: boolean;
-  scrollGroup?: ScrollGroup;
+  register: RegisterScroll;
+  onReachStart?: () => void;
+  loadingOlder?: boolean;
 }) {
   const n = metrics.length;
   const w = plotWidth(n);
-  const mid = (max + min) / 2;
+  const slotW = w / n;
   const dates = metrics.map((m) => m.local_date);
   const sel = selected == null ? -1 : dates.indexOf(selected);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const leftOf = (i: number) => (i / n) * w;
-  const slotW = w / n;
   const centerOf = (i: number) => ((i + 0.5) / n) * w;
   const pick = (i: number) => onSelect(dates[i] === selected ? null : dates[i]);
+
+  const [vis, setVis] = useState<Vis>({ lo: 0, hi: Math.max(0, n - 1) });
+
+  // Latest geometry + callback, read by the (mount-only) scroll listener so it stays correct after the
+  // series grows on a prepend without re-binding (which would re-trigger the scroll-to-newest).
+  const paramsRef = useRef({ n, w, slotW, onReachStart });
+  useEffect(() => { paramsRef.current = { n, w, slotW, onReachStart }; });
 
   const onKey = (e: React.KeyboardEvent) => {
     if (e.key === "Escape") { onSelect(null); return; }
@@ -110,20 +151,24 @@ function InteractiveChart({
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    el.scrollLeft = el.scrollWidth;
-    const g = scrollGroup;
-    if (!g) return;
-    g.els.add(el);
-    const onScroll = () => {
-      if (g.lock.v) return;
-      g.lock.v = true;
-      for (const other of g.els) if (other !== el) other.scrollLeft = el.scrollLeft;
-      requestAnimationFrame(() => { g.lock.v = false; });
+    const recompute = () => {
+      const p = paramsRef.current;
+      const lo = Math.max(0, Math.floor(el.scrollLeft / p.slotW) - 1);
+      const hi = Math.min(p.n - 1, Math.ceil((el.scrollLeft + el.clientWidth) / p.slotW) + 1);
+      setVis((prev) => (prev.lo === lo && prev.hi === hi ? prev : { lo, hi }));
     };
-    el.addEventListener("scroll", onScroll, { passive: true });
-    return () => { el.removeEventListener("scroll", onScroll); g.els.delete(el); };
-  }, [scrollGroup]);
+    el.scrollLeft = el.scrollWidth; // newest first
+    recompute();
+    let raf = 0;
+    const cleanup = register(el, () => {
+      if (el.scrollWidth > el.clientWidth + 8 && el.scrollLeft <= 8) paramsRef.current.onReachStart?.();
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(recompute);
+    });
+    return () => { cleanup(); cancelAnimationFrame(raf); };
+  }, [register]);
 
+  // Keep the selected column in view when the cursor moves (sync propagates to grouped siblings).
   useEffect(() => {
     if (sel < 0) return;
     const el = scrollRef.current;
@@ -135,6 +180,9 @@ function InteractiveChart({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected]);
 
+  const ax = axis(vis); // ordinate scale for the CURRENT visible window
+  const monthTicks = dates.flatMap((d, i) => (d.slice(8, 10) === "01" ? [{ i, x: leftOf(i), label: monthLabel(d) }] : []));
+
   return (
     <div className={bare ? "min-w-0" : "min-w-0 rounded-xl border border-stone-200 bg-white p-4 dark:border-stone-800 dark:bg-stone-900"}>
       <div className="mb-2 flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
@@ -145,37 +193,46 @@ function InteractiveChart({
         {legend}
       </div>
       <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-2">
+        {/* Ordinate values — reflect the VISIBLE window's scale (update as you scroll/rescale). */}
         <div className="flex w-9 flex-col justify-between py-0.5 text-right text-[10px] tabular-nums text-stone-400" style={{ height: H }}>
-          <span>{Math.round(max)}</span><span>{Math.round(mid)}</span><span>{Math.round(min)}</span>
+          <span>{Math.round(ax.max)}</span><span>{Math.round((ax.max + ax.min) / 2)}</span><span>{Math.round(ax.min)}</span>
         </div>
-        <div ref={scrollRef} className="min-w-0 overflow-x-auto">
-          <div style={{ width: w }}>
-            <svg width={w} height={H} viewBox={`0 0 ${w} ${H}`} className="block">
-              {/* minimal grid: very faint top/mid/baseline */}
-              {[0, H / 2, H].map((y) => (
-                <line key={y} x1={0} y1={y} x2={w} y2={y} stroke="currentColor" className="text-stone-100 dark:text-stone-800" strokeWidth={1} />
-              ))}
-              {sel >= 0 && (
-                <rect x={leftOf(sel)} y={0} width={slotW} height={H} fill="currentColor" className="text-stone-200 dark:text-stone-700" opacity={0.55} pointerEvents="none" />
-              )}
-              {children}
-              {sel >= 0 && (
-                <g pointerEvents="none">
-                  <line x1={centerOf(sel)} y1={0} x2={centerOf(sel)} y2={H} stroke={AXIS} strokeWidth={1} />
-                  {renderSelection?.(sel)}
+        <div className="relative">
+          {loadingOlder && (
+            <div className="pointer-events-none absolute inset-y-0 left-0 z-10 flex items-center pl-1">
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-white/90 px-2 py-1 text-[10px] font-medium text-stone-500 shadow-sm ring-1 ring-stone-200 dark:bg-stone-900/90 dark:text-stone-400 dark:ring-stone-700">
+                <span className="h-3 w-3 animate-spin rounded-full border-2 border-stone-300 border-t-stone-500 dark:border-stone-600 dark:border-t-stone-300" />
+                historique…
+              </span>
+            </div>
+          )}
+          <div ref={scrollRef} className="min-w-0 overflow-x-auto">
+            <div style={{ width: w }}>
+              <svg width={w} height={H} viewBox={`0 0 ${w} ${H}`} className="block">
+                {sel >= 0 && (
+                  <rect x={leftOf(sel)} y={0} width={slotW} height={H} fill="currentColor" className="text-stone-200 dark:text-stone-700" opacity={0.5} pointerEvents="none" />
+                )}
+                {children(vis)}
+                {sel >= 0 && (
+                  <g pointerEvents="none">
+                    <line x1={centerOf(sel)} y1={0} x2={centerOf(sel)} y2={H} stroke={AXIS} strokeWidth={1} />
+                    {renderSelection?.(sel, vis)}
+                  </g>
+                )}
+                <g role="group" tabIndex={0} onKeyDown={onKey}
+                  aria-label="Graphique interactif — flèches gauche/droite pour parcourir les jours, Échap pour fermer"
+                  className="cursor-pointer outline-none">
+                  {metrics.map((m, i) => (
+                    <rect key={m.local_date} x={leftOf(i)} y={0} width={slotW} height={H} fill="transparent" onClick={() => pick(i)} aria-hidden />
+                  ))}
                 </g>
-              )}
-              <g role="group" tabIndex={0} onKeyDown={onKey}
-                aria-label="Graphique interactif — flèches gauche/droite pour parcourir les jours, Échap pour fermer"
-                className="cursor-pointer outline-none">
-                {metrics.map((m, i) => (
-                  <rect key={m.local_date} x={leftOf(i)} y={0} width={slotW} height={H} fill="transparent" onClick={() => pick(i)} aria-hidden />
+              </svg>
+              {/* Abscissa — key dates (month boundaries), scrolling with the plot. */}
+              <div className="relative h-3.5" style={{ width: w }}>
+                {monthTicks.map((t) => (
+                  <span key={t.i} className="absolute top-0 whitespace-nowrap text-[10px] tabular-nums text-stone-400" style={{ left: t.x }}>{t.label}</span>
                 ))}
-              </g>
-            </svg>
-            <div className="flex justify-between text-[10px] text-stone-400" style={{ width: w }}>
-              <span>{dates[0] ? md(dates[0]) : ""}</span>
-              <span>{dates.at(-1) ? md(dates.at(-1)!) : ""}</span>
+              </div>
             </div>
           </div>
         </div>
@@ -190,76 +247,153 @@ type ChartProps = {
   selected: string | null;
   onSelect: (date: string | null) => void;
   bare?: boolean;
-  scrollGroup?: ScrollGroup;
+  register: RegisterScroll;
+  onReachStart?: () => void;
+  loadingOlder?: boolean;
 };
 
-function FitnessChart({ metrics, selected, onSelect, bare, scrollGroup }: ChartProps) {
+function FitnessChart(props: ChartProps) {
+  const { metrics } = props;
   const w = plotWidth(metrics.length);
+  const n = metrics.length;
   const ctl = metrics.map((m) => m.ctl);
   const atl = metrics.map((m) => m.atl);
-  const max = Math.max(1, ...ctl.map((v) => v ?? 0), ...atl.map((v) => v ?? 0)) * 1.1;
-  const n = metrics.length;
-  const yOf = (v: number) => H - (v / max) * H;
   const cx = (i: number) => ((i + 0.5) / n) * w;
+  const scaleFor = (vis: Vis) => {
+    const lo = Math.max(0, vis.lo - 1), hi = Math.min(n - 1, vis.hi + 1);
+    let mx = 1;
+    for (let i = lo; i <= hi; i++) { const c = ctl[i], a = atl[i]; if (c != null) mx = Math.max(mx, c); if (a != null) mx = Math.max(mx, a); }
+    return { lo, hi, max: mx * 1.1 };
+  };
+  const lineOf = (vals: (number | null)[], lo: number, hi: number, yOf: (v: number) => number) => {
+    const pts: string[] = [];
+    for (let i = lo; i <= hi; i++) { const v = vals[i]; if (v != null) pts.push(`${cx(i).toFixed(1)},${yOf(v).toFixed(1)}`); }
+    return pts.join(" ");
+  };
   return (
     <InteractiveChart
-      label="Forme — fitness vs fatigue" unit="points de charge" max={max} bare={bare} scrollGroup={scrollGroup}
-      metrics={metrics} selected={selected} onSelect={onSelect} help={FITNESS_HELP}
+      label="Forme — fitness vs fatigue" unit="points de charge" help={FITNESS_HELP}
+      bare={props.bare} register={props.register} onReachStart={props.onReachStart} loadingOlder={props.loadingOlder}
+      metrics={metrics} selected={props.selected} onSelect={props.onSelect}
+      axis={(vis) => ({ min: 0, max: scaleFor(vis).max })}
       legend={<div className="flex gap-3"><Dot color={VIZ.aerobic} text="CTL (forme)" /><Dot color={VIZ.neuro} text="ATL (fatigue)" /></div>}
-      renderSelection={(i) => (
-        <>
-          {ctl[i] != null && <circle cx={cx(i)} cy={yOf(ctl[i]!)} r={3} fill={VIZ.aerobic} />}
-          {atl[i] != null && <circle cx={cx(i)} cy={yOf(atl[i]!)} r={3} fill={VIZ.neuro} />}
-        </>
-      )}
+      renderSelection={(i, vis) => {
+        const { max } = scaleFor(vis);
+        const yOf = (v: number) => H - (v / max) * H;
+        return (
+          <>
+            {ctl[i] != null && <circle cx={cx(i)} cy={yOf(ctl[i]!)} r={3} fill={VIZ.aerobic} />}
+            {atl[i] != null && <circle cx={cx(i)} cy={yOf(atl[i]!)} r={3} fill={VIZ.neuro} />}
+          </>
+        );
+      }}
     >
-      <polyline points={linePoints(ctl, 0, max, w)} fill="none" stroke={VIZ.aerobic} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
-      <polyline points={linePoints(atl, 0, max, w)} fill="none" stroke={VIZ.neuro} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
+      {(vis) => {
+        const { lo, hi, max } = scaleFor(vis);
+        const yOf = (v: number) => H - (v / max) * H;
+        return (
+          <>
+            <polyline points={lineOf(ctl, lo, hi, yOf)} fill="none" stroke={VIZ.aerobic} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
+            <polyline points={lineOf(atl, lo, hi, yOf)} fill="none" stroke={VIZ.neuro} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
+          </>
+        );
+      }}
     </InteractiveChart>
   );
 }
 
-function FormChart({ metrics, selected, onSelect, bare, scrollGroup }: ChartProps) {
+function FormChart(props: ChartProps) {
+  const { metrics } = props;
   const w = plotWidth(metrics.length);
+  const n = metrics.length;
   const tsb = metrics.map((m) => m.tsb ?? 0);
-  const max = Math.max(15, ...tsb);
-  const min = Math.min(-30, ...tsb);
-  const span = max - min || 1;
-  const yOf = (v: number) => H - ((v - min) / span) * H;
-  const n = tsb.length;
   const bw = (w / Math.max(1, n)) * 0.7;
+  const scaleFor = (vis: Vis) => {
+    const lo = Math.max(0, vis.lo - 1), hi = Math.min(n - 1, vis.hi + 1);
+    let mx = 15, mn = -30;
+    for (let i = lo; i <= hi; i++) { mx = Math.max(mx, tsb[i]); mn = Math.min(mn, tsb[i]); }
+    return { lo, hi, max: mx, min: mn };
+  };
   return (
     <InteractiveChart
-      label="Forme (TSB) — frais vs fatigué" unit="points (vert = frais · rouge = fatigue)"
-      help={TSB_HELP} max={max} min={min} metrics={metrics} selected={selected} onSelect={onSelect} bare={bare} scrollGroup={scrollGroup}
+      label="Forme (TSB) — frais vs fatigué" unit="points (vert = frais · rouge = fatigue)" help={TSB_HELP}
+      bare={props.bare} register={props.register} onReachStart={props.onReachStart} loadingOlder={props.loadingOlder}
+      metrics={metrics} selected={props.selected} onSelect={props.onSelect}
+      axis={(vis) => { const s = scaleFor(vis); return { min: s.min, max: s.max }; }}
     >
-      <rect x={0} y={yOf(-30)} width={w} height={H - yOf(-30)} fill={STATE.rest} opacity={0.07} />
-      <rect x={0} y={yOf(10)} width={w} height={yOf(-10) - yOf(10)} fill={STATE.ready} opacity={0.08} />
-      <line x1={0} y1={yOf(0)} x2={w} y2={yOf(0)} stroke={AXIS} strokeWidth={1} strokeDasharray="3 3" />
-      {tsb.map((v, i) => {
-        const x = ((i + 0.5) / n) * w - bw / 2;
-        const y = yOf(Math.max(v, 0));
-        const h = Math.abs(yOf(v) - yOf(0));
-        return <rect key={i} x={x} y={y} width={bw} height={Math.max(0.5, h)} rx={1}
-          fill={v >= 0 ? STATE.ready : v > -30 ? STATE.caution : STATE.rest} opacity={0.9} />;
-      })}
+      {(vis) => {
+        const { lo, hi, max, min } = scaleFor(vis);
+        const span = max - min || 1;
+        const yOf = (v: number) => H - ((v - min) / span) * H;
+        return (
+          <>
+            <rect x={0} y={yOf(-30)} width={w} height={H - yOf(-30)} fill={STATE.rest} opacity={0.07} />
+            <rect x={0} y={yOf(10)} width={w} height={yOf(-10) - yOf(10)} fill={STATE.ready} opacity={0.08} />
+            <line x1={0} y1={yOf(0)} x2={w} y2={yOf(0)} stroke={AXIS} strokeWidth={1} strokeDasharray="3 3" />
+            {Array.from({ length: Math.max(0, hi - lo + 1) }, (_, k) => lo + k).map((i) => {
+              const v = tsb[i];
+              const x = ((i + 0.5) / n) * w - bw / 2;
+              const y = yOf(Math.max(v, 0));
+              const h = Math.abs(yOf(v) - yOf(0));
+              return <rect key={i} x={x} y={y} width={bw} height={Math.max(0.5, h)} rx={1}
+                fill={v >= 0 ? STATE.ready : v > -30 ? STATE.caution : STATE.rest} opacity={0.9} />;
+            })}
+          </>
+        );
+      }}
     </InteractiveChart>
   );
 }
 
-/** Dashboard charts — the fused "Forme" card only (CTL/ATL + TSB + day detail), with synced cursor +
- *  synced horizontal scroll across the two charts. Per-channel / per-sport time-series live in /analyse. */
+/** Dashboard "Forme" card — fused CTL/ATL + TSB + day detail, synced cursor + synced scroll, with
+ *  on-demand history (scroll to the left edge loads the previous months, position preserved). */
 export function ChartsSection({
-  metrics, activities, avgLoad,
+  metrics: initialMetrics, activities: initialActivities, avgLoad,
 }: {
   metrics: DailyMetric[];
   activities: Activity[];
   avgLoad?: number | null;
 }) {
-  const activitiesByDate = useMemo(() => groupByDate(activities), [activities]);
+  const [metrics, setMetrics] = useState(initialMetrics);
+  const [activities, setActivities] = useState(initialActivities);
   const [selected, setSelected] = useState<string | null>(null);
-  const [formeScroll] = useState(newScrollGroup);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [reachedFloor, setReachedFloor] = useState(false);
+  const { register, adjustAll } = useScrollSync();
+  const busyRef = useRef(false);     // synchronous guard (two synced charts fire in the same tick)
+  const pendingPrepend = useRef(0);   // days prepended, awaiting scroll-position preservation
+
+  const activitiesByDate = useMemo(() => groupByDateSpanned(activities), [activities]);
   const selMetric = selected ? metrics.find((m) => m.local_date === selected) ?? null : null;
+  // A server refresh (new data) remounts this island via its `key` in page.tsx → state resets to the
+  // fresh 2-month window. No prop→state sync effect needed.
+
+  const onReachStart = useCallback(() => {
+    if (busyRef.current || reachedFloor) return;
+    const oldest = metrics[0]?.local_date;
+    if (!oldest) return;
+    busyRef.current = true;
+    setLoadingOlder(true);
+    loadOlderForme(oldest, LOAD_MONTHS)
+      .then((res) => {
+        if (!res.metrics.length) setReachedFloor(true);
+        else {
+          pendingPrepend.current = res.metrics.length;
+          setMetrics((prev) => [...res.metrics, ...prev]);
+          setActivities((prev) => [...res.activities, ...prev]);
+        }
+      })
+      .finally(() => { busyRef.current = false; setLoadingOlder(false); });
+  }, [reachedFloor, metrics]);
+
+  // Preserve the viewport when older data is prepended (the SVG grows on the left). Every grouped
+  // scroll element gets the same delta, so the resulting scroll/sync events are a no-op.
+  useLayoutEffect(() => {
+    if (pendingPrepend.current <= 0) return;
+    const dx = pendingPrepend.current * PX_PER_DAY;
+    pendingPrepend.current = 0;
+    adjustAll(dx);
+  }, [metrics, adjustAll]);
 
   return (
     <section className="rounded-2xl border border-stone-200 bg-white p-4 dark:border-stone-800 dark:bg-stone-900 sm:p-5">
@@ -270,8 +404,8 @@ export function ChartsSection({
         </Link>
       </div>
       <div className="grid gap-4 lg:grid-cols-2">
-        <FitnessChart metrics={metrics} selected={selected} onSelect={setSelected} bare scrollGroup={formeScroll} />
-        <FormChart metrics={metrics} selected={selected} onSelect={setSelected} bare scrollGroup={formeScroll} />
+        <FitnessChart metrics={metrics} selected={selected} onSelect={setSelected} bare register={register} onReachStart={onReachStart} loadingOlder={loadingOlder} />
+        <FormChart metrics={metrics} selected={selected} onSelect={setSelected} bare register={register} onReachStart={onReachStart} loadingOlder={loadingOlder} />
       </div>
       {selected && (
         <DayDetailPanel
