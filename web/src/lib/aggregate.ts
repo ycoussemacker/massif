@@ -46,27 +46,21 @@ export function groupByDate(rows: Activity[]): Map<string, Activity[]> {
   return m;
 }
 
-/** Like groupByDate, but a multi-day expedition (effective_days>1) is SPREAD across the calendar days
- *  it spans — mirroring the daily rollup (rollup.ts / sync.py) — so the chart day-panel shows it on
- *  every day it loaded, with that day's 1/N share, instead of dumping the whole trip on its start day
- *  (and leaving the spanned days reading "rest"). Each projected copy carries its per-day share of the
- *  load/duration/vertical and a spanInfo {index,total,fullLoad} so the card can label it. */
-export function groupByDateSpanned(rows: Activity[]): Map<string, Activity[]> {
-  const m = new Map<string, Activity[]>();
-  const add = (date: string, a: Activity) => {
-    const b = m.get(date);
-    if (b) b.push(a);
-    else m.set(date, [a]);
-  };
-  // Dedupe by id: a multi-day activity is fetched both unbounded (so it's always available) and within
-  // a scrolled-in window chunk, so the same id can appear twice — project it once, never double-count.
+/** Expand multi-day expeditions into per-day slices, mirroring the daily rollup (rollup.ts / sync.py).
+ *  A single-day activity passes through unchanged; an `effective_days > 1` expedition becomes N copies,
+ *  one per spanned calendar day, each carrying that day's 1/N share of load / (moving) duration / vertical
+ *  and a `spanInfo {index,total,fullLoad}` label. Deduped by id (the same activity can be fetched from two
+ *  windows). Use wherever an activity list must agree with the daily rollup — the dashboard day-panel and
+ *  the /analyse comparison — so a trip's load lands on the days it actually spanned, not all on day one. */
+export function spreadActivities(rows: Activity[]): Activity[] {
+  const out: Activity[] = [];
   const seen = new Set<string>();
   for (const r of rows) {
     if (seen.has(r.id)) continue;
     seen.add(r.id);
     const eff = Math.max(r.effective_days ?? 1, 1);
     if (eff <= 1) {
-      add(r.local_date, r);
+      out.push(r);
       continue;
     }
     const share = (v: number | null) => (v == null ? v : v / eff);
@@ -74,9 +68,10 @@ export function groupByDateSpanned(rows: Activity[]): Map<string, Activity[]> {
     for (let i = 0; i < eff; i++) {
       const d = new Date(start.getTime());
       d.setUTCDate(d.getUTCDate() + i);
-      add(d.toISOString().slice(0, 10), {
+      const date = d.toISOString().slice(0, 10);
+      out.push({
         ...r,
-        local_date: d.toISOString().slice(0, 10),
+        local_date: date,
         training_load: share(r.training_load),
         aerobic_load: share(r.aerobic_load),
         neuromuscular_load: share(r.neuromuscular_load),
@@ -87,6 +82,18 @@ export function groupByDateSpanned(rows: Activity[]): Map<string, Activity[]> {
         spanInfo: { index: i + 1, total: eff, fullLoad: r.training_load },
       });
     }
+  }
+  return out;
+}
+
+/** groupByDate, but multi-day expeditions are spread across their spanned days (see spreadActivities)
+ *  so the chart day-panel shows an expedition on every day it loaded, matching the rollup. */
+export function groupByDateSpanned(rows: Activity[]): Map<string, Activity[]> {
+  const m = new Map<string, Activity[]>();
+  for (const a of spreadActivities(rows)) {
+    const b = m.get(a.local_date);
+    if (b) b.push(a);
+    else m.set(a.local_date, [a]);
   }
   return m;
 }

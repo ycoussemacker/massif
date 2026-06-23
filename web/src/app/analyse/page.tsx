@@ -4,7 +4,7 @@ import { Sparkline } from "@/components/sparkline";
 import { Heatmap } from "@/components/heatmap";
 import { StackedTimeChart, StackBar, type StackSeg } from "@/components/stacked-time-chart";
 import { listActivities, getSports } from "@/lib/activities";
-import { aggregate, sportComposition } from "@/lib/aggregate";
+import { aggregate, sportComposition, spreadActivities } from "@/lib/aggregate";
 import { createServiceClient } from "@/lib/supabase/server";
 import { todayLocal, dateMinusDays, daysBetween } from "@/lib/coach-context";
 import { fmt, dur, km, meters } from "@/lib/format";
@@ -167,9 +167,14 @@ export default async function AnalysePage({ searchParams }: { searchParams: Prom
   const lo = [a.from, b.from].sort()[0];
   const hi = [a.to, b.to].sort().at(-1)!;
   const heatStart = yearsAgo(today, 1);
+  // Widen each period's activity fetch backwards by MULTIDAY_LOOKBACK_DAYS so a multi-day expedition
+  // that STARTS just before the period but spans INTO it is fetched; spreadActivities then attributes
+  // only the spanned days that fall inside the period (mirrors the daily rollup). 31 d covers any
+  // realistic expedition — a longer one starting >31 d before the period would lose its earliest days.
+  const MULTIDAY_LOOKBACK_DAYS = 31;
   const [aRes, bRes, sports, mm, hm] = await Promise.all([
-    listActivities({ from: a.from, to: a.to, order: "date_asc", limit: 1000 }),
-    listActivities({ from: b.from, to: b.to, order: "date_asc", limit: 1000 }),
+    listActivities({ from: dateMinusDays(a.from, MULTIDAY_LOOKBACK_DAYS), to: a.to, order: "date_asc", limit: 1000 }),
+    listActivities({ from: dateMinusDays(b.from, MULTIDAY_LOOKBACK_DAYS), to: b.to, order: "date_asc", limit: 1000 }),
     getSports(),
     sb.from("daily_metrics").select("local_date,ctl,atl,tsb,acwr,sleep_score,hrv_overnight_ms,resting_hr,training_readiness")
       .gte("local_date", lo).lte("local_date", hi).order("local_date", { ascending: true }),
@@ -181,14 +186,19 @@ export default async function AnalysePage({ searchParams }: { searchParams: Prom
   const aM = inRange(a), bM = inRange(b);
   const heatDays = ((hm.data ?? []) as { local_date: string; daily_load: number }[]).map((r) => ({ date: r.local_date, load: r.daily_load ?? 0 }));
 
-  const aAgg = aggregate(aRes.rows), bAgg = aggregate(bRes.rows);
+  // Per-day slices, multi-day expeditions spread across their spanned days (mirror of the rollup), then
+  // clipped to each period — so a trip's load is attributed to the right period(s), like the CTL/ATL KPIs.
+  const aRows = spreadActivities(aRes.rows).filter((s) => s.local_date >= a.from && s.local_date <= a.to);
+  const bRows = spreadActivities(bRes.rows).filter((s) => s.local_date >= b.from && s.local_date <= b.to);
+
+  const aAgg = aggregate(aRows), bAgg = aggregate(bRows);
 
   // Period-B daily series (sparklines).
   const bDays = Array.from({ length: daysBetween(b.from, b.to) + 1 }, (_, i) => addDays(b.from, i));
   const bMetBy = new Map(bM.map((m) => [m.local_date, m]));
-  const bActBy = new Map<string, typeof bRes.rows>();
-  for (const r of bRes.rows) (bActBy.get(r.local_date) ?? bActBy.set(r.local_date, []).get(r.local_date)!).push(r);
-  const sumDay = (d: string, f: (x: typeof bRes.rows[number]) => number) => (bActBy.get(d) ?? []).reduce((s, x) => s + f(x), 0);
+  const bActBy = new Map<string, typeof bRows>();
+  for (const r of bRows) (bActBy.get(r.local_date) ?? bActBy.set(r.local_date, []).get(r.local_date)!).push(r);
+  const sumDay = (d: string, f: (x: typeof bRows[number]) => number) => (bActBy.get(d) ?? []).reduce((s, x) => s + f(x), 0);
   const seriesByLabel: Record<string, (number | null)[]> = {
     "Charge totale": bDays.map((d) => sumDay(d, (x) => x.training_load ?? 0)),
     "Aérobie": bDays.map((d) => sumDay(d, (x) => x.aerobic_load ?? 0)),
@@ -227,7 +237,7 @@ export default async function AnalysePage({ searchParams }: { searchParams: Prom
     { label: "FC repos moyenne", aVal: avg(aM.map((m) => m.resting_hr)), bVal: avg(bM.map((m) => m.resting_hr)), render: (n) => (n == null ? "—" : `${fmt(n, 0)} bpm`), decimals: 0 },
   ];
 
-  const cumulative = (rows: typeof aRes.rows, p: Period): number[] => {
+  const cumulative = (rows: typeof aRows, p: Period): number[] => {
     const days = daysBetween(p.from, p.to) + 1;
     const byDate = new Map<string, number>();
     for (const r of rows) byDate.set(r.local_date, (byDate.get(r.local_date) ?? 0) + (r.training_load ?? 0));
@@ -238,7 +248,7 @@ export default async function AnalysePage({ searchParams }: { searchParams: Prom
   };
 
   // Per-sport composition. Segments derived from BOTH periods so A and B share the same colours.
-  const comp = sportComposition([...aRes.rows, ...bRes.rows], SERIES.length);
+  const comp = sportComposition([...aRows, ...bRows], SERIES.length);
   const topKeys = new Set(comp.order.filter((o) => o.key !== "other").map((o) => o.key as number));
   const keyOf = (sid: number): string => (topKeys.has(sid) ? String(sid) : "other");
   const sportSegs: StackSeg[] = comp.order.map((o, idx) => ({
@@ -246,14 +256,14 @@ export default async function AnalysePage({ searchParams }: { searchParams: Prom
     label: o.key === "other" ? o.name : sportName(o.code, o.name),
     glyph: o.key === "other" ? undefined : sportIcon(o.code),
   }));
-  const sumByKey = (rows: typeof aRes.rows) => {
+  const sumByKey = (rows: typeof aRows) => {
     const m = new Map<string, number>();
     for (const r of rows) { const k = keyOf(r.sport_id); m.set(k, (m.get(k) ?? 0) + (r.training_load ?? 0)); }
     return m;
   };
-  const aByKey = sumByKey(aRes.rows), bByKey = sumByKey(bRes.rows);
+  const aByKey = sumByKey(aRows), bByKey = sumByKey(bRows);
   const bSportData = new Map<string, Map<string, number>>();
-  for (const r of bRes.rows) {
+  for (const r of bRows) {
     const day = bSportData.get(r.local_date) ?? new Map<string, number>();
     const k = keyOf(r.sport_id);
     day.set(k, (day.get(k) ?? 0) + (r.training_load ?? 0));
@@ -266,7 +276,7 @@ export default async function AnalysePage({ searchParams }: { searchParams: Prom
     { key: "neu", color: VIZ.neuro, label: "neuromusculaire" },
   ];
   const bChannelData = new Map<string, Map<string, number>>();
-  for (const r of bRes.rows) {
+  for (const r of bRows) {
     const day = bChannelData.get(r.local_date) ?? new Map<string, number>();
     day.set("aer", (day.get("aer") ?? 0) + (r.aerobic_load ?? 0));
     day.set("neu", (day.get("neu") ?? 0) + (r.neuromuscular_load ?? 0));
@@ -318,7 +328,7 @@ export default async function AnalysePage({ searchParams }: { searchParams: Prom
                 <span className="flex items-center gap-1.5"><span className="inline-block h-0 w-4 border-t-2 border-dashed" style={{ borderColor: PERIOD.a }} />A</span>
               </div>
             </div>
-            <CumulativeOverlay a={cumulative(aRes.rows, a)} b={cumulative(bRes.rows, b)} />
+            <CumulativeOverlay a={cumulative(aRows, a)} b={cumulative(bRows, b)} />
           </section>
 
           {/* Charge par sport — évolution (période B) + répartition A vs B (couleurs par sport) */}
