@@ -6,6 +6,7 @@ import { ActivityCard, ActivityRow, ActivityTableHead } from "@/components/activ
 import { Nav } from "@/components/nav";
 import { GoalBadge } from "@/components/goal-badge";
 import { CoachHero } from "@/components/coach-hero";
+import { DayProgress } from "@/components/day-progress";
 import { GarminRefresh } from "@/components/garmin-refresh";
 import { SorenessInput } from "@/components/soreness-input";
 import { todayLocal } from "@/lib/coach-context";
@@ -41,6 +42,7 @@ const ATL_HELP: HelpContent = {
     { type: "dl", items: [
       { k: "Unité", v: "points de charge (même échelle que le CTL)." },
       { k: "Lecture", v: "au-dessus du CTL = tu accumules de la fatigue ; en-dessous = tu récupères / affûtes." },
+      { k: "Repère", v: "la courbe claire en fond = ton CTL ; ATL au-dessus = tu accumules de la fatigue, en-dessous = tu récupères." },
       { k: "Fenêtre", v: `le graphe = ${WIN} ; le grand chiffre = aujourd'hui.` },
     ] },
   ],
@@ -53,6 +55,7 @@ const MONO_HELP: HelpContent = {
     { type: "dl", items: [
       { k: "Unité", v: "sans unité (un ratio)." },
       { k: "Lecture", v: "< 1,5 sain · 1,5–2 à surveiller · > 2 trop uniforme = risque." },
+      { k: "Repère", v: "bande orange 1,5–2 à surveiller, rouge > 2 = trop uniforme." },
       { k: "Fenêtre", v: `le graphe = ${WIN} ; calculée sur la fenêtre affichée (non stockée en base).` },
     ] },
   ],
@@ -100,6 +103,7 @@ const FRESH_AERO_HELP: HelpContent = {
     { type: "dl", items: [
       { k: "Unité", v: "points." },
       { k: "Lecture", v: "positif = frais · négatif = fatigué." },
+      { k: "Repère", v: "ligne 0 = équilibre (CTL = ATL) ; la bande autour de 0 = zone d'équilibre du canal." },
       { k: "Fenêtre", v: `le graphe = ${WIN} ; le grand chiffre = aujourd'hui.` },
     ] },
   ],
@@ -112,6 +116,7 @@ const FRESH_NEURO_HELP: HelpContent = {
     { type: "dl", items: [
       { k: "Unité", v: "points." },
       { k: "Lecture", v: "peut rester négatif après de grosses descentes même si VFC et fraîcheur aérobie sont bonnes." },
+      { k: "Repère", v: "ligne 0 = équilibre (CTL = ATL) ; la bande autour de 0 = zone d'équilibre du canal." },
       { k: "Fenêtre", v: `le graphe = ${WIN} ; le grand chiffre = aujourd'hui.` },
     ] },
   ],
@@ -185,7 +190,7 @@ const linkCls =
   "inline-flex shrink-0 items-center gap-1 text-sm font-medium text-stone-500 transition-colors hover:text-alpine-700 dark:text-stone-400 dark:hover:text-alpine-300";
 
 export default async function Dashboard() {
-  const { profile, topGoal, metrics, briefing, activities, allActivities } = await getDashboard();
+  const { profile, topGoal, metrics, briefing, activities, allActivities, todayPlan } = await getDashboard();
   const latest = latestModel(metrics);
   const rec = latestRecovery(metrics);
   const todaySoreness = metrics.find((m) => m.local_date === todayLocal())?.soreness ?? null;
@@ -207,6 +212,19 @@ export default async function Dashboard() {
   const monoSeries = rollingMonotony(metrics.map((m) => m.daily_load ?? 0));
   const latestMono = [...monoSeries].reverse().find((v) => v != null) ?? null;
   const monoColor = latestMono == null ? undefined : latestMono >= 2 ? STATE.rest : latestMono >= 1.5 ? STATE.caution : undefined;
+  // Monotony interpretation bands: 1,5–2 = à surveiller (caution), > 2 = risque (rest, open-ended).
+  // The risk band's lower bound (2) extends the y-domain so it stays visible even when data is ~1,5.
+  const monoZones = [
+    { from: 1.5, to: 2, fill: STATE.caution },
+    { from: 2, to: null, fill: STATE.rest },
+  ];
+
+  // Channel balance bands (±10 % of the channel CTL) + the 0 = équilibre reference line. b is the
+  // half-width; skip the band when CTL is null/0 (no scale to anchor it) but still show the 0 line.
+  const aeroB = 0.1 * (latest?.ctl_aerobic ?? 0);
+  const neuroB = 0.1 * (latest?.ctl_neuromuscular ?? 0);
+  const freshAeroZones = aeroB > 0 ? [{ from: -aeroB, to: aeroB, fill: STATE.neutral }] : undefined;
+  const freshNeuroZones = neuroB > 0 ? [{ from: -neuroB, to: neuroB, fill: STATE.neutral }] : undefined;
 
   return (
     <div className="min-h-full overflow-x-hidden bg-page pt-[env(safe-area-inset-top)] font-sans text-stone-900 dark:text-stone-100">
@@ -234,6 +252,16 @@ export default async function Dashboard() {
         {/* Le coach prend la parole — entrée centrale vers la discussion */}
         <CoachHero briefing={briefing} />
 
+        {/* Charge du jour vs. plan du coach — verdict LLM-free (atteint / en dessous / au-dessus) */}
+        <DayProgress
+          activities={allActivities}
+          today={todayLocal()}
+          hasPlan={todayPlan.hasPlan}
+          target={todayPlan.targetLoad}
+          isRest={todayPlan.isRest}
+          avgLoad={avgLoad}
+        />
+
         {/* Indicateurs clés : chiffres + jauges colorées */}
         <section className="mb-6 rounded-2xl border border-stone-200 bg-white p-5 dark:border-stone-800 dark:bg-stone-900">
           <h2 className="mb-4 text-sm font-medium text-stone-700 dark:text-stone-300">Indicateurs clés</h2>
@@ -255,7 +283,7 @@ export default async function Dashboard() {
                   <HelpButton content={ATL_HELP} />
                 </div>
                 <div className="mt-1 text-2xl font-semibold tabular-nums">{fmt(latest?.atl, 1)}</div>
-                <SparklineTile values={atlSeries} color={VIZ.neuro} unit="pts" window={WIN} />
+                <SparklineTile values={atlSeries} color={VIZ.neuro} unit="pts" window={WIN} refCurve={ctlSeries} />
               </div>
               <div className="col-span-2 sm:col-span-1">
                 <div className="flex items-center gap-1.5 text-xs uppercase tracking-wide text-stone-500">
@@ -263,7 +291,8 @@ export default async function Dashboard() {
                   <HelpButton content={MONO_HELP} />
                 </div>
                 <div className="mt-1 text-2xl font-semibold tabular-nums" style={monoColor ? { color: monoColor } : undefined}>{fmt(latestMono, 2)}</div>
-                <SparklineTile values={monoSeries} unit="ratio" window={WIN} decimals={2} className="text-stone-400" />
+                <SparklineTile values={monoSeries} unit="ratio" window={WIN} decimals={2} className="text-stone-400"
+                  zones={monoZones} />
               </div>
             </div>
             <div className="grid gap-5 sm:grid-cols-3">
@@ -285,7 +314,7 @@ export default async function Dashboard() {
                   <div className="mt-1 text-2xl font-semibold tabular-nums" style={{ color: VIZ.aerobic }}>
                     {fmt(latest?.tsb_aerobic, 1)}
                   </div>
-                  <SparklineTile values={tsbAerobicSeries} color={VIZ.aerobic} unit="pts" window={WIN} />
+                  <SparklineTile values={tsbAerobicSeries} color={VIZ.aerobic} unit="pts" window={WIN} refLine={0} zones={freshAeroZones} />
                 </div>
                 <div>
                   <div className="flex items-center gap-1.5 text-xs uppercase tracking-wide text-stone-500">
@@ -295,7 +324,7 @@ export default async function Dashboard() {
                   <div className="mt-1 text-2xl font-semibold tabular-nums" style={{ color: VIZ.neuro }}>
                     {fmt(latest?.tsb_neuromuscular, 1)}
                   </div>
-                  <SparklineTile values={tsbNeuroSeries} color={VIZ.neuro} unit="pts" window={WIN} />
+                  <SparklineTile values={tsbNeuroSeries} color={VIZ.neuro} unit="pts" window={WIN} refLine={0} zones={freshNeuroZones} />
                 </div>
               </div>
             </div>

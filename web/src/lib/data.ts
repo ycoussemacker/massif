@@ -121,6 +121,14 @@ export type Profile = {
   weight_kg: number | null;
 };
 
+/** Today's coach-recommended load (planned_sessions.target_load) — drives the "load vs plan" nudge.
+ *  hasPlan=false ⇒ the coach hasn't planned today, so there's nothing to measure against. */
+export type TodayPlan = {
+  hasPlan: boolean;
+  targetLoad: number | null; // summed coach target_load for today (null when no plan)
+  isRest: boolean;           // coach tagged today's session 'rest'
+};
+
 export type Dashboard = {
   profile: Profile | null;
   topGoal: GoalHeader | null;
@@ -128,14 +136,16 @@ export type Dashboard = {
   briefing: Briefing | null;
   activities: Activity[];     // 15 most recent (newest first) — recents table
   allActivities: Activity[];  // full charted-window set (oldest first) — feeds the interactive charts
+  todayPlan: TodayPlan;       // coach's recommended load for today
 };
 
 export async function getDashboard(): Promise<Dashboard> {
   const sb = await createServiceClient();
   // The dashboard shows a rolling window (today − N months); deeper history is in /analyse. Bounded
   // queries also stay under PostgREST's per-response row cap.
-  const windowStart = monthsAgo(todayLocal(), DASHBOARD_WINDOW_MONTHS);
-  const [pm, mm, bm, chartActs, multiActs, recents, sm, gm] = await Promise.all([
+  const today = todayLocal();
+  const windowStart = monthsAgo(today, DASHBOARD_WINDOW_MONTHS);
+  const [pm, mm, bm, chartActs, multiActs, recents, sm, gm, pl] = await Promise.all([
     sb.from("athlete_profile").select("*").limit(1).maybeSingle(),
     sb.from("daily_metrics").select("*").gte("local_date", windowStart).order("local_date", { ascending: true }),
     sb.from("coach_briefings").select("*").order("created_at", { ascending: false }).limit(1).maybeSingle(),
@@ -150,6 +160,9 @@ export async function getDashboard(): Promise<Dashboard> {
     sb.from("sports").select("id,code,display_name,taxonomy_group,needs_manual_rpe"),
     sb.from("goals").select("title,sport_id,target_date,target_horizon,target_detail")
       .eq("status", "active").order("priority_rank", { ascending: true }).limit(1),
+    // Today's coach-planned session(s) — the recommended load the "load vs plan" nudge compares against.
+    sb.from("planned_sessions").select("target_load,system_tag")
+      .eq("planned_date", today).eq("modified_by", "coach").eq("status", "planned"),
   ]);
 
   const sportById = new Map<number, any>((sm.data ?? []).map((s: any) => [s.id, s]));
@@ -161,6 +174,13 @@ export async function getDashboard(): Promise<Dashboard> {
   const extraMulti = enrichActivities(multiActs.data ?? [], sportById).filter((a) => !inWindowIds.has(a.id));
   const allActivities = [...inWindow, ...extraMulti].sort((a, b) => a.started_at.localeCompare(b.started_at));
 
+  const plannedRows = (pl.data ?? []) as { target_load: number | null; system_tag: string | null }[];
+  const todayPlan: TodayPlan = {
+    hasPlan: plannedRows.length > 0,
+    targetLoad: plannedRows.length ? plannedRows.reduce((s, r) => s + (r.target_load ?? 0), 0) : null,
+    isRest: plannedRows.some((r) => r.system_tag === "rest"),
+  };
+
   return {
     profile: (pm.data as Profile) ?? null,
     topGoal: pickTopGoal(gm.data, sportCodeById),
@@ -168,6 +188,7 @@ export async function getDashboard(): Promise<Dashboard> {
     briefing: (bm.data as Briefing) ?? null,
     activities: enrichActivities(recents.data ?? [], sportById),
     allActivities,
+    todayPlan,
   };
 }
 
