@@ -202,6 +202,69 @@ export async function syncNow(): Promise<{ pulled: number; newest: string | null
   return { pulled, newest, days };
 }
 
+// ── On-demand Garmin refresh (triggers the cloud Python ingest) ─────────────────────────────────
+
+const GITHUB_API = "https://api.github.com";
+const GARMIN_WORKFLOW = "garmin-refresh.yml";
+const githubRepo = () => process.env.GITHUB_REPO ?? "ycoussemacker/massif";
+
+function githubHeaders(token: string): HeadersInit {
+  return {
+    Authorization: `Bearer ${token}`,
+    Accept: "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28",
+  };
+}
+
+/** The freshest daily_metrics write timestamp (the most recent local_date row's updated_at).
+ *  Both the Garmin recovery upsert and the rollup bump it, so the client polls this after a Garmin
+ *  refresh: once it advances past the watermark captured at dispatch, the cloud job has written. */
+export async function latestDailyUpdate(): Promise<string | null> {
+  const sb = await createServiceClient();
+  const { data } = await sb
+    .from("daily_metrics")
+    .select("updated_at")
+    .order("local_date", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  return (data as { updated_at?: string } | null)?.updated_at ?? null;
+}
+
+/** Reload Garmin recovery on demand. Garmin has no JS API (Python-only, MFA-gated), so we can't pull
+ *  it from Vercel like Strava — instead we fire the cloud `garmin-refresh.yml` workflow via the GitHub
+ *  API and let the client poll `latestDailyUpdate()` for the write. Skips dispatch if a run is already
+ *  queued/in-progress (belt-and-braces with the workflow's concurrency group) so rapid taps don't pile
+ *  up runs or re-hit Garmin (it 429s on repeated logins). Returns the current watermark to poll against.
+ *  Needs GITHUB_DISPATCH_TOKEN (a PAT with actions:write on the repo) in the Vercel env. */
+export async function refreshGarmin(): Promise<{ status: "dispatched" | "running"; since: string | null }> {
+  const token = process.env.GITHUB_DISPATCH_TOKEN;
+  if (!token) throw new Error("Rechargement Garmin indisponible (GITHUB_DISPATCH_TOKEN non configuré).");
+  const repo = githubRepo();
+
+  // Already queued/in-progress? Don't stack another run.
+  const runsRes = await fetch(
+    `${GITHUB_API}/repos/${repo}/actions/workflows/${GARMIN_WORKFLOW}/runs?per_page=5`,
+    { headers: githubHeaders(token), cache: "no-store" },
+  );
+  const since = await latestDailyUpdate();
+  if (runsRes.ok) {
+    const runs = (await runsRes.json())?.workflow_runs ?? [];
+    if (runs.some((r: { status?: string }) => r.status === "queued" || r.status === "in_progress")) {
+      return { status: "running", since };
+    }
+  }
+
+  const res = await fetch(
+    `${GITHUB_API}/repos/${repo}/actions/workflows/${GARMIN_WORKFLOW}/dispatches`,
+    { method: "POST", headers: githubHeaders(token), body: JSON.stringify({ ref: "main" }), cache: "no-store" },
+  );
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    throw new Error(`Échec du déclenchement de la synchro Garmin (${res.status}). ${detail.slice(0, 200)}`);
+  }
+  return { status: "dispatched", since };
+}
+
 /** Cost/abuse guard on the on-demand briefing (an Anthropic call behind only the shared password).
  *  Counts briefings written recently (shared DB state — works on serverless) and throws over the
  *  burst/day limits. The morning cron writes one briefing/day, well under the daily cap. */

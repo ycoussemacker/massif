@@ -6,6 +6,7 @@ import { ActivityCard, ActivityRow, ActivityTableHead } from "@/components/activ
 import { Nav } from "@/components/nav";
 import { GoalBadge } from "@/components/goal-badge";
 import { CoachHero } from "@/components/coach-hero";
+import { GarminRefresh } from "@/components/garmin-refresh";
 import { todayLocal } from "@/lib/coach-context";
 import { fmt, avgLoadRecent } from "@/lib/format";
 import { rollingMonotony } from "@/lib/aggregate";
@@ -164,9 +165,12 @@ export default async function Dashboard() {
         {/* Récupération */}
         {rec && (
           <section className="mb-6 rounded-2xl border border-stone-200 bg-white p-5 dark:border-stone-800 dark:bg-stone-900">
-            <h2 className="mb-3 text-sm font-medium text-stone-700 dark:text-stone-300">
-              Récupération (Garmin) — {rec.local_date}
-            </h2>
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <h2 className="text-sm font-medium text-stone-700 dark:text-stone-300">
+                Récupération (Garmin) — {rec.local_date}
+              </h2>
+              <GarminRefresh />
+            </div>
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
               <Tile label="Sommeil" value={fmt(rec.sleep_score)} color={cSleep(rec.sleep_score)}
                 sub={rec.sleep_duration_s ? `${(rec.sleep_duration_s / 3600).toFixed(1)} h` : "/ 100"} />

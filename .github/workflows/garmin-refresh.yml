@@ -1,0 +1,45 @@
+# Massif Garmin refresh — on-demand pull of Garmin recovery (sleep/HRV/Body Battery/readiness),
+# triggered from the web dashboard's "reload Garmin" button (refreshGarmin() server action →
+# GitHub workflow_dispatch). Garmin has no JS API + an MFA-gated first login, so unlike Strava
+# (which has an in-app TypeScript sync) Garmin can only be pulled by the Python ingest in the cloud.
+#
+# This is the LIGHTWEIGHT counterpart to nightly.yml: Garmin recovery + the daily rollup ONLY —
+# no Strava (it has its own in-app sync), no coach briefing, no web push. The Garmin OAuth token is
+# rehydrated from Supabase (integration_tokens, provider='garmin') inside the ingest — see the Garmin
+# gotcha in CLAUDE.md / ops/PHONE_ACCESS.md.
+#
+# Fired by the dashboard button via the GitHub API. The concurrency group + the action's own
+# "already running?" pre-check keep repeated taps from piling up runs (and re-hitting Garmin, which
+# 429s on rapid logins).
+name: massif-garmin-refresh
+
+on:
+  workflow_dispatch: {} # the only trigger — fired by the web "reload Garmin" button
+
+concurrency:
+  group: massif-garmin-refresh
+  cancel-in-progress: false
+
+jobs:
+  garmin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      ATHLETE_TZ: ${{ secrets.ATHLETE_TZ || 'Europe/Paris' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: ingest/pyproject.toml
+
+      - name: Install ingest
+        run: pip install -e ingest
+
+      - name: Pull Garmin recovery + roll up
+        run: python -m massif_ingest.sync --skip-strava --garmin-days 7
