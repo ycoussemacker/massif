@@ -11,18 +11,22 @@
 # the night never finalized. Once today's briefing exists, every later slot is a no-op (idempotent),
 # so you get exactly one briefing + one push.
 #
-# Schedule is UTC. Summer (CEST, UTC+2): poll ≈06:30–08:30 Paris, force ≈09:00. Winter (CET, UTC+1):
+# Schedule is UTC. Summer (CEST, UTC+2): poll ≈06:37–08:37 Paris, force ≈09:07. Winter (CET, UTC+1):
 # one hour earlier. Adjust the cron lines to your wake time.
+#
+# Minutes are deliberately OFF :00/:30. GitHub runs scheduled jobs best-effort and explicitly drops
+# them under load — and load peaks at the top/half of every hour. Odd offsets (:07/:37) dodge the
+# busiest minutes and markedly improve the odds a slot actually fires. Don't move them back to :00/:30.
 name: massif-nightly
 
 on:
   schedule:
-    - cron: "30 4 * * *"   # ~06:30 Paris (summer) — poll
-    - cron: "0 5 * * *"    # ~07:00 — poll
-    - cron: "30 5 * * *"   # ~07:30 — poll
-    - cron: "0 6 * * *"    # ~08:00 — poll
-    - cron: "30 6 * * *"   # ~08:30 — poll
-    - cron: "0 7 * * *"    # ~09:00 — FINAL: force-generate even if sleep never finalized
+    - cron: "37 4 * * *"   # ~06:37 Paris (summer) — poll
+    - cron: "7 5 * * *"    # ~07:07 — poll
+    - cron: "37 5 * * *"   # ~07:37 — poll
+    - cron: "7 6 * * *"    # ~08:07 — poll
+    - cron: "37 6 * * *"   # ~08:37 — poll
+    - cron: "7 7 * * *"    # ~09:07 — FINAL: force-generate even if sleep never finalized
   workflow_dispatch: {} # manual "Run workflow" → forces a generation now
 
 concurrency:
@@ -63,7 +67,7 @@ jobs:
         id: gate
         run: |
           FORCE=""
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] || [ "${{ github.event.schedule }}" = "0 7 * * *" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] || [ "${{ github.event.schedule }}" = "7 7 * * *" ]; then
             FORCE="--force"
           fi
           set +e
