@@ -96,7 +96,7 @@ export default async function Dashboard() {
         {/* Indicateurs clés — CTL/ATL/TSB interactifs (sélection = scrubber) + indicateurs du jour. */}
         {metrics.length > 1 ? (
           <div className="mb-6">
-            <ChartsSection key={`${metrics.length}-${latest?.local_date ?? ""}-${latest?.ctl ?? ""}-${latest?.tsb ?? ""}`} metrics={metrics} activities={allActivities} avgLoad={avgLoad} />
+            <ChartsSection key={`${metrics.length}-${latest?.local_date ?? ""}-${latest?.ctl ?? ""}-${latest?.tsb ?? ""}`} metrics={metrics} activities={allActivities} />
           </div>
         ) : (
           <p className="mb-6 text-sm text-stone-500">Pas encore assez de jours de données pour les indicateurs.</p>

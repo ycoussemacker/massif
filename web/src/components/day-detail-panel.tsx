@@ -2,11 +2,10 @@
  *  that make up the score. Server-compatible (no hooks); rendered inside the client chart island.
  *  Lives OUTSIDE the chart's horizontal scroll container so it is never clipped. */
 import type { Activity } from "@/lib/data";
-import type { DailyMetric } from "@/lib/data";
 import { aggregate } from "@/lib/aggregate";
 import { fmt, longDateFr } from "@/lib/format";
 import { VIZ } from "@/lib/theme";
-import { ActivityCard } from "./activity-row";
+import { ActivityLine } from "./activity-row";
 
 function ChannelDot({ color, label, value }: { color: string; label: string; value: number }) {
   return (
@@ -18,12 +17,10 @@ function ChannelDot({ color, label, value }: { color: string; label: string; val
 }
 
 export function DayDetailPanel({
-  date, metric, activities, avgLoad, onClose,
+  date, activities, onClose,
 }: {
   date: string;
-  metric?: DailyMetric | null;
   activities: Activity[];
-  avgLoad?: number | null;
   onClose?: () => void;
 }) {
   const agg = aggregate(activities);
@@ -40,11 +37,6 @@ export function DayDetailPanel({
             <ChannelDot color={VIZ.neuro} label="neuro" value={agg.neuro} />
             <span className="text-xs text-stone-400">· {agg.sessions} séance{agg.sessions > 1 ? "s" : ""}</span>
           </div>
-          {metric && (metric.ctl != null || metric.tsb != null) && (
-            <div className="mt-1 text-xs text-stone-400 tabular-nums">
-              ce jour-là · CTL {fmt(metric.ctl, 1)} · ATL {fmt(metric.atl, 1)} · TSB {fmt(metric.tsb, 1)}
-            </div>
-          )}
         </div>
         {onClose && (
           <button
@@ -58,10 +50,11 @@ export function DayDetailPanel({
         )}
       </div>
 
-      <div className="mt-3 space-y-2">
+      {/* One line per activity — click to open Activités filtered on that day/sport. */}
+      <div className="mt-3 space-y-1.5">
         {activities.length === 0
           ? <p className="text-sm text-stone-500 dark:text-stone-400">Aucune activité ce jour-là (jour de repos).</p>
-          : activities.map((a) => <ActivityCard key={a.id} a={a} avgLoad={avgLoad} />)}
+          : activities.map((a) => <ActivityLine key={a.id} a={a} />)}
       </div>
     </div>
   );

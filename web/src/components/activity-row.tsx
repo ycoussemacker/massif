@@ -1,11 +1,37 @@
 /** Presentational activity rows — one source of truth for the dashboard, the chart day-panel,
  *  the activities page and the comparison breakdown. Server-compatible (no client hooks); the only
  *  interactive leaf is <RpeControl> (its own "use client" island) and <StravaLink> is a plain <a>. */
+import Link from "next/link";
 import type { Activity } from "@/lib/data";
 import { sportName, sportIcon, aerobicSourceFr, neuroSourceFr } from "@/lib/labels";
 import { fmt, dur, loadVsAvgColor } from "@/lib/format";
+import { VIZ } from "@/lib/theme";
 import { RpeControl } from "./rpe";
 import { StravaLink } from "./brand";
+
+/** One-line activity recap for the day-detail panel: sport glyph + Strava title + aéro/neuro impacts,
+ *  the whole row a link to the Activités page filtered on this day + sport (→ affordance). Fits one line
+ *  (the title truncates); no card, no nested controls — the compact read used inside the dashboard. */
+export function ActivityLine({ a }: { a: Activity }) {
+  const href = `/activites?from=${a.local_date}&to=${a.local_date}${a.sport_id ? `&sport=${a.sport_id}` : ""}`;
+  return (
+    <Link
+      href={href}
+      className="group flex items-center gap-2 rounded-lg border border-stone-200 px-3 py-1.5 text-sm transition-colors hover:border-stone-300 hover:bg-stone-50 dark:border-stone-800 dark:hover:border-stone-700 dark:hover:bg-stone-800/40"
+    >
+      <span className="shrink-0" aria-hidden>{sportIcon(a.sport_code)}</span>
+      <span className="min-w-0 flex-1 truncate text-stone-700 dark:text-stone-200">
+        {a.strava_name || sportName(a.sport_code, a.sport)}
+      </span>
+      <span className="shrink-0 whitespace-nowrap text-xs tabular-nums text-stone-400">
+        <span style={{ color: VIZ.aerobic }}>{fmt(a.aerobic_load, 0)}</span>
+        <span className="mx-0.5">·</span>
+        <span style={{ color: VIZ.neuro }}>{fmt(a.neuromuscular_load, 0)}</span>
+      </span>
+      <span className="shrink-0 text-stone-300 transition-colors group-hover:text-alpine-600 dark:text-stone-600 dark:group-hover:text-alpine-400" aria-hidden>→</span>
+    </Link>
+  );
+}
 
 /** Plain, tabular activity date. The deep-link lives in its own "Strava ↗" affordance. */
 export function ActivityDate({ a, className = "" }: { a: Activity; className?: string }) {

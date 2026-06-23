@@ -296,11 +296,10 @@ function lineChart(
 
 // ── the dashboard section ──────────────────────────────────────────────────────────────────────────
 export function ChartsSection({
-  metrics: initialMetrics, activities: initialActivities, avgLoad,
+  metrics: initialMetrics, activities: initialActivities,
 }: {
   metrics: DailyMetric[];
   activities: Activity[];
-  avgLoad?: number | null;
 }) {
   const [metrics, setMetrics] = useState(initialMetrics);
   const [activities, setActivities] = useState(initialActivities);
@@ -326,7 +325,6 @@ export function ChartsSection({
   const isToday = !selected || selected === latestDate;
   const dayLabel = isToday ? "(aujourd'hui)" : shortDate(selected!);
   const panelDate = selected ?? latestDate;
-  const panelMetric = selM;
 
   const onReachStart = useCallback(() => {
     if (busyRef.current || reachedFloor) return;
@@ -381,9 +379,7 @@ export function ChartsSection({
       {panelDate && (
         <DayDetailPanel
           date={panelDate}
-          metric={panelMetric}
           activities={activitiesByDate.get(panelDate) ?? []}
-          avgLoad={avgLoad}
           onClose={selected ? () => setSelected(null) : undefined}
         />
       )}
@@ -399,7 +395,7 @@ export function ChartsSection({
 
       {/* Fraîcheur par système — the selected day's per-channel form. */}
       <h3 className="mt-6 mb-2 text-sm font-medium text-stone-700 dark:text-stone-300">Fraîcheur par système</h3>
-      <div className="grid gap-5 sm:grid-cols-2">
+      <div className="grid grid-cols-2 gap-4 sm:gap-5">
         <FreshTile label="Fraîcheur aérobie" help={FRESH_AERO_HELP} color={VIZ.aerobic}
           value={selM?.tsb_aerobic ?? null} series={metrics.map((m) => m.tsb_aerobic)} ctl={selM?.ctl_aerobic ?? null} />
         <FreshTile label="Fraîcheur neuromusculaire" help={FRESH_NEURO_HELP} color={VIZ.neuro}
