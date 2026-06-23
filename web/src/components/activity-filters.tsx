@@ -45,7 +45,9 @@ export function ActivityFilters({ sports, resultCount }: { sports: SportOpt[]; r
   const [sheet, setSheet] = useState(false);
 
   const selSports = useMemo(
-    () => new Set((sp.get("sport") ?? "").split(",").filter(Boolean).map(Number)),
+    // .filter(Number.isFinite) matches the server's parse (page.tsx) — a stale/edited `?sport=abc`
+    // must not yield a NaN in the set (ghost chip + inflated count while the server ignores it).
+    () => new Set((sp.get("sport") ?? "").split(",").filter(Boolean).map(Number).filter(Number.isFinite)),
     [sp],
   );
   const rpePending = sp.get("rpe") === "pending";
@@ -78,7 +80,16 @@ export function ActivityFilters({ sports, resultCount }: { sports: SportOpt[]; r
   const first = useRef(true);
   useEffect(() => {
     if (first.current) { first.current = false; return; }
-    const t = setTimeout(() => setParam("q", q.trim() || null), 300);
+    const t = setTimeout(() => {
+      // Read the LIVE URL at fire time (not the captured `sp`), so a filter toggled within the 300 ms
+      // window isn't clobbered; and skip a redundant navigation when q already matches the URL.
+      const v = q.trim();
+      const p = new URLSearchParams(window.location.search);
+      if ((p.get("q") ?? "") === v) return;
+      if (v) p.set("q", v); else p.delete("q");
+      p.delete("page");
+      start(() => router.replace(`/activites?${p.toString()}`, { scroll: false }));
+    }, 300);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [q]);
@@ -108,27 +119,31 @@ export function ActivityFilters({ sports, resultCount }: { sports: SportOpt[]; r
 
   // Applied-filter chips (mobile, under the bar) — each removes just its own filter.
   const sportById = new Map(sports.map((s) => [s.id, s]));
-  const activeChips: { key: string; label: React.ReactNode; remove: () => void }[] = [];
-  if (q.trim()) activeChips.push({ key: "q", label: <>« {q.trim()} »</>, remove: () => { setQ(""); setParam("q", null); } });
+  const activeChips: { key: string; label: React.ReactNode; aria: string; remove: () => void }[] = [];
+  if (q.trim()) activeChips.push({ key: "q", label: <>« {q.trim()} »</>, aria: `recherche « ${q.trim()} »`, remove: () => { setQ(""); setParam("q", null); } });
   for (const id of selSports) {
     const s = sportById.get(id);
+    const name = sportName(s?.code, s?.display_name ?? "");
     activeChips.push({
       key: `s${id}`,
-      label: <><span aria-hidden>{sportIcon(s?.code)}</span> {sportName(s?.code, s?.display_name ?? "")}</>,
+      label: <><span aria-hidden>{sportIcon(s?.code)}</span> {name}</>,
+      aria: name,
       remove: () => toggleSport(id),
     });
   }
   if (from || to) activeChips.push({
     key: "date",
     label: <>{from ? `du ${from}` : ""}{from && to ? " " : ""}{to ? `au ${to}` : ""}</>,
+    aria: `période ${from ? `du ${from}` : ""}${from && to ? " " : ""}${to ? `au ${to}` : ""}`.trim(),
     remove: () => apply((p) => { p.delete("from"); p.delete("to"); }),
   });
   if (min || max) activeChips.push({
     key: "load",
     label: <>charge {min ? `≥ ${min}` : ""}{min && max ? " · " : ""}{max ? `≤ ${max}` : ""}</>,
+    aria: `charge ${min ? `≥ ${min}` : ""}${min && max ? " " : ""}${max ? `≤ ${max}` : ""}`.trim(),
     remove: () => apply((p) => { p.delete("min"); p.delete("max"); }),
   });
-  if (rpePending) activeChips.push({ key: "rpe", label: <>RPE à saisir</>, remove: () => setParam("rpe", null) });
+  if (rpePending) activeChips.push({ key: "rpe", label: <>RPE à saisir</>, aria: "RPE à saisir", remove: () => setParam("rpe", null) });
 
   // --- Shared control fragments (reused by the rail and the sheet) --------------------------------
   const SearchField = (
@@ -203,9 +218,11 @@ export function ActivityFilters({ sports, resultCount }: { sports: SportOpt[]; r
 
   return (
     <>
-      {/* ============ Desktop / paysage : rail persistant ============ */}
-      <aside className="hidden lg:block lg:w-[17rem] lg:shrink-0">
-        <div className={`sticky top-4 max-h-[calc(100vh-2rem)] overflow-y-auto rounded-2xl border border-stone-200 bg-white p-4 dark:border-stone-800 dark:bg-stone-900 ${pending ? "opacity-70" : ""}`}>
+      {/* ============ Desktop / paysage : rail persistant ============
+          lg:self-stretch makes the aside span the full flex-row height, so the inner lg:sticky card
+          has room to travel and actually pins (an items-start aside would be content-height = no room). */}
+      <aside className="hidden lg:block lg:w-[17rem] lg:shrink-0 lg:self-stretch">
+        <div className={`lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)] lg:overflow-y-auto rounded-2xl border border-stone-200 bg-white p-4 dark:border-stone-800 dark:bg-stone-900 ${pending ? "opacity-70" : ""}`}>
           <div className="mb-3 flex items-center justify-between">
             <h2 className="text-sm font-semibold text-stone-900 dark:text-stone-100">Filtres</h2>
             {hasFilters && (
@@ -223,9 +240,10 @@ export function ActivityFilters({ sports, resultCount }: { sports: SportOpt[]; r
         </div>
       </aside>
 
-      {/* ============ Mobile / tablette : barre compacte + chips + bottom-sheet ============ */}
-      <div className="lg:hidden">
-        <div className={`sticky top-2 z-30 flex items-center gap-2 rounded-2xl border border-stone-200 bg-white/95 p-2 backdrop-blur dark:border-stone-800 dark:bg-stone-900/95 ${pending ? "opacity-70" : ""}`}>
+      {/* ============ Mobile / tablette : barre compacte + chips + bottom-sheet ============
+          Emitted as SIBLINGS (no enclosing wrapper) so the sticky bar's containing block is the tall
+          page column, not a short wrapper — otherwise it can only travel a few px and never pins. */}
+      <div className={`lg:hidden sticky top-[calc(env(safe-area-inset-top)+0.5rem)] z-30 flex items-center gap-2 rounded-2xl border border-stone-200 bg-white/95 p-2 backdrop-blur dark:border-stone-800 dark:bg-stone-900/95 ${pending ? "opacity-70" : ""}`}>
           <div className="min-w-0 flex-1">{SearchField}</div>
           <button
             type="button"
@@ -244,12 +262,13 @@ export function ActivityFilters({ sports, resultCount }: { sports: SportOpt[]; r
         </div>
 
         {activeChips.length > 0 && (
-          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+          <div className="mt-2 flex flex-wrap items-center gap-1.5 lg:hidden">
             {activeChips.map((c) => (
               <button
                 key={c.key}
                 type="button"
                 onClick={c.remove}
+                aria-label={`Retirer le filtre : ${c.aria}`}
                 className="inline-flex items-center gap-1.5 rounded-full border border-alpine-300 bg-alpine-100 px-2.5 py-1 text-xs font-medium text-alpine-700 transition-colors hover:bg-alpine-200/70 dark:border-alpine-700 dark:bg-alpine-900/50 dark:text-alpine-300"
               >
                 {c.label}
@@ -264,7 +283,7 @@ export function ActivityFilters({ sports, resultCount }: { sports: SportOpt[]; r
 
         {sheet && (
           <div
-            className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 backdrop-blur-[1px] sm:items-center sm:p-4"
+            className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 backdrop-blur-[1px] sm:items-center sm:p-4 lg:hidden"
             onClick={() => setSheet(false)}
             role="dialog"
             aria-modal="true"
@@ -305,7 +324,6 @@ export function ActivityFilters({ sports, resultCount }: { sports: SportOpt[]; r
             </div>
           </div>
         )}
-      </div>
     </>
   );
 }

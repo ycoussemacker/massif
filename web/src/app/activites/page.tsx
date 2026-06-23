@@ -77,7 +77,9 @@ export default async function ActivitesPage({ searchParams }: { searchParams: Pr
   };
 
   return (
-    <div className="min-h-full overflow-x-hidden bg-page pt-[env(safe-area-inset-top)] font-sans text-stone-900 dark:text-stone-100">
+    // overflow-x-clip (not -hidden): clips horizontal overflow WITHOUT making this a scroll container,
+    // which would otherwise resolve the sticky filter bar/rail against this wrapper and break pinning.
+    <div className="min-h-full overflow-x-clip bg-page pt-[env(safe-area-inset-top)] font-sans text-stone-900 dark:text-stone-100">
       <div className="mx-auto w-full max-w-5xl px-4 pt-6 pb-[calc(4rem+env(safe-area-inset-bottom))] sm:px-6 sm:pt-8 md:pb-8 lg:max-w-6xl">
         <Nav current="activites" />
 

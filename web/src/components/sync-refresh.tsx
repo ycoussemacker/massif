@@ -39,12 +39,16 @@ export function SyncRefresh() {
   useEffect(() => {
     let startY = 0;
     let armed = false;
+    // Don't arm/fire the gesture while a modal is open — modals lock the page scroll with
+    // `body.overflow=hidden` (help.tsx, the activities filter sheet), so window.scrollY stays 0 and a
+    // swipe to scroll the modal's own content would otherwise satisfy the pull-to-refresh condition.
+    const modalOpen = () => document.body.style.overflow === "hidden";
     const onStart = (e: TouchEvent) => {
-      armed = window.scrollY <= 0;
+      armed = window.scrollY <= 0 && !modalOpen();
       startY = e.touches[0]?.clientY ?? 0;
     };
     const onMove = (e: TouchEvent) => {
-      if (armed && window.scrollY <= 0 && (e.touches[0]?.clientY ?? 0) - startY > 90) {
+      if (armed && !modalOpen() && window.scrollY <= 0 && (e.touches[0]?.clientY ?? 0) - startY > 90) {
         armed = false;
         run();
       }
