@@ -26,9 +26,8 @@ export function assembleVerdict(input: {
   today: string;
 }): { progress: DayProgress | null; voice: VerdictVoice | null } {
   const { hasPlan, target, isRest, activities, avgLoad, today } = input;
-  const actual = activities
-    .filter((a) => a.local_date === today)
-    .reduce((s, a) => s + (a.training_load ?? 0), 0);
+  const todayActs = activities.filter((a) => a.local_date === today);
+  const actual = todayActs.reduce((s, a) => s + (a.training_load ?? 0), 0);
 
   const progress = computeDayProgress({
     hasPlan, target, isRest, actual, avgLoad,
@@ -43,6 +42,7 @@ export function assembleVerdict(input: {
     {
       todaySport: todaySportCode ? sportName(todaySportCode, todaySportCode) : null,
       suggSport: progress.suggestion?.sportCode ? sportName(progress.suggestion.sportCode, progress.suggestion.sportCode) : null,
+      todayCount: todayActs.length,
     },
     today,
   );

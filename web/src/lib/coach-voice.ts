@@ -26,7 +26,7 @@ export type VerdictVoice = {
   showAsHeadline: boolean;
 };
 
-type Ctx = { todaySport: string | null; suggSport: string | null };
+type Ctx = { todaySport: string | null; suggSport: string | null; todayCount: number };
 type Variant = { card: (p: DayProgress, c: Ctx) => string; chat: (p: DayProgress, c: Ctx) => string; suggestion?: (p: DayProgress, c: Ctx) => string };
 
 const SIZE_FR: Record<SuggestionSize, string> = {
@@ -47,11 +47,21 @@ const META: Record<DayStatus, { tone: VerdictTone; label: string }> = {
 const sess = (c: Ctx) => (c.todaySport ? `ta séance de ${c.todaySport.toLowerCase()}` : null);
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
+// Plural-aware subject clauses (the snapshot above already lists WHICH sessions, so when there are
+// several we don't attribute the summed load to one sport — we just speak of "tes N séances").
+const leadReached = (c: Ctx) =>
+  c.todayCount > 1 ? `Belle journée — tes ${c.todayCount} séances t'amènent` : `Belle séance — ${sess(c) ?? "te voilà"} t'amène`;
+const leadBase = (c: Ctx) =>
+  c.todayCount > 1 ? `Tes ${c.todayCount} séances ont posé une base` : sess(c) ? `${cap(sess(c)!)} a posé une base` : "Bon début";
+const afterSessions = (c: Ctx) =>
+  c.todayCount > 1 ? ` après tes ${c.todayCount} séances` : sess(c) ? ` après ${sess(c)}` : "";
+const dayWork = (c: Ctx) => (c.todayCount > 1 ? "tes séances du jour" : "ta séance du jour");
+
 const VARIANTS: Record<DayStatus, Variant[]> = {
   reached: [
     {
-      card: (p, c) => `Belle séance — ${sess(c) ?? "te voilà"} t'amène à ${p.actual} pts sur les ${p.target} visés, soit l'essentiel du chemin. Pas à pas, c'est exactement le bon rythme : la cible était une boussole, pas une corde de rappel.`,
-      chat: (p, c) => `Belle séance — ${sess(c) ?? "te voilà"} t'amène à ${p.actual} pts sur les ${p.target} que je t'avais tracés, soit l'essentiel du chemin. Pas à pas, c'est exactement le bon rythme : la cible était une boussole, pas une corde de rappel. On valide la journée, et on garde l'équilibre.`,
+      card: (p, c) => `${leadReached(c)} à ${p.actual} pts sur les ${p.target} visés, soit l'essentiel du chemin. Pas à pas, c'est exactement le bon rythme : la cible était une boussole, pas une corde de rappel.`,
+      chat: (p, c) => `${leadReached(c)} à ${p.actual} pts sur les ${p.target} que je t'avais tracés, soit l'essentiel du chemin. Pas à pas, c'est exactement le bon rythme : la cible était une boussole, pas une corde de rappel. On valide la journée, et on garde l'équilibre.`,
     },
     {
       card: (p) => `Pile dans la cible : ${p.actual} pts pour ${p.target} visés. Tu as lu le terrain juste aujourd'hui — laisse maintenant le corps assimiler, c'est là qu'on engrange.`,
@@ -64,14 +74,14 @@ const VARIANTS: Record<DayStatus, Variant[]> = {
   ],
   below: [
     {
-      card: (p, c) => `${sess(c) ? `${cap(sess(c)!)} a posé une base` : "Bon début"}, mais on est encore loin du sommet du jour : ${p.actual} pts sur ${p.target}, il manque ~${p.suggestion?.gap} pts. Il te reste du temps pour aller chercher le reste, sans te brûler.`,
-      chat: (p, c) => `${sess(c) ? `${cap(sess(c)!)} a posé une base` : "Bon début"}, mais on est encore loin du sommet du jour : ${p.actual} pts sur ${p.target}, il manque ~${p.suggestion?.gap} pts. Il te reste du temps pour aller chercher le reste, sans te brûler — dis-moi si tu peux te libérer un créneau et je t'aide à le caler.`,
-      suggestion: (p, c) => `Pour combler les ~${p.suggestion?.gap} pts : ${SIZE_FR[p.suggestion!.size]}${c.suggSport ? `, p. ex. en ${c.suggSport}` : ""} — autre chose que ta séance du jour.`,
+      card: (p, c) => `${leadBase(c)}, mais on est encore loin du sommet du jour : ${p.actual} pts sur ${p.target}, il manque ~${p.suggestion?.gap} pts. Il te reste du temps pour aller chercher le reste, sans te brûler.`,
+      chat: (p, c) => `${leadBase(c)}, mais on est encore loin du sommet du jour : ${p.actual} pts sur ${p.target}, il manque ~${p.suggestion?.gap} pts. Il te reste du temps pour aller chercher le reste, sans te brûler — dis-moi si tu peux te libérer un créneau et je t'aide à le caler.`,
+      suggestion: (p, c) => `Pour combler les ~${p.suggestion?.gap} pts : ${SIZE_FR[p.suggestion!.size]}${c.suggSport ? `, p. ex. en ${c.suggSport}` : ""} — autre chose que ${dayWork(c)}.`,
     },
     {
       card: (p) => `Encore du chemin avant le sommet : ${p.actual} pts sur ${p.target}, il manque ~${p.suggestion?.gap}. Rien d'alarmant — mais si tu as un creux dans la journée, ce serait le bon moment d'aller le chercher.`,
       chat: (p) => `Encore du chemin avant le sommet : ${p.actual} pts sur ${p.target}, il manque ~${p.suggestion?.gap}. Rien d'alarmant — mais si tu as un creux dans la journée, ce serait le bon moment d'aller le chercher. Je peux t'aider à choisir quoi faire.`,
-      suggestion: (p, c) => `Pour combler les ~${p.suggestion?.gap} pts : ${SIZE_FR[p.suggestion!.size]}${c.suggSport ? `, idéalement en ${c.suggSport}` : ""} — varie du sport déjà fait.`,
+      suggestion: (p, c) => `Pour combler les ~${p.suggestion?.gap} pts : ${SIZE_FR[p.suggestion!.size]}${c.suggSport ? `, idéalement en ${c.suggSport}` : ""} — varie ${c.todayCount > 1 ? "des sports déjà faits" : "du sport déjà fait"}.`,
     },
   ],
   above: [
@@ -90,8 +100,8 @@ const VARIANTS: Record<DayStatus, Variant[]> = {
   ],
   rest_broken: [
     {
-      card: (p, c) => `Je t'avais conseillé le repos, et te voilà avec ${p.actual} pts${sess(c) ? ` après ${sess(c)}` : ""} — l'envie de bouger, je la comprends. Pas de drame : garde la suite légère et privilégie la récup.`,
-      chat: (p, c) => `Je t'avais conseillé le repos, et te voilà avec ${p.actual} pts${sess(c) ? ` après ${sess(c)}` : ""} — l'envie de bouger, je la comprends. Pas de drame : écoute comment tu te sens demain matin, et on reprendra vraiment au calme pour rééquilibrer.`,
+      card: (p, c) => `Je t'avais conseillé le repos, et te voilà avec ${p.actual} pts${afterSessions(c)} — l'envie de bouger, je la comprends. Pas de drame : garde la suite légère et privilégie la récup.`,
+      chat: (p, c) => `Je t'avais conseillé le repos, et te voilà avec ${p.actual} pts${afterSessions(c)} — l'envie de bouger, je la comprends. Pas de drame : écoute comment tu te sens demain matin, et on reprendra vraiment au calme pour rééquilibrer.`,
     },
     {
       card: (p) => `Repos au programme, mais tu as quand même chargé ${p.actual} pts. Bouger fait du bien à la tête — veille juste à ce que demain soit vraiment calme, pour rééquilibrer.`,

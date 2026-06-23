@@ -12,7 +12,13 @@ const BTN =
 /** The one button under the coach card. With a logged session today it asks the coach to debrief it
  *  (commentActivities → AI reply) then opens /coach; otherwise it's a plain link into the conversation.
  *  Replaces the old "Discuter" CTA + the separate debrief section (one button, one destination). */
-export function CoachCta({ coachName, debriefDate }: { coachName: string; debriefDate: string | null }) {
+export function CoachCta({
+  coachName, debriefDate, sessionCount = 1,
+}: {
+  coachName: string;
+  debriefDate: string | null;
+  sessionCount?: number;
+}) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
@@ -57,7 +63,7 @@ export function CoachCta({ coachName, debriefDate }: { coachName: string; debrie
           )}
         </button>
         <span className="hidden text-sm text-stone-500 sm:inline dark:text-stone-400">
-          {coachName} commente ta séance dans la conversation
+          {coachName} commente {sessionCount > 1 ? "tes séances" : "ta séance"} dans la conversation
         </span>
       </div>
       {error && <p className="mt-2 text-xs text-red-600 dark:text-red-400">{error}</p>}

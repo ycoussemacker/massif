@@ -5,11 +5,12 @@ import { BriefingBody, BriefingRegenProvider } from "./briefing-regen";
 import { BriefingDetail } from "./briefing-detail";
 import { BriefingCollapsible } from "./briefing-collapsible";
 import { CoachCta } from "./coach-cta";
+import { ActivitySnapshot } from "./activity-snapshot";
 import { READINESS, SYSTEM_TAG_FR, sportIcon, type Readiness } from "@/lib/labels";
 import { todayLocal, dateMinusDays, ATHLETE_TZ } from "@/lib/coach-context";
 import { loadCoachSettings, personaAvatar, personaName } from "@/lib/coach-settings";
 import { createServiceClient } from "@/lib/supabase/server";
-import type { Briefing } from "@/lib/data";
+import type { Activity, Briefing } from "@/lib/data";
 import type { DayStatus } from "@/lib/day-progress";
 import type { VerdictTone, VerdictVoice } from "@/lib/coach-voice";
 
@@ -96,13 +97,14 @@ function BriefingPlan({ briefing }: { briefing: Briefing }) {
  *  briefing stays in front and the verdict appears as a soft "keep resting" note below (the day isn't
  *  over — the athlete may sync many times before training). Server component (no client JS of its own). */
 export async function CoachHero({
-  briefing, verdict, debriefDate,
+  briefing, verdict, todayActivities,
 }: {
   briefing: Briefing | null;
   verdict: VerdictVoice | null;
-  debriefDate: string | null; // today's date when there's a session to debrief, else null
+  todayActivities: Activity[]; // today's logged sessions — shown as a conversation "snapshot" + debrief target
 }) {
   const today = todayLocal();
+  const debriefDate = todayActivities.length > 0 ? today : null;
   const readiness = (briefing?.readiness ?? null) as Readiness | null;
   const settings = await loadCoachSettings(await createServiceClient());
   const avatarSrc = personaAvatar(settings.persona, settings.persona_gender);
@@ -174,6 +176,11 @@ export async function CoachHero({
 
         {/* Message du jour — pleine largeur sous l'en-tête */}
         <div className="mt-4">
+          {/* Snapshot de la conversation : l'activité du jour, telle qu'elle apparaît dans le chat
+              (sans le bouton "Commente"), juste au-dessus du message du coach. */}
+          {todayActivities.length > 0 && (
+            <ActivitySnapshot dateLabel="Aujourd'hui" activities={todayActivities} className="mb-3" />
+          )}
           {headline ? (
             // ── Le verdict du jour parle ; le briefing du matin se replie en dessous. ──
             <>
@@ -242,7 +249,7 @@ export async function CoachHero({
 
           {/* CTA unique : "Débrief avec {coach}" (commente la séance du jour → /coach) ou, sans activité,
               simple entrée vers la conversation. Seul usage autorisé du dégradé bg-massif. */}
-          <CoachCta coachName={coachName} debriefDate={debriefDate} />
+          <CoachCta coachName={coachName} debriefDate={debriefDate} sessionCount={todayActivities.length} />
         </div>
       </section>
     </BriefingRegenProvider>

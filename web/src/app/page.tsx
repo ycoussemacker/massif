@@ -64,8 +64,8 @@ export default async function Dashboard() {
     hasPlan: todayPlan.hasPlan, target: todayPlan.targetLoad, isRest: todayPlan.isRest,
     activities: allActivities, avgLoad, today,
   });
-  // Y a-t-il une séance du jour à débriefer ? (le bouton "Débrief avec {coach}" commente CE jour)
-  const debriefDate = allActivities.some((a) => a.local_date === today) ? today : null;
+  // Séance(s) du jour — affichées en "snapshot" dans la carte coach + cible du bouton "Débrief".
+  const todayActivities = allActivities.filter((a) => a.local_date === today);
 
   return (
     <div className="min-h-full overflow-x-hidden bg-page pt-[env(safe-area-inset-top)] font-sans text-stone-900 dark:text-stone-100">
@@ -91,7 +91,7 @@ export default async function Dashboard() {
         </section>
 
         {/* Le coach prend la parole — verdict du jour en tête, briefing repliable dessous, CTA unique */}
-        <CoachHero briefing={briefing} verdict={verdict} debriefDate={debriefDate} />
+        <CoachHero briefing={briefing} verdict={verdict} todayActivities={todayActivities} />
 
         {/* Indicateurs clés — CTL/ATL/TSB interactifs (sélection = scrubber) + indicateurs du jour. */}
         {metrics.length > 1 ? (

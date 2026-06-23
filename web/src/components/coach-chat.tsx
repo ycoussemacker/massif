@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, useTransition } from "react";
 import { sendCoachMessage, commentActivities } from "@/app/actions";
 import { READINESS, SYSTEM_TAG_FR, sportName, sportIcon, type Readiness } from "@/lib/labels";
 import { Markdown } from "@/components/markdown";
+import { ActivitySnapshot } from "@/components/activity-snapshot";
 import type { TimelineItem } from "@/lib/chat";
 
 function dur(s: number | null | undefined): string {
@@ -48,7 +49,9 @@ function BriefingBubble({ b }: { b: Extract<TimelineItem, { kind: "briefing" }>[
   );
 }
 
-/** One day's activities in a single bubble, with the "Commente" button fused at the bottom. */
+/** One day's activities in a single bubble, with the "Commente" button fused at the bottom.
+ *  The card body (header + per-session lines) is the shared <ActivitySnapshot> — same look the
+ *  dashboard coach card reuses as its conversation "snapshot". */
 function ActivityGroupCard({
   group, onComment, pending,
 }: {
@@ -59,40 +62,10 @@ function ActivityGroupCard({
   const n = group.activities.length;
   return (
     <div className="w-full self-center sm:max-w-md">
-      <div className="overflow-hidden rounded-2xl border border-stone-200 bg-white dark:border-stone-800 dark:bg-stone-900">
-        <div className="border-b border-stone-100 px-4 py-2 dark:border-stone-800">
-          <span className="text-xs font-medium uppercase tracking-wide text-stone-400">
-            📅 {group.dateLabel}{n > 1 ? ` · ${n} activités` : ""}
-          </span>
-        </div>
-        <ul className="divide-y divide-stone-100 dark:divide-stone-800">
-          {group.activities.map((a) => {
-            const bits = [
-              dur(a.duration_s),
-              a.distance_m != null ? `${(a.distance_m / 1000).toFixed(1)} km` : null,
-              a.vertical_gain_m != null || a.vertical_loss_m != null
-                ? `D+ ${r0(a.vertical_gain_m)} / D− ${r0(a.vertical_loss_m)}` : null,
-              a.avg_hr != null ? `FC ${a.avg_hr}` : null,
-            ].filter(Boolean) as string[];
-            return (
-              <li key={a.id} className="px-4 py-2.5 text-sm">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="flex min-w-0 items-center gap-1.5 font-medium">
-                    <span aria-hidden>{sportIcon(a.sport_code)}</span>
-                    <span className="truncate">{sportName(a.sport_code, a.sport)}</span>
-                  </span>
-                  <span className="shrink-0 font-semibold tabular-nums">
-                    {r0(a.training_load)}<span className="ml-0.5 text-xs font-normal text-stone-400">pts</span>
-                  </span>
-                </div>
-                <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-xs text-stone-500 dark:text-stone-400">
-                  {bits.map((bit, i) => <span key={i}>{bit}</span>)}
-                </div>
-              </li>
-            );
-          })}
-        </ul>
-        {group.commentable && (
+      <ActivitySnapshot
+        dateLabel={group.dateLabel}
+        activities={group.activities}
+        footer={group.commentable && (
           <button
             type="button"
             onClick={() => onComment(group.localDate, n, group.whenLabel)}
@@ -102,7 +75,7 @@ function ActivityGroupCard({
             💬 {n > 1 ? "Commente ces activités" : "Commente cette activité"}
           </button>
         )}
-      </div>
+      />
     </div>
   );
 }
