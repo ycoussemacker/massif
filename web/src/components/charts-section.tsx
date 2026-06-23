@@ -13,7 +13,7 @@ import type { DailyMetric, Activity } from "@/lib/data";
 import { loadOlderForme } from "@/app/actions";
 import { HelpButton, type HelpContent } from "./help";
 import { DayDetailPanel } from "./day-detail-panel";
-import { Gauge, type Zone } from "./charts";
+import { Gauge, ArcGauge, type Zone } from "./charts";
 import { SparklineTile } from "./sparkline";
 import { groupByDateSpanned, rollingMonotony } from "@/lib/aggregate";
 import { fmt } from "@/lib/format";
@@ -326,6 +326,13 @@ export function ChartsSection({
   const dayLabel = isToday ? "(aujourd'hui)" : shortDate(selected!);
   const panelDate = selected ?? latestDate;
 
+  // Secondary indicators for the selected day (shared by the desktop bars + the mobile arc gauges).
+  const monoV = monoSeries[selIdx] ?? null;
+  const monoMax = Math.max(2.2, (monoV ?? 0) + 0.2);
+  const acwrV = selM?.acwr ?? null;
+  const acwrMax = Math.max(2, (acwrV ?? 0) + 0.1);
+  const readyV = selM?.training_readiness ?? null;
+
   const onReachStart = useCallback(() => {
     if (busyRef.current || reachedFloor) return;
     const oldest = metrics[0]?.local_date;
@@ -384,14 +391,21 @@ export function ChartsSection({
         />
       )}
 
-      {/* Secondary indicators — the SELECTED day's values. */}
-      <div className="mt-6 grid gap-5 sm:grid-cols-3">
-        <Gauge label="Monotonie · 7 j" help={MONO_HELP} value={monoSeries[selIdx] ?? null} min={0}
-          max={Math.max(2.2, (monoSeries[selIdx] ?? 0) + 0.2)} zones={monoZones(Math.max(2.2, (monoSeries[selIdx] ?? 0) + 0.2))} />
-        <Gauge label="ACWR · ratio de charge" help={ACWR_HELP} value={selM?.acwr ?? null} min={0}
-          max={Math.max(2, (selM?.acwr ?? 0) + 0.1)} zones={acwrZones(Math.max(2, (selM?.acwr ?? 0) + 0.1))} />
-        <Gauge label="Disponibilité (Garmin)" help={READY_HELP} value={selM?.training_readiness ?? null} unit="" min={0} max={100} zones={readyZones} />
-      </div>
+      {/* Secondary indicators — the SELECTED day's values. Mobile: compact 3/4-circle gauges, 3-up.
+          Desktop: the horizontal bar gauges (more room). */}
+      {narrow ? (
+        <div className="mt-6 grid grid-cols-3 gap-2">
+          <ArcGauge label="Monotonie" help={MONO_HELP} value={monoV} min={0} max={monoMax} zones={monoZones(monoMax)} />
+          <ArcGauge label="ACWR" help={ACWR_HELP} value={acwrV} min={0} max={acwrMax} zones={acwrZones(acwrMax)} />
+          <ArcGauge label="Dispo. (Garmin)" help={READY_HELP} value={readyV} unit="" min={0} max={100} zones={readyZones} />
+        </div>
+      ) : (
+        <div className="mt-6 grid gap-5 sm:grid-cols-3">
+          <Gauge label="Monotonie · 7 j" help={MONO_HELP} value={monoV} min={0} max={monoMax} zones={monoZones(monoMax)} />
+          <Gauge label="ACWR · ratio de charge" help={ACWR_HELP} value={acwrV} min={0} max={acwrMax} zones={acwrZones(acwrMax)} />
+          <Gauge label="Disponibilité (Garmin)" help={READY_HELP} value={readyV} unit="" min={0} max={100} zones={readyZones} />
+        </div>
+      )}
 
       {/* Fraîcheur par système — the selected day's per-channel form. */}
       <h3 className="mt-6 mb-2 text-sm font-medium text-stone-700 dark:text-stone-300">Fraîcheur par système</h3>
