@@ -69,6 +69,66 @@ DESCENT_LOAD_PER_1000M = 70.0
 # estimate). With HR present, hrtss already captures the climb, so this is not added (no double count).
 ASCENT_AEROBIC_PER_1000M = 100.0
 
+# ── Heat & altitude (docs/research/heat-altitude.md) ──────────────────────────────────────────────
+# THE RULE: heat and altitude already raise HR for a given effort, so the HR-driven channels (hrtss)
+# ALREADY count that strain — never multiply HR-derived load by an environmental factor (double-count).
+# The ONLY load correction we apply is to the environment-BLIND mechanical methods tss (power) and rtss
+# (pace): they read external work, which under-counts the cost of producing it in thin air. Everything
+# else (temperature, acclimation, hypoxia exposure dose) is CONTEXT for the coach, not a load input.
+HEAT_TEMP_THRESHOLD_C = 22.0     # Garmin's heat-acclimation threshold (manuals); "a hot session" for the coach
+ALT_ACCLIM_THRESHOLD_M = 800.0   # Garmin's altitude-acclimation threshold; also the floor below which the
+#                                  altitude power/pace correction is negligible → factor 1.0
+ALT_HYPOXIA_THRESHOLD_M = 1500.0  # exposure-dose threshold: where hypoxia starts to matter for endurance
+#                                   (effects are detectable from ~800 m but become clear above ~1000-1500 m)
+# Altitude-adjusted power/pace (Bassett et al. 1999, MSSE — the curves intervals.icu uses; anchored to
+# Wehrlin & Hallén 2006, PMID 16311764: VO2max falls ~6.3%/1000 m, range 4.6-7.5%, in unacclimatized fit
+# athletes). We express the loss as an intensity MULTIPLIER 1/(1-loss) ≥ 1.0: the same recorded power/pace
+# at altitude reflects a harder effort relative to a reduced aerobic ceiling. Population starts (like the
+# rest of this module) — calibrate later. Acclimatization recovers ~30-40% of the acute loss; we default
+# to UNACCLIMATIZED (the bigger, conservative correction), since the athlete lives low and climbs for sessions.
+VO2MAX_LOSS_PER_1000M = 0.065
+ALT_ACCLIM_RECOVERY = 0.35       # fraction of the acute VO2max loss recovered once acclimatized
+ALT_CORRECTION_CAP = 0.30        # cap the loss term — beyond ~5000 m we're outside this linear model's range
+
+
+def altitude_power_factor(avg_altitude_m: float | None, acclimatized: bool = False) -> float:
+    """Intensity multiplier (≥ 1.0) for the altitude-blind mechanical methods (tss/rtss) — NOT for hrtss.
+    Below ALT_ACCLIM_THRESHOLD_M the effect is negligible → 1.0. Above it, the athlete's usable aerobic
+    power is reduced ~VO2MAX_LOSS_PER_1000M per 1000 m, so the same recorded power/pace is a harder effort:
+    multiply intensity by 1/(1-loss). Defaults to unacclimatized (the larger correction)."""
+    alt = avg_altitude_m or 0.0
+    if alt <= ALT_ACCLIM_THRESHOLD_M:
+        return 1.0
+    loss = VO2MAX_LOSS_PER_1000M * (alt - ALT_ACCLIM_THRESHOLD_M) / 1000.0
+    if acclimatized:
+        loss *= (1.0 - ALT_ACCLIM_RECOVERY)
+    loss = min(loss, ALT_CORRECTION_CAP)
+    return 1.0 / (1.0 - loss)
+
+
+# ── Effective-dated thresholds (athlete_thresholds; rec 2) ────────────────────────────────────────
+# Resolve the athlete's thresholds AS-OF an activity's date so historical load stays reproducible after a
+# threshold change, and so the model can track a non-stationary HR baseline (heat/altitude acclimation
+# shifts FCmax/LTHR over days-weeks). Only these fields are dated; everything else stays on athlete_profile.
+THRESHOLD_FIELDS = ("max_hr", "resting_hr", "lthr", "ftp_watts", "threshold_pace_s_per_km", "weight_kg")
+
+
+def resolve_profile(profile: dict, history: list[dict] | None, on_date: str | None) -> dict:
+    """Return the profile as-of `on_date` (YYYY-MM-DD): the base athlete_profile overlaid with the latest
+    athlete_thresholds row whose effective_date <= on_date (its non-null THRESHOLD_FIELDS only). Empty/absent
+    history or date → the base profile UNCHANGED, so behaviour is identical until dated rows exist."""
+    if not history or not on_date:
+        return profile
+    applicable = [h for h in history if (h.get("effective_date") or "") <= on_date]
+    if not applicable:
+        return profile
+    row = max(applicable, key=lambda h: h["effective_date"])
+    merged = dict(profile)
+    for k in THRESHOLD_FIELDS:
+        if row.get(k) is not None:
+            merged[k] = row[k]
+    return merged
+
 # ── Multi-day expedition handling (data hygiene) ────────────────────────────────────────────────
 # Strava lets you publish a multi-day outing (a GR20, a trek) as ONE activity: elapsed_time then spans
 # the whole trip (nights included) and the row lands entirely on its START date. Two distortions follow:
@@ -166,46 +226,63 @@ def _mass_factor(activity: dict, profile: dict) -> float:
     return 1.0 + (activity.get("carried_load_kg") or 0.0) / weight
 
 
-def _descent_load(activity: dict, profile: dict) -> float:
+# ── adaptive calibration (prio 3c) ──────────────────────────────────────────────────────────────
+# Calibratable coefficients are resolved to a PERSONALIZED value from athlete_load_params when one has
+# been fitted, else the population default below — so an un-calibrated athlete gets exactly today's
+# behaviour ("works without any input, refines with data"). The resolved coefficients ride along in `c`.
+def _effective(params: dict | None) -> dict:
+    p = params or {}
+    return {
+        "default_if": p.get("default_if", DEFAULT_IF),
+        "descent_per_1000m": p.get("descent_load_per_1000m", DESCENT_LOAD_PER_1000M),
+        "ascent_per_1000m": p.get("ascent_aerobic_per_1000m", ASCENT_AEROBIC_PER_1000M),
+    }
+
+
+def _descent_load(activity: dict, profile: dict, c: dict) -> float:
     """Eccentric/structural cost of descending (D-) — the HRV-blind neuromuscular stressor, computed
     independently of the aerobic engine and ADDED to the neuromuscular channel. Descending brakes the
     body weight eccentrically (quads/tendons) while the heart stays calm, so this must not be
     discounted just because HR — and hence the aerobic load — was low. Linear in D-, scaled by mass.
     `vertical_loss_m` may be absent (no altitude stream / non-GPS sport) → 0, degrading gracefully."""
     vloss = activity.get("vertical_loss_m") or 0.0
-    return (vloss / 1000.0) * DESCENT_LOAD_PER_1000M * _mass_factor(activity, profile)
+    return (vloss / 1000.0) * c["descent_per_1000m"] * _mass_factor(activity, profile)
 
 
-# ── per-method computations: each returns (load_points, IF) or None if inputs are missing ──
+# ── per-method computations: each returns (load_points, IF) or None if inputs are missing.
+#    `c` carries the resolved (personalized-or-default) coefficients; unused by methods that need none. ──
 
-def _method_tss(a: dict, p: dict) -> tuple[float, float] | None:
+def _method_tss(a: dict, p: dict, c: dict) -> tuple[float, float] | None:
     np_w, ftp = a.get("np_power_w") or a.get("avg_power_w"), p.get("ftp_watts")
     if not (np_w and ftp):
         return None
-    intensity = np_w / ftp
+    # Power is environment-blind → correct for altitude (thin air costs more for the same watts). HR is NOT
+    # corrected (hrtss already reflects the strain). Factor is 1.0 at low altitude, so flat rides are unchanged.
+    intensity = (np_w / ftp) * altitude_power_factor(a.get("avg_altitude_m"))
     return _tss_from_if(_active_duration(a), intensity), intensity
 
 
-def _method_hrtss(a: dict, p: dict) -> tuple[float, float] | None:
+def _method_hrtss(a: dict, p: dict, c: dict) -> tuple[float, float] | None:
     avg_hr, rhr, max_hr, lthr = a.get("avg_hr"), p.get("resting_hr"), p.get("max_hr"), p.get("lthr")
     if not (avg_hr and rhr and max_hr and lthr):
         return None
     avg_frac = _hr_fraction(avg_hr, rhr, max_hr)
     thr_frac = _hr_fraction(lthr, rhr, max_hr)
-    intensity = avg_frac / thr_frac if thr_frac > 0 else DEFAULT_IF
+    intensity = avg_frac / thr_frac if thr_frac > 0 else c["default_if"]
     return _tss_from_if(_active_duration(a), intensity), intensity
 
 
-def _method_rtss(a: dict, p: dict) -> tuple[float, float] | None:
-    # pace-based TSS: IF = threshold_pace / actual_pace (faster = higher IF)
+def _method_rtss(a: dict, p: dict, c: dict) -> tuple[float, float] | None:
+    # pace-based TSS: IF = threshold_pace / actual_pace (faster = higher IF). Pace is environment-blind →
+    # correct for altitude (same pace is harder in thin air); hrtss is never corrected (no double-count).
     avg_pace, thr_pace = a.get("avg_pace_s_per_km"), p.get("threshold_pace_s_per_km")
     if not (avg_pace and thr_pace):
         return None
-    intensity = thr_pace / avg_pace
+    intensity = (thr_pace / avg_pace) * altitude_power_factor(a.get("avg_altitude_m"))
     return _tss_from_if(_active_duration(a), intensity), intensity
 
 
-def _method_vertical_duration(a: dict, p: dict) -> tuple[float, float] | None:
+def _method_vertical_duration(a: dict, p: dict, c: dict) -> tuple[float, float] | None:
     # No-HR mountain AEROBIC estimate: duration base + the climb's aerobic cost (ascent × mass). When
     # HR is usable, hrtss is more faithful (it already reflects the climb), so compute_load skips this
     # method in favour of hrtss — but ONLY when the ladder actually offers hrtss, so ladders without an
@@ -215,12 +292,12 @@ def _method_vertical_duration(a: dict, p: dict) -> tuple[float, float] | None:
     if not a.get("duration_s"):
         return None
     vgain = a.get("vertical_gain_m") or 0.0
-    base = _tss_from_if(_active_duration(a), DEFAULT_IF)
-    ascent_points = (vgain / 1000.0) * ASCENT_AEROBIC_PER_1000M * _mass_factor(a, p)
-    return base + ascent_points, DEFAULT_IF
+    base = _tss_from_if(_active_duration(a), c["default_if"])
+    ascent_points = (vgain / 1000.0) * c["ascent_per_1000m"] * _mass_factor(a, p)
+    return base + ascent_points, c["default_if"]
 
 
-def _method_session_rpe(a: dict, p: dict) -> tuple[float, float] | None:
+def _method_session_rpe(a: dict, p: dict, c: dict) -> tuple[float, float] | None:
     rpe = a.get("perceived_rpe")
     if not rpe:
         return None
@@ -228,22 +305,22 @@ def _method_session_rpe(a: dict, p: dict) -> tuple[float, float] | None:
     return _tss_from_if(_active_duration(a), intensity), intensity
 
 
-def _method_grade_volume(a: dict, p: dict) -> tuple[float, float] | None:
+def _method_grade_volume(a: dict, p: dict, c: dict) -> tuple[float, float] | None:
     # TODO (Phase 2/3): grade-weighted climbing load from climbing_sets
     # (sum grade_numeric_weight x attempts x neuromuscular_coeff, scaled by wall-time density).
     # Until climbing detail is wired, return None so the ladder falls through to session_rpe.
     return None
 
 
-def _method_tonnage_rpe(a: dict, p: dict) -> tuple[float, float] | None:
+def _method_tonnage_rpe(a: dict, p: dict, c: dict) -> tuple[float, float] | None:
     # TODO (Phase 2/3): tonnage (sets x reps x kg) x avg RPE from strength_sets.
     return None
 
 
-def _method_duration_fallback(a: dict, p: dict) -> tuple[float, float] | None:
+def _method_duration_fallback(a: dict, p: dict, c: dict) -> tuple[float, float] | None:
     if not a.get("duration_s"):
         return None
-    return _tss_from_if(_active_duration(a), DEFAULT_IF), DEFAULT_IF
+    return _tss_from_if(_active_duration(a), c["default_if"]), c["default_if"]
 
 
 _METHODS = {
@@ -258,16 +335,18 @@ _METHODS = {
 }
 
 
-def compute_load(activity: dict, sport: dict, profile: dict) -> LoadResult:
+def compute_load(activity: dict, sport: dict, profile: dict, params: dict | None = None) -> LoadResult:
     """Pick the aerobic-engine method (first ladder method whose inputs exist), then build the two
     channels INDEPENDENTLY (see module docstring) and let the DB sum them.
 
-    Aerobic-engine sports: the chosen method IS the aerobic load; the neuromuscular channel is the
-    eccentric descent (D-) plus a small impact fraction of that aerobic effort, added on top.
-    Strength/technical sports (STRUCTURAL_EFFORT_GROUPS): no aerobic engine, so the session effort is
-    split aerobic : neuromuscular by taxonomy (mostly neuromuscular)."""
+    `params` (athlete_load_params) personalizes the calibratable coefficients; absent/empty → today's
+    population defaults (no behaviour change). Aerobic-engine sports: the chosen method IS the aerobic
+    load; the neuromuscular channel is the eccentric descent (D-) plus a small impact fraction of that
+    aerobic effort, added on top. Strength/technical sports (STRUCTURAL_EFFORT_GROUPS): no aerobic
+    engine, so the session effort is split aerobic : neuromuscular by taxonomy (mostly neuromuscular)."""
+    c = _effective(params)
     ladder = sport.get("load_method_ladder") or ["duration_fallback"]
-    chosen_method, points, intensity = "duration_fallback", 0.0, DEFAULT_IF
+    chosen_method, points, intensity = "duration_fallback", 0.0, c["default_if"]
     for method in ladder:
         fn = _METHODS.get(method)
         if fn is None:
@@ -276,9 +355,9 @@ def compute_load(activity: dict, sport: dict, profile: dict) -> LoadResult:
         # reading is used (and the climb isn't double-counted), yet ladders without an hrtss step
         # (alpinism / via_ferrata) still get vertical_duration's ascent supplement rather than falling
         # through to duration_fallback. (Bug guard: HR must never LOWER a vertical day's load.)
-        if method == "vertical_duration" and "hrtss" in ladder and _method_hrtss(activity, profile):
+        if method == "vertical_duration" and "hrtss" in ladder and _method_hrtss(activity, profile, c):
             continue
-        result = fn(activity, profile)
+        result = fn(activity, profile, c)
         if result is not None:
             points, intensity = result
             chosen_method = method
@@ -293,7 +372,7 @@ def compute_load(activity: dict, sport: dict, profile: dict) -> LoadResult:
         # channel is built additively from stressors the aerobic number can't see.
         impact = points * IMPACT_FRAC.get(group, IMPACT_FRAC["other"])
         aerobic = points
-        neuromuscular = impact + _descent_load(activity, profile)
+        neuromuscular = impact + _descent_load(activity, profile, c)
 
     eff_days = activity_span_days(
         activity.get("started_at"), activity.get("duration_s"), activity.get("moving_s"))

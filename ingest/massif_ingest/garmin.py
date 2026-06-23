@@ -95,6 +95,9 @@ def fetch_day(client, date_str: str) -> dict:
         "rhr": _safe(client, "get_rhr_day", date_str) or {},
         "stress": _safe(client, "get_stress_data", date_str) or {},
         "readiness": _safe(client, "get_training_readiness", date_str),
+        # MaxMET payload carries Garmin/Firstbeat heat & altitude acclimation (CONTEXT for the coach, not
+        # a load input — see docs/research/heat-altitude.md). One more endpoint; _safe isolates failures.
+        "maxmet": _safe(client, "get_max_metrics", date_str),
     }
 
 
@@ -177,6 +180,19 @@ def _readiness(readiness):
     return None
 
 
+def _acclimation(maxmet):
+    """(heat_acclimation_pct, altitude_acclimation_m) from Garmin's MaxMET payload. The acclimation lives
+    under heatAltitudeAcclimation; the payload is a list (one item per requested date) or a bare dict.
+    Defensive like the rest of this module — any missing path → (None, None)."""
+    obj = maxmet[0] if isinstance(maxmet, list) and maxmet else maxmet
+    if not isinstance(obj, dict):
+        return None, None
+    haa = obj.get("heatAltitudeAcclimation")
+    if not isinstance(haa, dict):
+        return None, None
+    return _int(haa.get("heatAcclimationPercentage")), _int(haa.get("altitudeAcclimation"))
+
+
 def _normalize(date_str: str, raw: dict) -> dict:
     """Map the raw Garmin payload bundle to a daily_metrics recovery partial (recovery cols only)."""
     sleep = raw.get("sleep") if isinstance(raw.get("sleep"), dict) else {}
@@ -186,6 +202,7 @@ def _normalize(date_str: str, raw: dict) -> dict:
     dto = sleep.get("dailySleepDTO") if isinstance(sleep.get("dailySleepDTO"), dict) else {}
     hrv_summary = hrv.get("hrvSummary") if isinstance(hrv.get("hrvSummary"), dict) else {}
     bb_high, bb_low, bb_wake = _body_battery(raw.get("battery"))
+    heat_acc, alt_acc = _acclimation(raw.get("maxmet"))
 
     return {
         "local_date": date_str,
@@ -207,6 +224,9 @@ def _normalize(date_str: str, raw: dict) -> dict:
         "body_battery_wake": _int(bb_wake),
         "stress_avg": _int(stress.get("avgStressLevel")),
         "training_readiness": _int(_readiness(raw.get("readiness"))),
+        # Heat/altitude acclimation — CONTEXT for interpreting HR & recovery, not a load input.
+        "heat_acclimation_pct": heat_acc,
+        "altitude_acclimation_m": alt_acc,
     }
 
 

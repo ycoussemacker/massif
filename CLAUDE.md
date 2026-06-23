@@ -264,3 +264,19 @@ contextual links on the dashboard). **Keyword search needs no migration**: it OR
 and `raw_payload->>description` (JSONB). `strava.py` now fetches activity detail for ALL recent activities
 (was climbing-only) so descriptions land in `raw_payload` — **full description coverage requires a re-sync**
 (`python -m massif_ingest.sync`); until then only climbing activities (already detailed) are description-searchable.
+
+**HEAT & ALTITUDE integrated (2026-06-23) — as CONTEXT + a narrow power/pace correction, NEVER an HR-load
+multiplier.** Backed by a fact-checked lit review in `docs/research/heat-altitude.md` (sources/PMIDs); model
+delta = Upgrade 4 in `docs/MODEL_UPGRADES.md`. The rule: HR already rises with heat/altitude, so hrTSS already
+counts that strain — multiplying HR-derived load would **double-count**. So instead: (1) **tss/rtss only**
+get an altitude-adjusted-power/pace correction (`load.altitude_power_factor` ↔ `load.ts altitudePowerFactor`,
+Bassett 1999; `hrtss` is NEVER corrected — a test locks this); (2) **`athlete_thresholds`** (migration `…0009`)
++ `load.resolve_profile` resolve thresholds as-of each activity's date (empty table ⇒ base profile, zero
+behaviour change) — the right answer to the non-stationary HR baseline acclimation creates, wired into
+`strava.py`/`sync.py` recompute + `strava-sync.ts`; (3) heat/altitude are **coach context** — new
+`activities.{avg_temp_c,max_altitude_m,avg_altitude_m,time_high_altitude_s}` (Strava summary + altitude
+stream, migration `…0007`) and `daily_metrics.{heat_acclimation_pct,altitude_acclimation_m}` (Garmin MaxMET
+`get_max_metrics`, migration `…0008`), surfaced via the `environment` block in the coach context mirrors and a
+rewritten **rule 8** in all four coach prompts (read HR/recovery through heat/altitude; never inflate load).
+KEEP the usual mirrors in sync (load.py↔load.ts, context.ts↔coach-context.ts, coach.ts↔coach-briefing.ts).
+Additive + inert until data flows; reaches history via `--recompute-loads`. pytest 44 green; web+coach tsc clean.

@@ -201,14 +201,37 @@ def vertical_loss_from_altitude(altitude: list, deadband_m: float = 2.0) -> floa
     return round(loss, 1)
 
 
+def altitude_stats(
+    altitude: list, duration_s: int | None = None,
+    threshold_m: float = load.ALT_HYPOXIA_THRESHOLD_M,
+) -> tuple[float | None, float | None, int | None]:
+    """(max_m, avg_m, time_high_s) from an altitude stream — the heat/altitude CONTEXT signals (rec 1) and
+    the avg used by the tss/rtss altitude correction (rec 3). time_high is the exposure dose above
+    `threshold_m`, approximated as (fraction of samples above it) × duration (Strava streams are ~1 Hz but
+    not guaranteed evenly sampled). All None when the stream is empty/absent → columns left unset."""
+    vals = [a for a in altitude if isinstance(a, (int, float))]
+    if not vals:
+        return None, None, None
+    mx = round(max(vals), 1)
+    avg = round(sum(vals) / len(vals), 1)
+    high_frac = sum(1 for a in vals if a >= threshold_m) / len(vals)
+    time_high = round(high_frac * duration_s) if duration_s else None
+    return mx, avg, time_high
+
+
 def _build_activity_row(
     act: dict, sport_map: dict[str, dict], profile: dict, tz: str = "Europe/Paris",
-    user_rpe: int | None = None, descent_m: float | None = None,
+    user_rpe: int | None = None, descent_m: float | None = None, params: dict | None = None,
+    threshold_history: list[dict] | None = None,
+    alt_stats: tuple[float | None, float | None, int | None] | None = None,
 ) -> tuple[dict, dict]:
     """Pure (no I/O): turn a Strava summary activity into an `activities` row + its sport row.
 
     Reads `sport_type`, NOT the legacy `type` (which collapses road/gravel/MTB to 'Ride' and
     road/trail to 'Run'). Unmatched sport strings route to the 'unknown' sport (flagged, not lost).
+    `threshold_history` (athlete_thresholds) resolves the thresholds as-of the activity's date; `alt_stats`
+    = (max_m, avg_m, time_high_s) from the altitude stream — heat/altitude context + the avg the tss/rtss
+    altitude correction reads. Both optional → today's behaviour when absent.
     """
     sport_type = act.get("sport_type") or act.get("type") or "Workout"
     sport = sport_map.get(sport_type) or sport_map["unknown"]
@@ -256,7 +279,24 @@ def _build_activity_row(
     # missing stream on a re-sync doesn't blank a previously-stored D- (the upsert leaves it untouched).
     if descent_m is not None:
         row["vertical_loss_m"] = descent_m
-    result = load.compute_load(row, sport, profile)
+
+    # Heat context: Strava's device-reported ambient temperature (only set when present, so a temp-less
+    # device / re-sync never blanks a stored value). Altitude stats (from the stream, same gating as D-):
+    # avg_altitude_m must land on the row BEFORE compute_load — the tss/rtss altitude correction reads it.
+    if act.get("average_temp") is not None:
+        row["avg_temp_c"] = act.get("average_temp")
+    if alt_stats is not None:
+        max_alt, avg_alt, time_high = alt_stats
+        if max_alt is not None:
+            row["max_altitude_m"] = max_alt
+        if avg_alt is not None:
+            row["avg_altitude_m"] = avg_alt
+        if time_high is not None:
+            row["time_high_altitude_s"] = time_high
+
+    # Resolve thresholds as-of this activity's date (rec 2): empty history → the base profile unchanged.
+    eff_profile = load.resolve_profile(profile, threshold_history, local_date)
+    result = load.compute_load(row, sport, eff_profile, params)
     row["aerobic_load"] = result.aerobic_load
     row["neuromuscular_load"] = result.neuromuscular_load
     row["load_method_used"] = result.load_method_used
@@ -289,6 +329,8 @@ def sync(after_days: int = 30, stream_days: int | None = None) -> int:
     summaries = fetch_activities(token, after_epoch)
     sport_map = db.load_sport_map()
     profile = db.load_athlete_profile()
+    params = db.load_load_params()  # personalized load coefficients (empty → population defaults)
+    threshold_history = db.load_threshold_history()  # effective-dated thresholds (empty → base profile)
     user_rpes = db.load_user_rpes("strava")  # re-apply RPEs the user logged in the web app
 
     count = 0
@@ -316,14 +358,16 @@ def sync(after_days: int = 30, stream_days: int | None = None) -> int:
         # altitude stream — and load.compute_load needs it to size the eccentric (neuromuscular) cost.
         streams: dict[str, list] = {}
         descent_m: float | None = None
+        alt_stats: tuple[float | None, float | None, int | None] | None = None
         if recent and (base_sport.get("uses_distance") or base_sport.get("uses_hr")):
             streams = _normalize_streams(fetch_streams(token, act["id"]))
             if "altitude" in streams:
                 descent_m = vertical_loss_from_altitude(streams["altitude"])
+                alt_stats = altitude_stats(streams["altitude"], act.get("elapsed_time"))
 
         row, sport = _build_activity_row(
             act, sport_map, profile, tz=s.timezone, user_rpe=user_rpes.get(str(act["id"])),
-            descent_m=descent_m,
+            descent_m=descent_m, params=params, threshold_history=threshold_history, alt_stats=alt_stats,
         )
         row["has_streams"] = bool(streams)
 

@@ -33,6 +33,43 @@ def load_athlete_profile() -> dict:
     return rows[0] if rows else {}
 
 
+def load_load_params() -> dict:
+    """athlete_load_params as {param: value} for load.compute_load / the rollup. Empty when nothing has
+    been calibrated yet → the model uses its population defaults (no behaviour change)."""
+    try:
+        rows = client().table("athlete_load_params").select("param,value").execute().data
+    except Exception:
+        return {}  # table absent (pre-migration) or transient error → defaults
+    return {r["param"]: float(r["value"]) for r in rows if r.get("value") is not None}
+
+
+def load_threshold_history() -> list[dict]:
+    """athlete_thresholds rows (effective-dated thresholds) sorted by effective_date asc, for
+    load.resolve_profile. Empty when none recorded → the base athlete_profile is used (no behaviour
+    change). Tolerant of the table being absent pre-migration (returns [])."""
+    try:
+        return (
+            client().table("athlete_thresholds").select("*")
+            .order("effective_date", desc=False).execute().data
+        )
+    except Exception:
+        return []
+
+
+def upsert_load_param(param: str, value: float, source: str = "fitted", n_samples: int | None = None) -> None:
+    """Insert/update a personalized load coefficient (keyed on param). fitted_at/updated_at: DB defaults."""
+    client().table("athlete_load_params").upsert(
+        {"param": param, "value": value, "source": source, "n_samples": n_samples},
+        on_conflict="param",
+    ).execute()
+
+
+def delete_load_param(param: str) -> None:
+    """Remove a personalized coefficient so the model reverts to its population default — used when a
+    fit no longer qualifies (e.g. not enough data, or the value no longer beats the default)."""
+    client().table("athlete_load_params").delete().eq("param", param).execute()
+
+
 def load_integration_token(provider: str) -> dict:
     """Return the integration_tokens row for a provider (OAuth tokens written by the web UI), or {}."""
     rows = (
@@ -122,8 +159,9 @@ def fetch_activities_for_recompute() -> list[dict]:
     return (
         client()
         .table("activities")
-        .select("id,sport_id,started_at,duration_s,moving_s,avg_hr,np_power_w,avg_power_w,"
-                "avg_pace_s_per_km,vertical_gain_m,vertical_loss_m,carried_load_kg,perceived_rpe")
+        .select("id,sport_id,local_date,started_at,duration_s,moving_s,avg_hr,np_power_w,avg_power_w,"
+                "avg_pace_s_per_km,vertical_gain_m,vertical_loss_m,carried_load_kg,perceived_rpe,"
+                "avg_altitude_m")
         .execute()
         .data
     )

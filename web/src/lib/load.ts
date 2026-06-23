@@ -86,6 +86,27 @@ export const DEFAULT_IF = 0.55; // ~ easy aerobic effort
 export const ASCENT_AEROBIC_PER_1000M = 100; // no-HR mountain aerobic estimate (D+); not added when HR is present
 export const MULTIDAY_GAP_S = 6 * 3600; // overnight gap that marks a multi-day expedition (mirror load.py)
 
+// ── Heat & altitude (mirror of load.py; docs/research/heat-altitude.md) ──────────────────────────
+// Heat/altitude already raise HR for a given effort, so hrTSS ALREADY counts that strain — never apply an
+// environmental multiplier to HR-derived load (double-count). The ONLY load correction is to the
+// environment-BLIND mechanical methods tss (power) and rtss (pace), via altitudePowerFactor below.
+export const ALT_ACCLIM_THRESHOLD_M = 800; // floor below which the altitude power/pace correction is negligible
+export const ALT_HYPOXIA_THRESHOLD_M = 1500; // exposure-dose threshold for time_high_altitude_s (coach context)
+export const VO2MAX_LOSS_PER_1000M = 0.065; // Wehrlin & Hallén 2006 (PMID 16311764): ~6.3%/1000 m, range 4.6-7.5
+export const ALT_ACCLIM_RECOVERY = 0.35; // fraction of the acute VO2max loss recovered once acclimatized
+export const ALT_CORRECTION_CAP = 0.3; // cap the loss term — beyond ~5000 m we're outside this linear model
+
+/** Intensity multiplier (≥1.0) for the altitude-blind methods (tss/rtss), NEVER hrtss. Mirror of
+ *  load.altitude_power_factor — defaults to unacclimatized (the larger, conservative correction). */
+export function altitudePowerFactor(avgAltitudeM?: number | null, acclimatized = false): number {
+  const alt = avgAltitudeM || 0;
+  if (alt <= ALT_ACCLIM_THRESHOLD_M) return 1.0;
+  let loss = (VO2MAX_LOSS_PER_1000M * (alt - ALT_ACCLIM_THRESHOLD_M)) / 1000;
+  if (acclimatized) loss *= 1 - ALT_ACCLIM_RECOVERY;
+  loss = Math.min(loss, ALT_CORRECTION_CAP);
+  return 1 / (1 - loss);
+}
+
 /** Minimal activity shape compute_load reads (load/raw fields). */
 export type LoadActivity = {
   started_at?: string | null;
@@ -98,6 +119,7 @@ export type LoadActivity = {
   vertical_gain_m?: number | null;
   vertical_loss_m?: number | null;
   carried_load_kg?: number | null;
+  avg_altitude_m?: number | null; // drives the tss/rtss altitude correction (never hrtss)
   perceived_rpe?: number | null;
 };
 export type LoadProfile = {
@@ -109,6 +131,30 @@ export type LoadProfile = {
   weight_kg?: number | null;
 };
 export type LoadSport = { taxonomy_group: string; load_method_ladder?: string[] | null };
+
+/** An athlete_thresholds row (effective-dated). Mirror of the Python THRESHOLD_FIELDS overlay. */
+export type ThresholdRow = LoadProfile & { effective_date: string };
+const THRESHOLD_FIELDS = ["max_hr", "resting_hr", "lthr", "ftp_watts", "threshold_pace_s_per_km", "weight_kg"] as const;
+
+/** Resolve the profile as-of `onDate` (mirror of load.resolve_profile): the base athlete_profile overlaid
+ *  with the latest athlete_thresholds row whose effective_date <= onDate (its non-null fields only).
+ *  Empty/absent history or date → the base profile unchanged (identical behaviour until rows exist). */
+export function resolveProfile(
+  profile: LoadProfile,
+  history: ThresholdRow[] | null | undefined,
+  onDate?: string | null,
+): LoadProfile {
+  if (!history?.length || !onDate) return profile;
+  const applicable = history.filter((h) => (h.effective_date || "") <= onDate);
+  if (!applicable.length) return profile;
+  const row = applicable.reduce((best, h) => (h.effective_date > best.effective_date ? h : best));
+  const merged: LoadProfile = { ...profile };
+  for (const k of THRESHOLD_FIELDS) {
+    const v = (row as Record<string, unknown>)[k];
+    if (v != null) (merged as Record<string, unknown>)[k] = v;
+  }
+  return merged;
+}
 
 export type LoadResult = {
   aerobic_load: number;
@@ -183,35 +229,50 @@ function massFactor(a: LoadActivity, p: LoadProfile): number {
   const weight = p.weight_kg || 70;
   return 1 + (a.carried_load_kg || 0) / weight;
 }
-function descentLoad(a: LoadActivity, p: LoadProfile): number {
-  return ((a.vertical_loss_m || 0) / 1000) * DESCENT_LOAD_PER_1000M * massFactor(a, p);
+// Adaptive calibration (prio 3c) — resolve each calibratable coefficient to a personalized value from
+// athlete_load_params when fitted, else the population default. Mirror of load.py _effective. `c` rides
+// through the methods. An empty params object ⇒ today's behaviour exactly.
+export type LoadParams = Record<string, number>;
+type Coeffs = { defaultIf: number; descentPer1000m: number; ascentPer1000m: number };
+function effective(params?: LoadParams): Coeffs {
+  return {
+    defaultIf: params?.default_if ?? DEFAULT_IF,
+    descentPer1000m: params?.descent_load_per_1000m ?? DESCENT_LOAD_PER_1000M,
+    ascentPer1000m: params?.ascent_aerobic_per_1000m ?? ASCENT_AEROBIC_PER_1000M,
+  };
+}
+
+function descentLoad(a: LoadActivity, p: LoadProfile, c: Coeffs): number {
+  return ((a.vertical_loss_m || 0) / 1000) * c.descentPer1000m * massFactor(a, p);
 }
 
 type MethodResult = [number, number] | null; // [points, intensity]
-const METHODS: Record<string, (a: LoadActivity, p: LoadProfile) => MethodResult> = {
+const METHODS: Record<string, (a: LoadActivity, p: LoadProfile, c: Coeffs) => MethodResult> = {
   tss(a, p) {
     const npw = a.np_power_w || a.avg_power_w;
     if (!npw || !p.ftp_watts) return null;
-    const intensity = npw / p.ftp_watts;
+    // Power is environment-blind → altitude-correct (hrtss is not; it already reflects the strain).
+    const intensity = (npw / p.ftp_watts) * altitudePowerFactor(a.avg_altitude_m);
     return [tssFromIf(activeDuration(a), intensity), intensity];
   },
-  hrtss(a, p) {
+  hrtss(a, p, c) {
     if (!(a.avg_hr && p.resting_hr && p.max_hr && p.lthr)) return null;
     const avgFrac = hrFraction(a.avg_hr, p.resting_hr, p.max_hr);
     const thrFrac = hrFraction(p.lthr, p.resting_hr, p.max_hr);
-    const intensity = thrFrac > 0 ? avgFrac / thrFrac : DEFAULT_IF;
+    const intensity = thrFrac > 0 ? avgFrac / thrFrac : c.defaultIf;
     return [tssFromIf(activeDuration(a), intensity), intensity];
   },
   rtss(a, p) {
     if (!(a.avg_pace_s_per_km && p.threshold_pace_s_per_km)) return null;
-    const intensity = p.threshold_pace_s_per_km / a.avg_pace_s_per_km;
+    // Pace is environment-blind → altitude-correct (same pace is harder in thin air); hrtss is not.
+    const intensity = (p.threshold_pace_s_per_km / a.avg_pace_s_per_km) * altitudePowerFactor(a.avg_altitude_m);
     return [tssFromIf(activeDuration(a), intensity), intensity];
   },
-  vertical_duration(a, p) {
+  vertical_duration(a, p, c) {
     if (!a.duration_s) return null;
-    const base = tssFromIf(activeDuration(a), DEFAULT_IF);
-    const ascent = ((a.vertical_gain_m || 0) / 1000) * ASCENT_AEROBIC_PER_1000M * massFactor(a, p);
-    return [base + ascent, DEFAULT_IF];
+    const base = tssFromIf(activeDuration(a), c.defaultIf);
+    const ascent = ((a.vertical_gain_m || 0) / 1000) * c.ascentPer1000m * massFactor(a, p);
+    return [base + ascent, c.defaultIf];
   },
   grade_volume: () => null, // detail rows not wired yet (mirror load.py)
   tonnage_rpe: () => null,
@@ -220,27 +281,28 @@ const METHODS: Record<string, (a: LoadActivity, p: LoadProfile) => MethodResult>
     const intensity = a.perceived_rpe / 10;
     return [tssFromIf(activeDuration(a), intensity), intensity];
   },
-  duration_fallback(a) {
+  duration_fallback(a, p, c) {
     if (!a.duration_s) return null;
-    return [tssFromIf(activeDuration(a), DEFAULT_IF), DEFAULT_IF];
+    return [tssFromIf(activeDuration(a), c.defaultIf), c.defaultIf];
   },
 };
 
 /** Full mirror of load.py `compute_load`: pick the first ladder method whose inputs exist as the
  *  aerobic engine, then build the two channels additively (descent D- + impact) — or split by taxonomy
  *  for structural sports. */
-export function computeLoad(activity: LoadActivity, sport: LoadSport, profile: LoadProfile): LoadResult {
+export function computeLoad(activity: LoadActivity, sport: LoadSport, profile: LoadProfile, params?: LoadParams): LoadResult {
+  const c = effective(params);
   const ladder = sport.load_method_ladder?.length ? sport.load_method_ladder : ["duration_fallback"];
   let chosen = "duration_fallback";
   let points = 0;
-  let intensity = DEFAULT_IF;
+  let intensity = c.defaultIf;
   for (const method of ladder) {
     const fn = METHODS[method];
     if (!fn) continue;
     // Prefer HR over the no-HR vertical estimate when the ladder offers hrtss (avoid double-counting
     // the climb), but ladders without hrtss (alpinism / via_ferrata) still get vertical_duration.
-    if (method === "vertical_duration" && ladder.includes("hrtss") && METHODS.hrtss(activity, profile)) continue;
-    const result = fn(activity, profile);
+    if (method === "vertical_duration" && ladder.includes("hrtss") && METHODS.hrtss(activity, profile, c)) continue;
+    const result = fn(activity, profile, c);
     if (result) {
       [points, intensity] = result;
       chosen = method;
@@ -257,7 +319,7 @@ export function computeLoad(activity: LoadActivity, sport: LoadSport, profile: L
     neuromuscular = points * n;
   } else {
     aerobic = points;
-    neuromuscular = points * (IMPACT_FRAC[group] ?? IMPACT_FRAC.other) + descentLoad(activity, profile);
+    neuromuscular = points * (IMPACT_FRAC[group] ?? IMPACT_FRAC.other) + descentLoad(activity, profile, c);
   }
 
   const effectiveDays = activitySpanDays(activity.started_at, activity.duration_s, activity.moving_s);

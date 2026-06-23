@@ -22,7 +22,9 @@ The channels are computed INDEPENDENTLY and summed (not one number sliced by a r
 AEROBIC-engine method (hrtss / vertical_duration / session_rpe…); the eccentric descent (D-) is added separately
 into neuromuscular_load. So two outings can share method=hrtss yet differ on neuromuscular_load — more D- = more.
 When comparing why one session cost more than another, reason via the two CHANNELS (aerobic vs neuro / D-), not
-the method label.
+the method label. HEAT & ALTITUDE (\`environment\` + per-activity temp_c / alt_max_m) are HR/recovery context, not
+extra load — heat/altitude raise HR for the same effort so the load already reflects them; use them to explain an
+elevated HR, a higher RPE, or a heat-dented HRV / resting HR, especially when acclimation is low.
 
 Answer using ONLY the provided data. Be concrete — cite the actual numbers and dates. If the data doesn't
 cover what's asked (e.g. no recovery for a date, a sport with only fallback load), say so plainly rather than

@@ -132,16 +132,21 @@ Encode these into the Coach Brain system prompt when Phase 6 lands:
 - Protect the priority long session; keep ~80/20 on the aerobic channel across all aerobic sports.
 - Treat big mountain days as multi-system bombs; use D- as a structural-injury guardrail.
 - Substitute, don't just cancel (cooked legs → easy cycling, not forced rest).
-- Account for pack weight & altitude as load multipliers / recovery confounders.
+- Pack weight is a load multiplier (carried-mass term). **Heat & altitude are HR/recovery context, NOT a
+  load multiplier**: HR already rises with heat/altitude, so hrTSS already counts the strain — multiplying
+  would double-count. Use them to interpret an elevated HR / depressed recovery, and apply an
+  altitude-adjusted-power/pace correction to the environment-blind `tss`/`rtss` methods only. See
+  [`research/heat-altitude.md`](research/heat-altitude.md).
 - Weigh objectives in the athlete's **priority order** (`goals[]`); give richer, sport-specific
   feedback when a session matches a goal's sport; weight nearer deadlines (`days_to`) more, while
   honoring goals that carry only a fuzzy `horizon`.
 
 ## Deferred (documented future migrations / phases)
 
-- **Effective-dated thresholds + bodyweight** (`athlete_thresholds`) so historical load is
-  reproducible after a threshold/FTP change. Interim: snapshot the values used into
-  `activities.sport_specific.computed_with`.
+- ~~**Effective-dated thresholds + bodyweight** (`athlete_thresholds`) so historical load is
+  reproducible after a threshold/FTP change.~~ **Done (2026-06-23, migration `…0009`)**: `athlete_thresholds`
+  + `load.resolve_profile` resolve thresholds as-of each activity's date (empty table ⇒ base profile,
+  no behaviour change). See [`research/heat-altitude.md`](research/heat-altitude.md) §3.
 - **`training_blocks` / mesocycle parent** for `planned_sessions` (atomic week reshaping).
 - **Multi-user accounts + Auth + RLS** before any public/cloud deploy (currently local-first,
   single-row `athlete_profile`, RLS off). Product vision: let several people (e.g. the author's

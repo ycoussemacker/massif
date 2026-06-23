@@ -55,6 +55,10 @@ export async function rollupDailyMetrics(sb: SupabaseClient): Promise<number> {
     .select("local_date,aerobic_load,neuromuscular_load,vertical_gain_m,vertical_loss_m,sport_id,effective_days");
   if (!acts?.length) return 0;
 
+  // Neuromuscular acute τ: personalized from athlete_load_params when fitted, else NEURO_ATL_DAYS.
+  const { data: paramRows } = await sb.from("athlete_load_params").select("param,value").eq("param", "neuro_atl_days");
+  const neuroAtlDays = Number((paramRows ?? [])[0]?.value) || NEURO_ATL_DAYS;
+
   // Aggregate per day. A multi-day expedition (effective_days>1) is spread EVENLY across the calendar
   // days it spans (from its local_date) so its load doesn't spike one day — mirror of sync.py.
   const days = new Map<string, DayBucket>();
@@ -95,7 +99,7 @@ export async function rollupDailyMetrics(sb: SupabaseClient): Promise<number> {
   const ctlA = ewmaSeries(aerobic, CTL_DAYS);
   const atlA = ewmaSeries(aerobic, ATL_DAYS);
   const ctlN = ewmaSeries(neuro, CTL_DAYS);
-  const atlN = ewmaSeries(neuro, NEURO_ATL_DAYS); // slower acute τ — structural fatigue lingers
+  const atlN = ewmaSeries(neuro, neuroAtlDays); // slower acute τ — structural fatigue lingers (personalizable)
 
   const rows = spine.map((d, i) => {
     const b = days.get(d);

@@ -79,7 +79,8 @@ export async function loadRecentActivities(sinceDate: string): Promise<any[]> {
   const { data, error } = await db
     .from("activities")
     .select("local_date,sport_id,training_load,aerobic_load,neuromuscular_load," +
-            "load_method_used,duration_s,vertical_gain_m,vertical_loss_m,avg_hr,rpe_source")
+            "load_method_used,duration_s,vertical_gain_m,vertical_loss_m,avg_hr,rpe_source," +
+            "avg_temp_c,max_altitude_m,time_high_altitude_s")
     .gte("local_date", sinceDate)
     .order("local_date", { ascending: false });
   if (error) throw error;

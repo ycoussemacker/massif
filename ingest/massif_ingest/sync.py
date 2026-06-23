@@ -44,12 +44,16 @@ def recompute_activity_loads() -> int:
     Re-run after editing load.py. (A provider pull recomputes load too, but only for its recent window.)"""
     sport_by_id = {s["id"]: s for s in db.client().table("sports").select("*").execute().data}
     profile = db.load_athlete_profile()
+    params = db.load_load_params()  # personalized coefficients (empty → population defaults)
+    threshold_history = db.load_threshold_history()  # effective-dated thresholds (empty → base profile)
     updated = 0
     for a in db.fetch_activities_for_recompute():
         sport = sport_by_id.get(a["sport_id"])
         if not sport:
             continue
-        r = load.compute_load(a, sport, profile)
+        # Resolve thresholds as-of the activity's date so a past threshold change re-scores history faithfully.
+        eff_profile = load.resolve_profile(profile, threshold_history, a.get("local_date"))
+        r = load.compute_load(a, sport, eff_profile, params)
         db.update_activity_load(a["id"], {
             "aerobic_load": r.aerobic_load,
             "neuromuscular_load": r.neuromuscular_load,
@@ -108,11 +112,12 @@ def rollup_daily_metrics(ctl_days: int = 42, atl_days: int = 7) -> int:
     aerobic = [days.get(d, {}).get("aer", 0.0) for d in spine]
     neuro = [days.get(d, {}).get("neu", 0.0) for d in spine]
 
+    # Neuromuscular ACUTE load uses the slower neuro τ (structural fatigue lingers); personalized from
+    # athlete_load_params when fitted, else the NEURO_ATL_DAYS default. Its CTL keeps the shared chronic τ.
+    neuro_atl_days = db.load_load_params().get("neuro_atl_days", NEURO_ATL_DAYS)
     ctl, atl = _ewma_series(total, ctl_days), _ewma_series(total, atl_days)
     ctl_a, atl_a = _ewma_series(aerobic, ctl_days), _ewma_series(aerobic, atl_days)
-    # Neuromuscular ACUTE load uses the slower NEURO_ATL_DAYS τ (structural fatigue lingers); its CTL
-    # keeps the shared chronic τ. So tsb_neuromuscular stays negative longer after a descent block.
-    ctl_n, atl_n = _ewma_series(neuro, ctl_days), _ewma_series(neuro, NEURO_ATL_DAYS)
+    ctl_n, atl_n = _ewma_series(neuro, ctl_days), _ewma_series(neuro, neuro_atl_days)
 
     rows = []
     for i, d in enumerate(spine):
@@ -155,6 +160,9 @@ def main() -> None:
     parser.add_argument("--recompute-loads", action="store_true",
                         help="re-apply the load model to all stored activities (after a load.py change), "
                              "then roll up — implies --skip-pull")
+    parser.add_argument("--calibrate", action="store_true",
+                        help="fit personalized load coefficients from history (prio 3c), then recompute "
+                             "+ roll up so they apply to all activities — implies --skip-pull")
     parser.add_argument("--export-garmin-token", action="store_true",
                         help="mirror the local Garmin token (~/.garminconnect) to Supabase so the "
                              "cloud/no-Mac nightly can reuse it (do this once after a local MFA login), "
@@ -169,11 +177,17 @@ def main() -> None:
               else "garmin token: NO local token file found — run a Garmin login first")
         return
 
+    if args.calibrate:
+        from . import calibrate
+        changed = calibrate.calibrate_all()
+        print(f"calibrate: {changed or 'no params met the sample threshold / changed'}")
+        print(f"recompute: {recompute_activity_loads()} activities re-scored")
+
     if args.recompute_loads:
         print(f"recompute: {recompute_activity_loads()} activities re-scored")
 
-    if not args.skip_pull and not args.recompute_loads:
-        from . import garmin, strava
+    if not args.skip_pull and not args.recompute_loads and not args.calibrate:
+        from . import calibrate, garmin, strava
 
         # One provider failing (bad creds, API 4xx/5xx, network blip) must not abort the other
         # pull OR the rollup below — the nightly job stays resilient and always recomputes.
@@ -190,6 +204,16 @@ def main() -> None:
             print(f"garmin: {n} days")
         except Exception as e:
             print(f"garmin: skipped ({type(e).__name__}: {e})")
+
+        # Adaptive calibration (prio 3c): re-fit personalized coefficients from the freshly-updated
+        # history. Cheap; only triggers a full re-score when a coefficient actually moved.
+        try:
+            changed = calibrate.calibrate_all()
+            if changed:
+                print(f"calibrate: {changed} → re-scoring history")
+                recompute_activity_loads()
+        except Exception as e:
+            print(f"calibrate: skipped ({type(e).__name__}: {e})")
 
     print(f"rollup: {rollup_daily_metrics()} daily_metrics rows")
 

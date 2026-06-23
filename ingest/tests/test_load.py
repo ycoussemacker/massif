@@ -180,6 +180,24 @@ def test_multiday_load_uses_moving_time_not_elapsed():
     assert single.aerobic_load > r.aerobic_load * 4   # elapsed 312 h vs moving 55.6 h
 
 
+def test_params_personalize_coefficients_with_fallback():
+    # No params → population defaults (unchanged behaviour).
+    sport = {"taxonomy_group": "paced_endurance",
+             "load_method_ladder": ["hrtss", "session_rpe", "duration_fallback"]}
+    base = load.compute_load({"duration_s": 3600}, sport, {})            # duration_fallback @ DEFAULT_IF
+    tuned = load.compute_load({"duration_s": 3600}, sport, {}, {"default_if": 0.7})
+    assert tuned.aerobic_load > base.aerobic_load                        # personalized higher IF → more load
+    # A personalized descent coefficient scales only the neuromuscular channel.
+    mtn = {"taxonomy_group": "mountain_vertical",
+           "load_method_ladder": ["hrtss", "session_rpe", "duration_fallback"]}
+    prof = {"resting_hr": 48, "max_hr": 188, "lthr": 178, "weight_kg": 64}
+    act = {"duration_s": 9000, "avg_hr": 130, "vertical_loss_m": 2000}
+    d1 = load.compute_load(act, mtn, prof)
+    d2 = load.compute_load(act, mtn, prof, {"descent_load_per_1000m": 140})
+    assert d2.neuromuscular_load > d1.neuromuscular_load                 # doubled descent coeff → more neuro
+    assert d2.aerobic_load == d1.aerobic_load                           # aerobic channel untouched
+
+
 def test_needs_review_flags_suspect_inputs_only():
     prof = {"max_hr": 188}
     # HR sensor glitch: avg_hr above the athlete's max.
@@ -201,3 +219,55 @@ def test_normal_activity_unchanged_uses_elapsed_and_effective_days_one():
     assert r.effective_days == 1
     legacy = load.compute_load({"duration_s": 3600, "avg_hr": 130}, VERT_LADDER, HR_PROFILE)
     assert r.aerobic_load == legacy.aerobic_load      # single-day ignores moving_s, scores on elapsed
+
+
+# ── heat & altitude (docs/research/heat-altitude.md) ──────────────────────────────────────────────
+
+def test_altitude_power_factor_gates_and_is_bounded():
+    assert load.altitude_power_factor(None) == 1.0
+    assert load.altitude_power_factor(500) == 1.0          # below the 800 m floor → no correction
+    assert load.altitude_power_factor(800) == 1.0
+    f2000 = load.altitude_power_factor(2000)
+    assert f2000 > 1.0                                     # thin air costs more for the same power/pace
+    assert 1.0 < load.altitude_power_factor(2000, acclimatized=True) < f2000  # acclimation shrinks it
+    cap = 1.0 / (1.0 - load.ALT_CORRECTION_CAP)
+    assert load.altitude_power_factor(9000) <= cap + 1e-9  # capped — extreme altitude doesn't blow up
+
+
+def test_altitude_raises_power_and_pace_load_but_never_hr():
+    # tss (power) and rtss (pace) are environment-blind → altitude lifts their load. hrtss is NEVER
+    # corrected: an elevated HR already reflects the hypoxic strain, so correcting it would double-count.
+    tss = {"taxonomy_group": "paced_endurance", "load_method_ladder": ["tss", "duration_fallback"]}
+    base = {"duration_s": 3600, "np_power_w": 200, "avg_power_w": 200}
+    low = load.compute_load(base, tss, {"ftp_watts": 250})
+    high = load.compute_load({**base, "avg_altitude_m": 2500}, tss, {"ftp_watts": 250})
+    assert high.load_method_used == "tss" and high.aerobic_load > low.aerobic_load
+
+    rtss = {"taxonomy_group": "paced_endurance", "load_method_ladder": ["rtss", "duration_fallback"]}
+    rbase = {"duration_s": 3600, "avg_pace_s_per_km": 330}
+    rlow = load.compute_load(rbase, rtss, {"threshold_pace_s_per_km": 300})
+    rhigh = load.compute_load({**rbase, "avg_altitude_m": 2500}, rtss, {"threshold_pace_s_per_km": 300})
+    assert rhigh.aerobic_load > rlow.aerobic_load
+
+    hr = {"taxonomy_group": "paced_endurance", "load_method_ladder": ["hrtss", "duration_fallback"]}
+    prof = {"resting_hr": 48, "max_hr": 188, "lthr": 178}
+    hlow = load.compute_load({"duration_s": 3600, "avg_hr": 150}, hr, prof)
+    hhigh = load.compute_load({"duration_s": 3600, "avg_hr": 150, "avg_altitude_m": 2500}, hr, prof)
+    assert hhigh.aerobic_load == hlow.aerobic_load        # HR load identical at altitude (no double-count)
+
+
+def test_resolve_profile_effective_dating():
+    base = {"max_hr": 188, "lthr": 178, "resting_hr": 48, "weight_kg": 64}
+    # No history / no date → the base profile unchanged (same object) — identical behaviour until rows exist.
+    assert load.resolve_profile(base, [], "2026-06-01") is base
+    assert load.resolve_profile(base, None, "2026-06-01") is base
+    hist = [
+        {"effective_date": "2024-01-01", "lthr": 170, "weight_kg": 66},
+        {"effective_date": "2026-01-01", "lthr": 178, "weight_kg": None},  # null field is NOT overlaid
+    ]
+    assert load.resolve_profile(base, hist, "2023-06-01") is base          # predates all rows → base
+    p24 = load.resolve_profile(base, hist, "2024-06-01")
+    assert p24["lthr"] == 170 and p24["weight_kg"] == 66 and p24["max_hr"] == 188
+    p26 = load.resolve_profile(base, hist, "2026-06-01")
+    assert p26["lthr"] == 178 and p26["weight_kg"] == 64                    # null weight → base 64
+    assert base["lthr"] == 178                                             # base dict not mutated

@@ -136,12 +136,97 @@ time is the per-sport calibration question below). Mirror `load.py`↔`load.ts`;
 stages / grande voie); the HR/IF rules are multi-user prophylaxis (0 hits now). Multi-day expeditions are
 already handled (`effective_days > 1`) so they are not flagged.
 
+---
+
+## 2026-06-23 · Upgrade 4 — Heat & altitude (context + a narrow power/pace correction)
+
+Full research write-up + sources: [`research/heat-altitude.md`](research/heat-altitude.md).
+
+**Problem.** The model had no notion of **heat** or **hypoxic altitude** (distinct from D+/D-, which was
+already the neuromuscular channel). The tempting fix — multiply load when it's hot or high — is **wrong**:
+the dominant aerobic method is **hrTSS**, and HR already rises with heat/altitude, so an environmental
+multiplier on HR-derived load **double-counts** the same strain. The genuine gaps are elsewhere.
+
+**Change.** Three targeted moves, none of which multiplies HR-derived load:
+1. **Altitude-adjusted power/pace — `tss` and `rtss` ONLY, never `hrtss`.** Power/pace are environment-blind,
+   so they under-count an effort produced in thin air; HR is left untouched (it already reflects it).
+2. **Effective-dated thresholds (`athlete_thresholds`).** Resolve thresholds as-of an activity's date, so a
+   threshold change re-scores history faithfully and the model tracks the **non-stationary HR baseline** that
+   heat/altitude acclimation creates (the right answer to acclimation, instead of a load multiplier).
+3. **Heat/altitude as coach CONTEXT** (not load): per-activity `temp_c`/`alt_max_m`, an `environment` block
+   (7-day exposure + Garmin/Firstbeat acclimation), surfaced so the coach reads a hot/high session as a
+   **recovery/HR confounder** (don't misread a heat-driven HRV dip as overtraining) — rule 8 rewritten.
+
+**Formula** (`load.py` ↔ `load.ts`, applied inside `_method_tss` / `_method_rtss`):
+```
+altitude_power_factor(avg_altitude_m, acclimatized=False):
+    loss   = 0.065 · (avg_altitude_m − 800) / 1000        # 0 below the 800 m floor (Wehrlin&Hallén 6.3%/1000m)
+    loss  *= (1 − 0.35)  if acclimatized                  # default unacclimatized = larger correction
+    loss   = min(loss, 0.30)                              # cap (extreme altitude out of model range)
+    return 1 / (1 − loss)                                 # ≥ 1.0; multiplies the tss/rtss intensity
+intensity_tss  = (np_power / ftp)              · altitude_power_factor(avg_altitude_m)
+intensity_rtss = (thr_pace / actual_pace)      · altitude_power_factor(avg_altitude_m)
+# hrtss intensity is NEVER multiplied — locked by test_altitude_raises_power_and_pace_load_but_never_hr
+
+resolve_profile(profile, athlete_thresholds, on_date):    # rec 2 — empty history ⇒ base profile unchanged
+    row = latest threshold row with effective_date ≤ on_date; overlay its non-null THRESHOLD_FIELDS
+```
+
+**Files.** Python `ingest/massif_ingest/{load.py, strava.py, garmin.py, db.py, sync.py}` · TS mirrors
+`web/src/lib/{load.ts, strava-sync.ts, coach-context.ts}`, `coach/src/{context.ts, db.ts}` · prompts
+`coach/src/{coach.ts, ask.ts}`, `web/src/lib/{coach-briefing.ts, coach-chat.ts}` (rule 8) · migrations
+`…0007_activity_environment.sql`, `…0008_daily_acclimation.sql`, `…0009_athlete_thresholds.sql`. New data:
+`activities.{avg_temp_c, max_altitude_m, avg_altitude_m, time_high_altitude_s}` (Strava summary + altitude
+stream), `daily_metrics.{heat_acclimation_pct, altitude_acclimation_m}` (Garmin MaxMET `get_max_metrics`).
+
+**Verification.** pytest **44 green** (added: altitude factor gating/bounds, tss/rtss rise at altitude while
+hrtss is unchanged, `resolve_profile` effective-dating + no-mutation, Garmin `_acclimation` defensive +
+normalize); web + coach `tsc --noEmit` clean. Behaviour is **unchanged until data flows**: the altitude
+factor is 1.0 below 800 m, and `resolve_profile` is a no-op with an empty `athlete_thresholds`. Reaches
+history via `--recompute-loads` (recompute now reads `avg_altitude_m` + resolves thresholds per date).
+
+**Tunable.** `VO2MAX_LOSS_PER_1000M = 0.065`, `ALT_ACCLIM_THRESHOLD_M = 800`, `ALT_ACCLIM_RECOVERY = 0.35`,
+`ALT_CORRECTION_CAP = 0.30`, `ALT_HYPOXIA_THRESHOLD_M = 1500` (load.py / load.ts) — population starts; the
+single-athlete history (paired Strava+Garmin + stored altitude streams) is ideal to personalize them later.
+
+## 2026-06-23 · Upgrade 5 — Adaptive calibration (prio 3c: foundation + aerobic auto-fit)
+
+**Principle.** The model must work with **zero athlete input** (population defaults) and **refine
+automatically** as data accumulates — never require manual tuning.
+
+**A — Foundation.** New `athlete_load_params` key-value table holds personalized overrides; `load.py`
+(`_effective`) and the rollup resolve each calibratable coefficient to its fitted value **or the
+population default** (`default_if`, `descent_load_per_1000m`, `ascent_aerobic_per_1000m`,
+`neuro_atl_days`). Threaded through `compute_load(…, params)` and mirrored in `load.ts` / `rollup.ts` /
+`strava-sync.ts`; loaded by `db.load_load_params()`. **Zero behaviour change until a row is fitted.**
+
+**C-aéro — Aerobic auto-fit (`calibrate.py`).** Runs in the nightly (`calibrate_all()`): re-fits cheaply
+every run and only re-scores history when a coefficient actually moves; `--calibrate` forces it.
+The one safe aerobic target is `DEFAULT_IF` (the *no-HR* effort assumption) — and the honest finding,
+verified on data, is that it must be fit from the **easy end** (20th pct) of the athlete's intensity
+distribution and **only ever lowered**, never raised: the HR sessions skew harder than the no-HR
+activities (surf/snowboard) it's used for, so a median fit (0.76) over-states them. For this athlete the
+fit doesn't qualify (easy IF already > 0.55) → it self-cleans to the default. The aerobic channel is
+already personalized via the FC thresholds, so this surface is intentionally thin; **the real
+calibration payoff is the neuromuscular channel**, which activates once the optional soreness log fills.
+
+**B — Soreness collection (optional).** `daily_metrics.soreness` (1–5, migration `…0006`) is the missing
+neuromuscular ground-truth (wearables are blind to it). Optional/non-blocking; the neuromuscular fits
+(`descent_load_per_1000m`, `neuro_atl_days`) join `calibrate_all()` once it accumulates.
+
+**Files.** `ingest/massif_ingest/{calibrate.py (new), load.py, sync.py, db.py, strava.py}` · mirrors
+`web/src/lib/{load.ts, rollup.ts, strava-sync.ts}` · migrations `…0005_athlete_load_params`,
+`…0006_daily_soreness`. **Verification.** pytest 44 green; web + coach tsc clean; live `--calibrate`
+self-cleaned the stale fit and re-scored 395 activities back to the population default (GR20 2368, latest
+CTL 84.8 / TSB −27.2 unchanged). **Tunable.** `MIN_IF_SAMPLES=30`, the p20 easy-end + only-lower guard.
+
 ## Backlog (candidate upgrades, not yet built)
 
-- **Calibrate load coefficients** to the athlete (prio 3c — being planned) — fit `DESCENT_LOAD_PER_1000M`,
-  `IMPACT_FRAC`, the strength split, `NEURO_ATL_DAYS`, `MULTIDAY_GAP_S` to their own RPE / soreness /
-  Garmin history. Today's clean CTL (~85) is already sane, so this is refinement, not a fix; it needs a
-  ground-truth signal decided first (sparse manual RPE vs Garmin training-load vs soreness).
+- **Neuromuscular calibration** (the 3c payoff) — once the soreness log has data, fit
+  `DESCENT_LOAD_PER_1000M` / `NEURO_ATL_DAYS` so modelled neuromuscular load predicts next-day soreness;
+  add the fitters to `calibrate_all()`. Needs ~2-3 weeks of optional soreness entries.
+- **Soreness input UI** — the `daily_metrics.soreness` column exists; the optional morning "legs 1–5"
+  input + server action still to wire on the dashboard.
 - **Per-sport "moving vs elapsed" scoring** — the 12 `needs_review` single-day outings (surf / snowboard /
   alpinism) are scored on elapsed time incl. large stops. Whether to switch them to moving time is
   sport-dependent (alpine belay time can be effortful) — fold into the 3c calibration rather than a blunt switch.

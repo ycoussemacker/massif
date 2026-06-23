@@ -65,6 +65,26 @@ function recoveryToday(dm: any[], today: string): Record<string, unknown> {
     body_battery_low: val("body_battery_low"),
     stress_avg: val("stress_avg"),
     training_readiness: val("training_readiness"),
+    // Garmin/Firstbeat acclimation — context for HOW to read an elevated HR / depressed recovery, not a
+    // recovery score itself (see docs/research/heat-altitude.md). Null when not synced today.
+    heat_acclimation_pct: val("heat_acclimation_pct"),
+    altitude_acclimation_m: val("altitude_acclimation_m"),
+  };
+}
+
+/** Heat & altitude EXPOSURE over the last 7 days + today's acclimation — context the coach uses to read
+ *  HR/recovery, never a load input (docs/research/heat-altitude.md). Mirror of context.ts environment. */
+function environment(acts7: any[], todayRow: any): Record<string, unknown> {
+  const temps = acts7.map((a) => a.avg_temp_c).filter((v) => v != null) as number[];
+  const alts = acts7.map((a) => a.max_altitude_m).filter((v) => v != null) as number[];
+  const timeHighS = acts7.reduce((t, a) => t + Number(a.time_high_altitude_s || 0), 0);
+  return {
+    heat_acclimation_pct: todayRow?.heat_acclimation_pct ?? null,
+    altitude_acclimation_m: todayRow?.altitude_acclimation_m ?? null,
+    hot_sessions_7d: temps.filter((t) => t >= 22).length, // sessions at/above Garmin's ~22 °C heat threshold
+    hottest_temp_c_7d: temps.length ? Math.max(...temps) : null,
+    max_altitude_m_7d: alts.length ? Math.max(...alts) : null,
+    time_high_altitude_min_7d: Math.round(timeHighS / 60), // minutes above ~1500 m
   };
 }
 
@@ -102,7 +122,8 @@ export async function assembleCoachContext(sb: SupabaseClient): Promise<{ today:
     sb.from("daily_metrics").select("*").order("local_date", { ascending: false }).limit(21),
     sb.from("activities")
       .select("local_date,sport_id,training_load,aerobic_load,neuromuscular_load,load_method_used," +
-              "duration_s,vertical_gain_m,vertical_loss_m,avg_hr,rpe_source")
+              "duration_s,vertical_gain_m,vertical_loss_m,avg_hr,rpe_source," +
+              "avg_temp_c,max_altitude_m,time_high_altitude_s")
       .gte("local_date", since14).order("local_date", { ascending: false }),
     sb.from("sports").select("id,code"),
     sb.from("planned_sessions").select("*").gte("planned_date", today).order("planned_date"),
@@ -160,6 +181,8 @@ export async function assembleCoachContext(sb: SupabaseClient): Promise<{ today:
       acwr: latest.acwr,
     },
     recovery_today: recoveryToday(dm, today),
+    // Heat/altitude EXPOSURE + acclimation — read HR & recovery through this lens; never a load input.
+    environment: environment(acts7, dm.find((d) => d.local_date === today) ?? null),
     daily_load_21d: dm.map((d) => ({
       date: d.local_date, load: d.daily_load, aerobic: d.daily_aerobic_load, neuro: d.daily_neuromuscular_load,
       by_group: d.load_by_group, dplus: d.vertical_gain_m, dminus: d.vertical_loss_m,
@@ -169,6 +192,7 @@ export async function assembleCoachContext(sb: SupabaseClient): Promise<{ today:
       load: a.training_load, aerobic: a.aerobic_load, neuro: a.neuromuscular_load,
       method: a.load_method_used, dur_min: Math.round((a.duration_s || 0) / 60),
       dplus: a.vertical_gain_m, dminus: a.vertical_loss_m, avg_hr: a.avg_hr, rpe: a.rpe_source,
+      temp_c: a.avg_temp_c ?? null, alt_max_m: a.max_altitude_m ?? null,
     })),
     trailing_7d: { d_plus_m: sum(acts7, "vertical_gain_m"), d_minus_m: sum(acts7, "vertical_loss_m") },
     upcoming_planned: upcoming,

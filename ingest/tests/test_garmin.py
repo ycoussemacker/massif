@@ -15,6 +15,7 @@ RAW = {
     "rhr": {"allMetrics": {"metricsMap": {"WELLNESS_RESTING_HEART_RATE": [{"value": 48}]}}},
     "stress": {"avgStressLevel": 28},
     "readiness": [{"score": 71}],
+    "maxmet": [{"heatAltitudeAcclimation": {"heatAcclimationPercentage": 65, "altitudeAcclimation": 1200}}],
 }
 
 RECOVERY_KEYS = {
@@ -22,6 +23,7 @@ RECOVERY_KEYS = {
     "hrv_overnight_ms", "hrv_7d_avg_ms", "hrv_status", "resting_hr",
     "body_battery_high", "body_battery_low", "body_battery_wake",
     "stress_avg", "training_readiness",
+    "heat_acclimation_pct", "altitude_acclimation_m",
 }
 LOAD_KEYS = {"daily_load", "daily_aerobic_load", "daily_neuromuscular_load",
              "ctl", "atl", "tsb", "acwr", "vertical_gain_m", "load_by_group"}
@@ -41,6 +43,18 @@ def test_normalize_full_payload():
     assert m["body_battery_wake"] == 30              # first reading of the day
     assert m["stress_avg"] == 28
     assert m["training_readiness"] == 71             # from list[0].score
+    assert m["heat_acclimation_pct"] == 65           # MaxMET heatAltitudeAcclimation
+    assert m["altitude_acclimation_m"] == 1200
+
+
+def test_acclimation_is_defensive():
+    # list payload, bare dict, and every missing-path shape → (None, None), never raises.
+    assert garmin._acclimation([{"heatAltitudeAcclimation": {"heatAcclimationPercentage": 40,
+                                                             "altitudeAcclimation": 800}}]) == (40, 800)
+    assert garmin._acclimation({"heatAltitudeAcclimation": {"heatAcclimationPercentage": 12}}) == (12, None)
+    assert garmin._acclimation(None) == (None, None)
+    assert garmin._acclimation([]) == (None, None)
+    assert garmin._acclimation([{"generic": {"vo2MaxValue": 52}}]) == (None, None)
 
 
 def test_normalize_empty_is_all_none():

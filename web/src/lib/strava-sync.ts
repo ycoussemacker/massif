@@ -8,7 +8,10 @@
  *  the source of truth: the next cron re-pulls + recomputes identically (incl. auto-creating sports for
  *  unseen sport_types, which this fast path maps to 'unknown' until then). KEEP IN SYNC with strava.py. */
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { computeLoad, type LoadProfile } from "./load";
+import {
+  computeLoad, resolveProfile, ALT_HYPOXIA_THRESHOLD_M,
+  type LoadProfile, type LoadParams, type ThresholdRow,
+} from "./load";
 
 const API = "https://www.strava.com/api/v3";
 const TOKEN_URL = "https://www.strava.com/oauth/token";
@@ -135,6 +138,21 @@ function verticalLossFromAltitude(altitude: number[], deadbandM = 2.0): number {
   return Math.round(loss * 10) / 10;
 }
 
+/** Mirror of strava.altitude_stats — (max_m, avg_m, time_high_s) for the heat/altitude context + the
+ *  avg the tss/rtss altitude correction reads. time_high ≈ (fraction of samples above ~1500 m) × duration. */
+function altitudeStats(
+  altitude: number[],
+  durationS: number | null,
+): { maxM: number | null; avgM: number | null; timeHighS: number | null } {
+  const vals = altitude.filter((a) => typeof a === "number");
+  if (!vals.length) return { maxM: null, avgM: null, timeHighS: null };
+  const maxM = Math.round(Math.max(...vals) * 10) / 10;
+  const avgM = Math.round((vals.reduce((t, a) => t + a, 0) / vals.length) * 10) / 10;
+  const highFrac = vals.filter((a) => a >= ALT_HYPOXIA_THRESHOLD_M).length / vals.length;
+  const timeHighS = durationS ? Math.round(highFrac * durationS) : null;
+  return { maxM, avgM, timeHighS };
+}
+
 /** Mirror of strava._climbing_sport_code. */
 function climbingSportCode(sportType: string, name: string | null, description: string | null): string {
   const text = `${name ?? ""} ${description ?? ""}`.toLowerCase();
@@ -163,11 +181,19 @@ export async function syncStrava(sb: SupabaseClient, afterDays = 21): Promise<St
   const summaries = await fetchActivities(token, afterEpoch);
   if (!summaries.length) return { pulled: 0, newest: null };
 
-  const [{ data: sportsRows }, { data: profileRow }, { data: rpeRows }] = await Promise.all([
+  const [{ data: sportsRows }, { data: profileRow }, { data: rpeRows }, { data: paramRows }, { data: thresholdRows }] = await Promise.all([
     sb.from("sports").select("id,code,taxonomy_group,load_method_ladder,uses_distance,uses_hr,needs_manual_rpe,source_aliases"),
     sb.from("athlete_profile").select("max_hr,resting_hr,lthr,ftp_watts,threshold_pace_s_per_km,weight_kg,timezone").limit(1).maybeSingle(),
     sb.from("activities").select("source_activity_id,perceived_rpe").eq("source", "strava").eq("rpe_source", "user"),
+    sb.from("athlete_load_params").select("param,value"),
+    sb.from("athlete_thresholds").select("*").order("effective_date", { ascending: true }),
   ]);
+  // Personalized load coefficients (empty → population defaults; mirror of db.load_load_params).
+  const loadParams: LoadParams = Object.fromEntries(
+    ((paramRows ?? []) as { param: string; value: number }[]).filter((r) => r.value != null).map((r) => [r.param, Number(r.value)]),
+  );
+  // Effective-dated thresholds (empty / table-absent → base profile; mirror of db.load_threshold_history).
+  const thresholdHistory = (thresholdRows ?? []) as ThresholdRow[];
 
   const sportMap = new Map<string, Sport>();
   for (const s of (sportsRows ?? []) as Sport[]) {
@@ -193,13 +219,18 @@ export async function syncStrava(sb: SupabaseClient, afterDays = 21): Promise<St
       sport = sportMap.get(climbingSportCode(sportType, act.name, description)) || sport;
     }
 
-    // D- from the altitude stream (Strava summaries lack descent), for HR/distance sports.
+    // D- from the altitude stream (Strava summaries lack descent), for HR/distance sports. The same
+    // stream also yields heat/altitude context + the avg the tss/rtss altitude correction reads.
     let descentM: number | null = null;
     let hasStreams = false;
+    let altStats: { maxM: number | null; avgM: number | null; timeHighS: number | null } | null = null;
     if (sport.uses_distance || sport.uses_hr) {
       const streams = await fetchStreams(token, act.id);
       hasStreams = Object.keys(streams).length > 0;
-      if (streams.altitude) descentM = verticalLossFromAltitude(streams.altitude);
+      if (streams.altitude) {
+        descentM = verticalLossFromAltitude(streams.altitude);
+        altStats = altitudeStats(streams.altitude, Math.round(act.elapsed_time || 0) || null);
+      }
     }
 
     const movingS = act.moving_time ?? null;
@@ -230,8 +261,18 @@ export async function syncStrava(sb: SupabaseClient, afterDays = 21): Promise<St
       has_streams: hasStreams,
     };
     if (descentM != null) row.vertical_loss_m = descentM;
+    // Heat context (set only when present, so a temp-less device / re-sync never blanks a stored value);
+    // altitude stats — avg_altitude_m must be on the row before computeLoad (the tss/rtss correction reads it).
+    if (act.average_temp != null) row.avg_temp_c = act.average_temp;
+    if (altStats) {
+      if (altStats.maxM != null) row.max_altitude_m = altStats.maxM;
+      if (altStats.avgM != null) row.avg_altitude_m = altStats.avgM;
+      if (altStats.timeHighS != null) row.time_high_altitude_s = altStats.timeHighS;
+    }
 
-    const r = computeLoad(row, sport, profile);
+    // Resolve thresholds as-of this activity's date (rec 2); empty history → base profile unchanged.
+    const effProfile = resolveProfile(profile, thresholdHistory, row.local_date as string);
+    const r = computeLoad(row, sport, effProfile, loadParams);
     row.aerobic_load = r.aerobic_load;
     row.neuromuscular_load = r.neuromuscular_load;
     row.load_method_used = r.load_method_used;
