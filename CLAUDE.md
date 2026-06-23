@@ -210,6 +210,26 @@ stays on the morning cron, which is fine since sleep/HRV/readiness are morning m
 Strava **webhook** was deferred: it's blocked on the multi-user model (one subscription per app, events
 routed by `owner_id` → needs `athlete_id`). NEXT: the full multi-user epic.
 
+**ON-DEMAND BRIEFING REGEN shipped (no GitHub/terminal round-trip).** The dashboard coach card now has a
+discreet **⋮ menu** (`web/src/components/briefing-menu.tsx`, mounted top-right in `CoachHero`) → "Régénérer
+le briefing" → the `generateBriefingNow()` server action: it does a cheap `syncStrava`+`rollupDailyMetrics`
+(fresh activities) then regenerates today's briefing **inline** via `web/src/lib/coach-briefing.ts`
+(`generateBriefing`) — a **MIRROR of `coach/src/coach.ts`** (same SYSTEM prompt + BRIEFING_SCHEMA + the
+`coach_briefings`/`planned_sessions` writes; keep in sync, like load.ts↔load.py). It reuses the web's
+existing `assembleCoachContext` (mirror of context.ts) + Anthropic integration (the chat already calls it,
+`ANTHROPIC_API_KEY` is on Vercel). Two deliberate differences vs the cron: the briefing now speaks in the
+athlete's **chosen coach persona/voice** (`buildPersonaInstructions` from coach-settings.ts — previously
+only the chat used it) and emits **no push** (the athlete is looking at the screen). Cost guard:
+`enforceBriefingRateLimit` (2/min, 20/day on `coach_briefings`). Kept DISTINCT from the LLM-free
+pull-to-refresh/floating "Synchroniser" button (that stays the cheap data-only refresh). The **morning
+cron now matches**: `coach/src/coach.ts` injects the same persona via **`coach/src/persona.ts`** (a focused
+MIRROR of `web/src/lib/coach-settings.ts` — prompt-relevant slice only: voice/name/dims + buildPersonaInstructions;
+no UI/avatars). Verified: web build green, coach `tsc` clean, live read-only check (context assembles, chosen
+persona read = bouquetin/Gaston and injected). **`why` is now ONE sentence** (schema + prompt, both coach.ts
+and coach-briefing.ts): the dashboard shows it collapsed under the readiness bubble, with an **"Afficher plus"**
+toggle (`web/src/components/briefing-detail.tsx`) revealing the fuller `reasoning` (state_assessment) + the
+week skeleton; the ⚠️ `flag` stays always-visible (it's a warning).
+
 **Design system v1 implemented + build-verified.** Formalised from the logo (blue→orange gradient = the two
 load channels). `web/src/app/globals.css` now carries the `@theme` token layer (Alpine + Summit ramps,
 semantic `aerobic`/`neuro`/`ready`/`caution`/`rest` aliases that shift in dark mode, `page`/`ink` surfaces,

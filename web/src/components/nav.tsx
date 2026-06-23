@@ -40,10 +40,10 @@ const TABS: { key: Tab; href: string; label: string; short: string; icon: React.
   { key: "coach", href: "/coach", label: "Coach", short: "Coach", icon: IconCoach },
   { key: "profil", href: "/profil", label: "Profil", short: "Profil", icon: IconProfil },
 ];
-// Mobile bottom island stays at TWO thumb-reach tabs (design-system rule): Accueil + Profil. The other
-// destinations are reached from the desktop bar or contextual links on the dashboard. Coach is excluded
-// too — a fixed nav must never sit under the chat input.
-const BOTTOM_TABS = TABS.filter((t) => t.key === "dashboard" || t.key === "profil");
+// Mobile bottom island: Accueil · Activités · Analyse · Profil (compact icon-over-label). Coach is
+// excluded on purpose — a fixed nav must never sit under the chat input (it's reached from the top-bar
+// icon instead).
+const BOTTOM_TABS = TABS.filter((t) => t.key !== "coach");
 
 /** The Massif wordmark — lowercase grotesque + a Summit-orange dot (mirrors the brand hero). */
 function Wordmark() {
@@ -129,7 +129,7 @@ export function Nav({ current }: { current: Tab }) {
           aria-label="Navigation"
           className="fixed inset-x-0 bottom-0 z-40 flex justify-center px-4 pb-[calc(env(safe-area-inset-bottom)+0.625rem)] md:hidden"
         >
-          <div className="flex items-center gap-1.5 rounded-full border border-stone-200/80 bg-white/85 p-1.5 shadow-lg shadow-stone-900/10 backdrop-blur-md dark:border-stone-700/70 dark:bg-stone-900/85">
+          <div className="flex items-center gap-0.5 rounded-3xl border border-stone-200/80 bg-white/85 p-1.5 shadow-lg shadow-stone-900/10 backdrop-blur-md dark:border-stone-700/70 dark:bg-stone-900/85">
             {BOTTOM_TABS.map((t) => {
               const on = t.key === current;
               return (
@@ -138,7 +138,7 @@ export function Nav({ current }: { current: Tab }) {
                   href={t.href}
                   aria-label={t.label}
                   aria-current={on ? "page" : undefined}
-                  className={`flex items-center gap-2 rounded-full px-5 py-2.5 text-sm font-medium transition-transform active:scale-95 ${
+                  className={`flex flex-col items-center gap-0.5 rounded-2xl px-3.5 py-1.5 text-[10px] font-medium transition-transform active:scale-95 ${
                     on
                       ? "animate-nav-pop bg-alpine-100 text-alpine-700 motion-reduce:animate-none dark:bg-alpine-900/50 dark:text-alpine-300"
                       : "text-stone-500 dark:text-stone-400"

@@ -32,21 +32,63 @@ export function whenLabelFr(localDate: string, today: string): string {
   return `du ${d}`;
 }
 
-function recoveryLatest(dm: any[]): any | null {
-  for (let i = dm.length - 1; i >= 0; i--) {
-    const d = dm[i];
-    if (d.hrv_overnight_ms != null || d.sleep_score != null || d.training_readiness != null) {
-      return {
-        date: d.local_date,
-        sleep_score: d.sleep_score,
-        sleep_duration_h: d.sleep_duration_s != null ? Math.round((d.sleep_duration_s / 3600) * 10) / 10 : null,
-        hrv_overnight_ms: d.hrv_overnight_ms, hrv_status: d.hrv_status, resting_hr: d.resting_hr,
-        body_battery_high: d.body_battery_high, body_battery_low: d.body_battery_low,
-        stress_avg: d.stress_avg, training_readiness: d.training_readiness,
-      };
-    }
-  }
-  return null;
+/** Garmin recovery metrics we surface, with FR labels (used to name what's missing). */
+const RECOVERY_METRICS: [string, string][] = [
+  ["sleep_score", "sommeil"],
+  ["hrv_overnight_ms", "VFC (HRV)"],
+  ["resting_hr", "FC de repos"],
+  ["body_battery_high", "Body Battery"],
+  ["training_readiness", "readiness"],
+];
+
+/** TODAY's Garmin recovery ONLY — deliberately NO fallback to an earlier day. Recovery (sleep / HRV /
+ *  Body Battery / readiness) is a same-morning signal: citing a stale day's numbers as if they were
+ *  this morning's misleads the coach (that bug had the chat quote a days-old Body Battery 5/100 while
+ *  the briefing correctly said "recovery absent"). When today's data isn't synced yet, `available` is
+ *  false and `missing` names the absent metrics so the coach can say "il me manque telle donnée"
+ *  instead of guessing. Recovery for today is stored under local_date == today (last night's sleep;
+ *  see ingest/garmin.py). Always returns an object (never null) carrying the freshness signal. */
+function recoveryToday(dm: any[], today: string): Record<string, unknown> {
+  const row = dm.find((d) => d.local_date === today) ?? null;
+  const val = (k: string) => (row && row[k] != null ? row[k] : null);
+  const missing = RECOVERY_METRICS.filter(([k]) => val(k) == null).map(([, label]) => label);
+  return {
+    date: today,
+    available: missing.length < RECOVERY_METRICS.length, // false = no Garmin recovery synced for today yet
+    missing, // metrics absent for today (FR labels) — name them if a call depends on them
+    sleep_score: val("sleep_score"),
+    sleep_duration_h: row && row.sleep_duration_s != null ? Math.round((row.sleep_duration_s / 3600) * 10) / 10 : null,
+    hrv_overnight_ms: val("hrv_overnight_ms"),
+    hrv_status: val("hrv_status"),
+    resting_hr: val("resting_hr"),
+    body_battery_high: val("body_battery_high"),
+    body_battery_low: val("body_battery_low"),
+    stress_avg: val("stress_avg"),
+    training_readiness: val("training_readiness"),
+  };
+}
+
+/** Today's coach briefing (the latest if it was regenerated), compact — so the chat stays consistent
+ *  with the morning call instead of silently re-deriving a different one. Null when none yet today. */
+export async function loadTodayBriefing(
+  sb: SupabaseClient,
+  today: string = todayLocal(),
+): Promise<Record<string, unknown> | null> {
+  const { data } = await sb.from("coach_briefings")
+    .select("readiness,today_session,why,reasoning,flag,week_skeleton,confidence,created_at")
+    .eq("briefing_date", today)
+    .order("created_at", { ascending: false })
+    .limit(1).maybeSingle();
+  if (!data) return null;
+  return {
+    readiness: data.readiness,
+    today_session: data.today_session,
+    why: data.why,
+    state_assessment: data.reasoning,
+    flag: data.flag,
+    week_skeleton: data.week_skeleton,
+    confidence: data.confidence,
+  };
 }
 
 /** Read profile + 21d of daily metrics + 14d of activities + upcoming plan → one compact picture.
@@ -113,7 +155,7 @@ export async function assembleCoachContext(sb: SupabaseClient): Promise<{ today:
       ctl_neuromuscular: latest.ctl_neuromuscular, atl_neuromuscular: latest.atl_neuromuscular,
       acwr: latest.acwr,
     },
-    recovery_latest: recoveryLatest(dm),
+    recovery_today: recoveryToday(dm, today),
     daily_load_21d: dm.map((d) => ({
       date: d.local_date, load: d.daily_load, aerobic: d.daily_aerobic_load, neuro: d.daily_neuromuscular_load,
       by_group: d.load_by_group, dplus: d.vertical_gain_m, dminus: d.vertical_loss_m,

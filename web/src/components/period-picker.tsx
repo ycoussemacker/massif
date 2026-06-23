@@ -9,8 +9,10 @@ const PRESETS: { key: string; label: string }[] = [
   { key: "7d", label: "7 jours" },
   { key: "28d", label: "28 jours" },
   { key: "90d", label: "90 jours" },
-  { key: "week", label: "Cette semaine" },
-  { key: "month", label: "Ce mois" },
+  { key: "week", label: "Semaine" },
+  { key: "month", label: "Mois" },
+  { key: "season", label: "Saison" },
+  { key: "year", label: "Année" },
   { key: "custom", label: "Personnalisé" },
 ];
 

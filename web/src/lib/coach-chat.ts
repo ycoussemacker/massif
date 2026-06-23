@@ -3,7 +3,7 @@
  *  (cached) and the coach can call tools to pull ANY older window from the DB on demand. */
 import Anthropic from "@anthropic-ai/sdk";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { assembleCoachContext } from "./coach-context";
+import { assembleCoachContext, loadTodayBriefing, todayLocal } from "./coach-context";
 import { loadCoachSettings, buildPersonaInstructions } from "./coach-settings";
 
 export const COACH_MODEL = process.env.COACH_MODEL ?? "claude-sonnet-4-6";
@@ -36,6 +36,16 @@ feedback when a session matches a goal's sport (goals[].sport), and weight goals
 
 If the data doesn't cover what's asked, say so plainly rather than guessing. Note when a load is
 \`duration_fallback\` (a rough estimate awaiting a manual RPE or HR), so the athlete knows its confidence.
+
+RÉCUPÉRATION (Garmin) — \`recovery_today\` ne contient QUE les données du jour (date = today). N'utilise
+JAMAIS la récupération d'un autre jour comme si elle était celle de ce matin. Si \`recovery_today.available\`
+est false, ou si une métrique figure dans \`recovery_today.missing\`, dis franchement à l'athlète quelle
+donnée te manque pour trancher en confiance (« il me manque le sommeil / la VFC / la FC de repos de ce matin
+pour être pleinement légitime ») — n'invente pas un Body Battery, une VFC ou une FC de repos qui ne sont pas là.
+
+BRIEFING DU JOUR — \`today_briefing\` est le briefing que tu as déjà écrit ce matin (readiness, séance, why,
+state_assessment, flag). Reste cohérent avec lui ; si l'athlète pousse vers autre chose tu peux ajuster, mais
+explique l'écart plutôt que de te contredire. S'il est null, aucun briefing n'a encore été produit aujourd'hui.
 
 Réponds TOUJOURS en français, quelle que soit la langue de la question. Reste concis et conversationnel.`;
 
@@ -144,14 +154,18 @@ export async function generateCoachReply(opts: {
   newUserContent: string;
 }): Promise<string> {
   const { sb, history, newUserContent } = opts;
-  const [{ today, context }, settings] = await Promise.all([assembleCoachContext(sb), loadCoachSettings(sb)]);
+  const today = todayLocal();
+  const [{ context }, settings, todayBriefing] = await Promise.all([
+    assembleCoachContext(sb), loadCoachSettings(sb), loadTodayBriefing(sb, today),
+  ]);
+  const fullContext = { ...context, today_briefing: todayBriefing };
   const client = new Anthropic();
 
   const system = [
     { type: "text", text: CHAT_SYSTEM + "\n\n" + buildPersonaInstructions(settings) },
     {
       type: "text",
-      text: `État actuel de l'athlète (données au ${today}, JSON) :\n${JSON.stringify(context)}`,
+      text: `État actuel de l'athlète (données au ${today}, JSON) :\n${JSON.stringify(fullContext)}`,
       cache_control: { type: "ephemeral" },
     },
   ];

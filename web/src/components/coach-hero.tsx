@@ -1,7 +1,9 @@
 import Link from "next/link";
 import { CoachAvatar } from "./coach-avatar";
-import { READINESS, SYSTEM_TAG_FR, type Readiness } from "@/lib/labels";
-import { todayLocal, dateMinusDays } from "@/lib/coach-context";
+import { BriefingMenu } from "./briefing-menu";
+import { BriefingDetail } from "./briefing-detail";
+import { READINESS, type Readiness } from "@/lib/labels";
+import { todayLocal, dateMinusDays, ATHLETE_TZ } from "@/lib/coach-context";
 import { loadCoachSettings, personaAvatar, personaName } from "@/lib/coach-settings";
 import { createServiceClient } from "@/lib/supabase/server";
 import type { Briefing } from "@/lib/data";
@@ -13,11 +15,24 @@ const READINESS_PILL: Record<Readiness, string> = {
   red: "bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-400",
 };
 
-function relDate(date: string, today: string): string {
-  if (date === today) return "ce matin";
-  if (date === dateMinusDays(today, 1)) return "hier";
-  return new Intl.DateTimeFormat("fr-FR", { day: "numeric", month: "short", timeZone: "UTC" })
-    .format(new Date(date + "T00:00:00Z"));
+/** When the briefing was actually generated (created_at), in the athlete's timezone:
+ *  "aujourd'hui à 07:12" / "hier à 18:30" / "12 juin à 07:12". Falls back to the day alone
+ *  (from briefing_date) if the timestamp is missing. */
+function genWhen(briefing: Briefing, today: string): string {
+  const dayLabel = (iso: string) =>
+    iso === today ? "aujourd'hui"
+    : iso === dateMinusDays(today, 1) ? "hier"
+    : new Intl.DateTimeFormat("fr-FR", { day: "numeric", month: "short", timeZone: "UTC" })
+        .format(new Date(iso + "T00:00:00Z"));
+  if (!briefing.created_at) return dayLabel(briefing.briefing_date);
+  const d = new Date(briefing.created_at);
+  const dateStr = new Intl.DateTimeFormat("en-CA", {
+    timeZone: ATHLETE_TZ, year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(d);
+  const time = new Intl.DateTimeFormat("fr-FR", {
+    timeZone: ATHLETE_TZ, hour: "2-digit", minute: "2-digit",
+  }).format(d);
+  return `${dayLabel(dateStr)} à ${time}`;
 }
 
 /** The coach leads the dashboard: a readiness-ringed avatar "speaks" the briefing, anchored by an
@@ -51,13 +66,17 @@ export async function CoachHero({ briefing }: { briefing: Briefing | null }) {
               </span>
             </div>
           )}
-          {/* Date + confiance — petit, gris */}
+          {/* Heure de génération + confiance — petit, gris */}
           {briefing && (
-            <div className="truncate text-[11px] text-stone-400 sm:text-xs">
-              {relDate(briefing.briefing_date, today)}
+            <div className="truncate text-[11px] text-stone-400 sm:text-xs" title="Heure de génération du briefing">
+              Généré {genWhen(briefing, today)}
               {briefing.confidence != null && ` · confiance ${Math.round(briefing.confidence * 100)} %`}
             </div>
           )}
+        </div>
+        {/* Menu discret — régénération du briefing à la demande */}
+        <div className="-mr-1 self-start">
+          <BriefingMenu />
         </div>
       </div>
 
@@ -71,7 +90,7 @@ export async function CoachHero({ briefing }: { briefing: Briefing | null }) {
                   Aujourd&apos;hui → {briefing.today_session}
                 </p>
               )}
-              {/* `why` rendu comme une bulle entrante (coin pointé vers l'avatar) */}
+              {/* `why` (1 phrase) rendu comme une bulle entrante (coin pointé vers l'avatar) */}
               {briefing.why && (
                 <p className="mt-2 rounded-2xl rounded-tl-sm bg-stone-100 px-3.5 py-2.5 text-sm text-stone-700 dark:bg-stone-800 dark:text-stone-200">
                   {briefing.why}
@@ -82,16 +101,8 @@ export async function CoachHero({ briefing }: { briefing: Briefing | null }) {
                   ⚠️ {briefing.flag}
                 </p>
               )}
-              {briefing.week_skeleton?.length ? (
-                <div className="mt-3 flex flex-wrap gap-1.5">
-                  {briefing.week_skeleton.map((d) => (
-                    <span key={d.day_offset} title={d.focus}
-                      className="rounded-md border border-stone-200 px-2 py-1 text-xs text-stone-600 dark:border-stone-700 dark:text-stone-300">
-                      <span className="font-medium">+{d.day_offset} j</span> {SYSTEM_TAG_FR[d.system_tag] ?? d.system_tag}
-                    </span>
-                  ))}
-                </div>
-              ) : null}
+              {/* Détail replié : l'état complet (reasoning) + le squelette de semaine */}
+              <BriefingDetail reasoning={briefing.reasoning} weekSkeleton={briefing.week_skeleton} />
             </>
           ) : (
             <p className="mt-1 rounded-2xl rounded-tl-sm bg-stone-100 px-3.5 py-2.5 text-sm text-stone-600 dark:bg-stone-800 dark:text-stone-300">

@@ -24,3 +24,17 @@ export const STATE = {
 /** Axis lines, baselines, muted fallbacks. */
 export const AXIS = "var(--color-stone-400)";
 export const MUTED = "var(--color-stone-500)";
+
+/** Categorical palette for distinguishing SPORTS in composition charts — a scoped exception to the
+ *  "sports are never coloured" rule (the user asked for legible per-sport colours). Disjoint from the
+ *  Alpine/Summit physiology hues so it can't be misread as a load channel. Index by sport rank. */
+export const SERIES = [
+  "var(--color-series-1)", "var(--color-series-2)", "var(--color-series-3)", "var(--color-series-4)",
+  "var(--color-series-5)", "var(--color-series-6)", "var(--color-series-7)", "var(--color-series-8)",
+] as const;
+
+/** Period A/B convention (period is not a physiology → neutral): B = bold ink, A = muted stone. */
+export const PERIOD = {
+  a: "var(--color-stone-400)",
+  b: "var(--color-ink)",
+} as const;

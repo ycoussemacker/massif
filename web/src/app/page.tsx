@@ -8,7 +8,9 @@ import { GoalBadge } from "@/components/goal-badge";
 import { CoachHero } from "@/components/coach-hero";
 import { todayLocal } from "@/lib/coach-context";
 import { fmt, avgLoadRecent } from "@/lib/format";
-import { STATE } from "@/lib/theme";
+import { rollingMonotony } from "@/lib/aggregate";
+import { Sparkline } from "@/components/sparkline";
+import { VIZ, STATE } from "@/lib/theme";
 
 export const dynamic = "force-dynamic"; // toujours refléter le dernier sync / run du coach
 
@@ -80,6 +82,13 @@ export default async function Dashboard() {
   const tsbMax = Math.max(20, (tsb ?? 0) + 5);
   const acwrMax = Math.max(2, (acwr ?? 0) + 0.1);
 
+  // Trend sparklines + a client-computed monotony (the DB doesn't persist monotony/strain).
+  const ctlSeries = metrics.map((m) => m.ctl);
+  const atlSeries = metrics.map((m) => m.atl);
+  const monoSeries = rollingMonotony(metrics.map((m) => m.daily_load ?? 0));
+  const latestMono = [...monoSeries].reverse().find((v) => v != null) ?? null;
+  const monoColor = latestMono == null ? undefined : latestMono >= 2 ? STATE.rest : latestMono >= 1.5 ? STATE.caution : undefined;
+
   return (
     <div className="min-h-full overflow-x-hidden bg-page pt-[env(safe-area-inset-top)] font-sans text-stone-900 dark:text-stone-100">
       <div className="mx-auto w-full max-w-5xl px-4 pt-6 pb-[calc(4rem+env(safe-area-inset-bottom))] sm:px-6 sm:pt-8 md:pb-8">
@@ -112,16 +121,27 @@ export default async function Dashboard() {
           <div className="space-y-5">
             {/* CTL + ATL sur une même ligne (gain de place). Pas de code couleur : magnitudes brutes —
                 le bon/risqué est dans leur rapport (TSB & ACWR, colorés ci-dessous). */}
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
               <div>
                 <div className="text-xs uppercase tracking-wide text-stone-500">CTL · forme</div>
                 <div className="mt-1 text-2xl font-semibold tabular-nums">{fmt(latest?.ctl, 1)}</div>
+                <Sparkline values={ctlSeries} color={VIZ.aerobic} className="mt-1 w-full" />
                 <div className="text-xs text-stone-400">charge chronique ~42 j (pts)</div>
               </div>
               <div>
                 <div className="text-xs uppercase tracking-wide text-stone-500">ATL · fatigue</div>
                 <div className="mt-1 text-2xl font-semibold tabular-nums">{fmt(latest?.atl, 1)}</div>
+                <Sparkline values={atlSeries} color={VIZ.neuro} className="mt-1 w-full" />
                 <div className="text-xs text-stone-400">charge aiguë ~7 j (pts)</div>
+              </div>
+              <div className="col-span-2 sm:col-span-1">
+                <div className="text-xs uppercase tracking-wide text-stone-500"
+                  title="Monotonie = charge moyenne ÷ écart-type sur 7 jours. Élevée (> 2) = entraînement trop uniforme → risque. Calculée sur la fenêtre affichée.">
+                  Monotonie · 7 j
+                </div>
+                <div className="mt-1 text-2xl font-semibold tabular-nums" style={monoColor ? { color: monoColor } : undefined}>{fmt(latestMono, 2)}</div>
+                <Sparkline values={monoSeries} className="mt-1 w-full text-stone-400" />
+                <div className="text-xs text-stone-400">régularité de la charge</div>
               </div>
             </div>
             <div className="grid gap-5 sm:grid-cols-3">

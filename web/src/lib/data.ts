@@ -88,6 +88,7 @@ export function enrichActivities(rows: any[], sportById: Map<number, any>): Acti
 
 export type Briefing = {
   briefing_date: string;
+  created_at: string | null; // actual generation timestamp (the card shows the time)
   model: string | null;
   readiness: "green" | "amber" | "red" | null;
   today_session: string | null;

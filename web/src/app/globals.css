@@ -73,6 +73,19 @@
      bubbles (white text). Anchored on the DARK halves (alpine-600 / summit-700) so white stays ≥5:1
      AA across the whole blend — never the vivid summit-500, which fails contrast under white text. */
   --gradient-message: linear-gradient(125deg, var(--color-alpine-600) 0%, var(--color-summit-700) 100%);
+
+  /* Categorical series palette — to distinguish SPORTS in composition charts (an explicit, scoped
+     exception to "sports = glyph+name, never coloured"). Deliberately DISJOINT from the physiology
+     hues (no alpine-blue, no summit-orange) so a sport colour never reads as a load channel. Mid
+     jewel tones chosen to stay legible on both the warm-paper and night surfaces. */
+  --color-series-1: #7c5cd6; /* violet */
+  --color-series-2: #199e8f; /* teal */
+  --color-series-3: #d6488f; /* pink */
+  --color-series-4: #7aa53d; /* olive */
+  --color-series-5: #b06a3c; /* sienna */
+  --color-series-6: #5a5cc7; /* indigo */
+  --color-series-7: #c79320; /* gold */
+  --color-series-8: #6b7a8f; /* slate */
 }
 
 /* The brand gradient as a utility (used on the primary coach CTA). */

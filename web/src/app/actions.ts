@@ -9,6 +9,7 @@ import { todayLocal, whenLabelFr } from "@/lib/coach-context";
 import { sanitizeCoachSettings, type CoachSettings } from "@/lib/coach-settings";
 import { syncStrava } from "@/lib/strava-sync";
 import { rollupDailyMetrics } from "@/lib/rollup";
+import { generateBriefing, type BriefingResult } from "@/lib/coach-briefing";
 
 /** Log a post-session RPE (1–10) for an activity and recompute its load via session_rpe.
  *  Writes the two channels (never the generated total) + rpe_source='user' so the next sync keeps it.
@@ -199,4 +200,34 @@ export async function syncNow(): Promise<{ pulled: number; newest: string | null
   revalidatePath("/");
   revalidatePath("/coach");
   return { pulled, newest, days };
+}
+
+/** Cost/abuse guard on the on-demand briefing (an Anthropic call behind only the shared password).
+ *  Counts briefings written recently (shared DB state — works on serverless) and throws over the
+ *  burst/day limits. The morning cron writes one briefing/day, well under the daily cap. */
+async function enforceBriefingRateLimit(sb: SupabaseClient): Promise<void> {
+  const now = Date.now();
+  const since1m = new Date(now - 60_000).toISOString();
+  const since1d = new Date(now - 86_400_000).toISOString();
+  const [burst, daily] = await Promise.all([
+    sb.from("coach_briefings").select("id", { count: "exact", head: true }).gte("created_at", since1m),
+    sb.from("coach_briefings").select("id", { count: "exact", head: true }).gte("created_at", since1d),
+  ]);
+  if ((burst.count ?? 0) >= 2) throw new Error("Le briefing vient d'être régénéré — attends un instant.");
+  if ((daily.count ?? 0) >= 20) throw new Error("Limite quotidienne de régénérations atteinte (20/jour).");
+}
+
+/** On-demand "Régénérer le briefing" (the dashboard ⋮ menu). Pulls the latest Strava + recomputes the
+ *  model (so the briefing sees fresh activities), then regenerates today's briefing inline — in the
+ *  athlete's chosen coach voice, with the freshest profile/goals. Garmin recovery stays on the cron
+ *  (no API); no push (the athlete is looking at the screen). Returns a summary for the UI toast. */
+export async function generateBriefingNow(): Promise<{ pulled: number; briefing: BriefingResult }> {
+  const sb = await createServiceClient();
+  await enforceBriefingRateLimit(sb);
+  const { pulled } = await syncStrava(sb);
+  await rollupDailyMetrics(sb);
+  const briefing = await generateBriefing(sb);
+  revalidatePath("/");
+  revalidatePath("/coach");
+  return { pulled, briefing };
 }

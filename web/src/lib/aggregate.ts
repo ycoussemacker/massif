@@ -75,6 +75,51 @@ export function aggregateByChannel(rows: Activity[]): { aerobic: number; neuro: 
   return { aerobic: a.aerobic, neuro: a.neuro };
 }
 
+/** Rolling training monotony (mean ÷ SD of daily load over `w` days). High (>~2) = too uniform = risk.
+ *  Computed client-side from the daily-load series — the DB doesn't persist it. null until the window
+ *  fills, or when SD≈0 (e.g. a full rest week). */
+export function rollingMonotony(loads: number[], w = 7): (number | null)[] {
+  return loads.map((_, i) => {
+    if (i < w - 1) return null;
+    const win = loads.slice(i - w + 1, i + 1);
+    const mean = win.reduce((s, v) => s + v, 0) / w;
+    const sd = Math.sqrt(win.reduce((s, v) => s + (v - mean) ** 2, 0) / w);
+    return sd > 0.01 ? mean / sd : null;
+  });
+}
+
+/** Per-day load broken down by sport, for a stacked composition chart. Keeps the top-N sports by total
+ *  load; the rest fold into "other". perDay maps date → (sportKey → load); sportKey is the sport_id or
+ *  the literal "other". Sports are identified by glyph+name in the legend — never by colour. */
+export function sportComposition(rows: Activity[], topN = 6): {
+  order: { key: number | "other"; code: string | null; name: string; total: number }[];
+  perDay: Map<string, Map<number | "other", number>>;
+} {
+  const totals = new Map<number, { code: string | null; name: string; total: number }>();
+  for (const r of rows) {
+    const t = totals.get(r.sport_id) ?? { code: r.sport_code, name: r.sport, total: 0 };
+    t.total += r.training_load ?? 0;
+    totals.set(r.sport_id, t);
+  }
+  const ranked = [...totals.entries()].sort((a, b) => b[1].total - a[1].total);
+  const top = new Set(ranked.slice(0, topN).map(([id]) => id));
+  const keyOf = (id: number): number | "other" => (top.has(id) ? id : "other");
+
+  const perDay = new Map<string, Map<number | "other", number>>();
+  for (const r of rows) {
+    const day = perDay.get(r.local_date) ?? new Map<number | "other", number>();
+    const k = keyOf(r.sport_id);
+    day.set(k, (day.get(k) ?? 0) + (r.training_load ?? 0));
+    perDay.set(r.local_date, day);
+  }
+
+  const order: { key: number | "other"; code: string | null; name: string; total: number }[] =
+    ranked.slice(0, topN).map(([id, t]) => ({ key: id, code: t.code, name: t.name, total: t.total }));
+  const otherTotal = ranked.slice(topN).reduce((s, [, t]) => s + t.total, 0);
+  if (otherTotal > 0) order.push({ key: "other", code: null, name: "Autres", total: otherTotal });
+  return { order, perDay };
+}
+
 export type FieldDelta = { abs: number; pct: number | null }; // pct null when the baseline is 0
 export type AggDelta = Record<keyof LoadAgg, FieldDelta>;
 

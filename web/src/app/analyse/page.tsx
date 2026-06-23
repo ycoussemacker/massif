@@ -1,12 +1,15 @@
 import { Nav } from "@/components/nav";
 import { PeriodPicker } from "@/components/period-picker";
+import { Sparkline } from "@/components/sparkline";
+import { Heatmap } from "@/components/heatmap";
+import { StackedTimeChart, StackBar, type StackSeg } from "@/components/stacked-time-chart";
 import { listActivities, getSports } from "@/lib/activities";
-import { aggregate, aggregateBySport, type LoadAgg } from "@/lib/aggregate";
+import { aggregate, sportComposition } from "@/lib/aggregate";
 import { createServiceClient } from "@/lib/supabase/server";
 import { todayLocal, dateMinusDays, daysBetween } from "@/lib/coach-context";
 import { fmt, dur, km, meters } from "@/lib/format";
 import { sportIcon, sportName } from "@/lib/labels";
-import { VIZ } from "@/lib/theme";
+import { VIZ, SERIES, PERIOD } from "@/lib/theme";
 
 export const dynamic = "force-dynamic";
 
@@ -15,6 +18,16 @@ type Period = { from: string; to: string };
 type SP = { preset?: string; aFrom?: string; aTo?: string; bFrom?: string; bTo?: string };
 
 const addDays = (iso: string, n: number) => dateMinusDays(iso, -n);
+const yearsAgo = (iso: string, n: number): string => {
+  const d = new Date(iso + "T00:00:00Z");
+  d.setUTCFullYear(d.getUTCFullYear() - n);
+  return d.toISOString().slice(0, 10);
+};
+
+const PRESET_LABEL: Record<string, string> = {
+  "7d": "7 jours", "28d": "28 jours", "90d": "90 jours", week: "semaine", month: "mois",
+  season: "saison", year: "année", custom: "période libre",
+};
 
 /** Two periods: A = earlier (baseline), B = later (recent). Δ shown later is B vs A. */
 function derivePeriods(today: string, sp: SP): { a: Period; b: Period; preset: string } {
@@ -29,11 +42,7 @@ function derivePeriods(today: string, sp: SP): { a: Period; b: Period; preset: s
   if (preset === "week") {
     const dow = (new Date(today + "T00:00:00Z").getUTCDay() + 6) % 7; // 0 = Monday
     const weekStart = dateMinusDays(today, dow);
-    return {
-      preset,
-      b: { from: weekStart, to: today },
-      a: { from: dateMinusDays(weekStart, 7), to: dateMinusDays(weekStart, 1) },
-    };
+    return { preset, b: { from: weekStart, to: today }, a: { from: dateMinusDays(weekStart, 7), to: dateMinusDays(weekStart, 1) } };
   }
   if (preset === "month") {
     const [y, m] = today.split("-").map(Number);
@@ -42,12 +51,29 @@ function derivePeriods(today: string, sp: SP): { a: Period; b: Period; preset: s
     const firstPrev = `${pY}-${String(pM).padStart(2, "0")}-01`;
     return { preset, b: { from: firstThis, to: today }, a: { from: firstPrev, to: dateMinusDays(firstThis, 1) } };
   }
+  if (preset === "season") {
+    const [y, m] = today.split("-").map(Number);
+    const start =
+      m >= 3 && m <= 5 ? `${y}-03-01`
+      : m >= 6 && m <= 8 ? `${y}-06-01`
+      : m >= 9 && m <= 11 ? `${y}-09-01`
+      : `${m === 12 ? y : y - 1}-12-01`;
+    const elapsed = daysBetween(start, today);
+    const aStart = yearsAgo(start, 1);
+    return { preset, b: { from: start, to: today }, a: { from: aStart, to: addDays(aStart, elapsed) } };
+  }
+  if (preset === "year") {
+    const y = Number(today.slice(0, 4));
+    const start = `${y}-01-01`;
+    const aStart = `${y - 1}-01-01`;
+    return { preset, b: { from: start, to: today }, a: { from: aStart, to: addDays(aStart, daysBetween(start, today)) } };
+  }
   if (preset === "custom") {
     const ok = (s?: string) => (s && DATE_RE.test(s) ? s : null);
     const a = ok(sp.aFrom) && ok(sp.aTo) ? { from: sp.aFrom!, to: sp.aTo! } : null;
     const b = ok(sp.bFrom) && ok(sp.bTo) ? { from: sp.bFrom!, to: sp.bTo! } : null;
     if (a && b) return { a, b, preset };
-    return { ...rolling(28), preset }; // incomplete custom → sensible fallback
+    return { ...rolling(28), preset };
   }
   return { ...rolling(28), preset: "28d" };
 }
@@ -59,7 +85,8 @@ const avg = (nums: (number | null)[]): number | null => {
 
 type MetricRow = { local_date: string; ctl: number | null; atl: number | null; tsb: number | null; acwr: number | null; sleep_score: number | null; hrv_overnight_ms: number | null; resting_hr: number | null; training_readiness: number | null };
 
-function Delta({ a, b, decimals = 0, invert = false }: { a: number | null; b: number | null; decimals?: number; invert?: boolean }) {
+/** Δ B − A, neutral (period is not a value judgment), with an arrow + percentage. */
+function Delta({ a, b, decimals = 0 }: { a: number | null; b: number | null; decimals?: number }) {
   if (a == null || b == null) return <span className="text-stone-300 dark:text-stone-600">—</span>;
   const abs = b - a;
   const pct = a !== 0 ? (abs / a) * 100 : null;
@@ -67,74 +94,138 @@ function Delta({ a, b, decimals = 0, invert = false }: { a: number | null; b: nu
   const sign = abs > 0 ? "+" : "";
   return (
     <span className="tabular-nums text-stone-500 dark:text-stone-400">
-      {arrow} {sign}{abs.toFixed(decimals)}{pct != null && <span className="text-stone-400 dark:text-stone-500"> ({sign}{pct.toFixed(0)}%)</span>}
+      {arrow} {sign}{abs.toFixed(decimals)}{pct != null && <span className="text-stone-400 dark:text-stone-500"> ({sign}{pct.toFixed(0)}%)</span>} <span className="text-stone-400">vs A</span>
     </span>
   );
 }
 
-/** Aligned cumulative-load overlay: A solid, B dashed (neutral stone — period is not a physiology). */
-function CumulativeOverlay({ a, b }: { a: number[]; b: number[] }) {
-  const H = 150;
-  const maxLen = Math.max(a.length, b.length, 1);
-  const maxCum = Math.max(1, a.at(-1) ?? 0, b.at(-1) ?? 0);
-  const w = Math.max(560, maxLen * 14);
-  const pts = (s: number[]) =>
-    s.map((v, i) => `${((i / Math.max(1, maxLen - 1)) * w).toFixed(1)},${(H - (v / maxCum) * H).toFixed(1)}`).join(" ");
+/** A metric block in the "indicateurs" style: caption + big B value + sparkline (period B) + Δ vs A. */
+function StatBlock({ label, aVal, bVal, render, decimals, series, color, big = true }: {
+  label: string; aVal: number | null; bVal: number | null; render: (n: number | null) => string;
+  decimals: number; series?: (number | null)[]; color?: string; big?: boolean;
+}) {
   return (
     <div>
-      <div className="mb-2 flex flex-wrap items-center gap-3 text-xs text-stone-500 dark:text-stone-400">
-        <span className="flex items-center gap-1.5"><svg width="20" height="6"><line x1="0" y1="3" x2="20" y2="3" stroke="currentColor" className="text-stone-600 dark:text-stone-300" strokeWidth="2" /></svg>Période A</span>
-        <span className="flex items-center gap-1.5"><svg width="20" height="6"><line x1="0" y1="3" x2="20" y2="3" stroke="currentColor" className="text-stone-400 dark:text-stone-500" strokeWidth="2" strokeDasharray="4 3" /></svg>Période B</span>
-      </div>
-      <div className="overflow-x-auto">
-        <svg width={w} height={H} viewBox={`0 0 ${w} ${H}`} className="block">
-          {[0, H / 2, H].map((y) => <line key={y} x1={0} y1={y} x2={w} y2={y} stroke="currentColor" className="text-stone-200 dark:text-stone-800" strokeWidth={1} />)}
-          <polyline points={pts(a)} fill="none" stroke="currentColor" className="text-stone-600 dark:text-stone-300" strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
-          <polyline points={pts(b)} fill="none" stroke="currentColor" className="text-stone-400 dark:text-stone-500" strokeWidth={2} strokeDasharray="5 3" strokeLinejoin="round" strokeLinecap="round" />
-        </svg>
-      </div>
-      <div className="mt-1 text-center text-[10px] text-stone-400">charge cumulée (points) par jour depuis le début de la période</div>
+      <div className="text-xs uppercase tracking-wide text-stone-500 dark:text-stone-400">{label}</div>
+      <div className={`mt-1 font-semibold tabular-nums ${big ? "text-2xl" : "text-lg"}`}>{render(bVal)}</div>
+      {series && <Sparkline values={series} color={color} className={`mt-1 w-full ${color ? "" : "text-stone-400"}`} />}
+      <div className="mt-1 text-xs"><Delta a={aVal} b={bVal} decimals={decimals} /></div>
     </div>
   );
 }
 
-function PeriodHead({ tag, p, agg }: { tag: string; p: Period; agg: LoadAgg }) {
+/** Cumulative-load superposition. B (recent) = bold solid; A (reference) = muted dashed. */
+function CumulativeOverlay({ a, b }: { a: number[]; b: number[] }) {
+  const H = 160;
+  const maxLen = Math.max(a.length, b.length, 1);
+  const maxCum = Math.max(1, a.at(-1) ?? 0, b.at(-1) ?? 0);
+  const w = Math.max(560, maxLen * 16);
+  const pts = (s: number[]) => s.map((v, i) => `${((i / Math.max(1, maxLen - 1)) * w).toFixed(1)},${(H - (v / maxCum) * H).toFixed(1)}`).join(" ");
   return (
-    <div className="min-w-0">
-      <div className="text-xs font-semibold uppercase tracking-wide text-stone-400">Période {tag}</div>
-      <div className="mt-0.5 text-sm font-medium tabular-nums text-stone-700 dark:text-stone-300">{p.from} → {p.to}</div>
-      <div className="text-xs text-stone-400">{agg.sessions} séance{agg.sessions > 1 ? "s" : ""} · {fmt(agg.load, 0)} pts</div>
+    <div>
+      <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-2">
+        <div className="flex w-9 flex-col justify-between py-0.5 text-right text-[10px] tabular-nums text-stone-400" style={{ height: H }}>
+          <span>{Math.round(maxCum)}</span><span>{Math.round(maxCum / 2)}</span><span>0</span>
+        </div>
+        <div className="min-w-0 overflow-x-auto">
+          <div style={{ width: w }}>
+            <svg width={w} height={H} viewBox={`0 0 ${w} ${H}`} className="block">
+              {[0, H / 2, H].map((y) => <line key={y} x1={0} y1={y} x2={w} y2={y} stroke="currentColor" className="text-stone-100 dark:text-stone-800" strokeWidth={1} />)}
+              <polyline points={pts(a)} fill="none" stroke={PERIOD.a} strokeWidth={2} strokeDasharray="5 3" strokeLinejoin="round" strokeLinecap="round" />
+              <polyline points={pts(b)} fill="none" stroke={PERIOD.b} strokeWidth={2.5} strokeLinejoin="round" strokeLinecap="round" />
+            </svg>
+            <div className="text-center text-[10px] text-stone-400" style={{ width: w }}>jour 1 → jour {maxLen} de la période</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** A/B legend chip — reused so the compared periods read the same everywhere. */
+function ABChip({ tag, p }: { tag: "A" | "B"; p: Period }) {
+  const isB = tag === "B";
+  return (
+    <div className={`rounded-xl border p-3 ${isB ? "border-stone-300 dark:border-stone-600" : "border-stone-200 dark:border-stone-800"}`}>
+      <div className="flex items-center gap-2">
+        <span className="inline-block h-2.5 w-4 rounded-sm" style={{ background: isB ? PERIOD.b : PERIOD.a }} />
+        <span className={`text-xs font-semibold uppercase tracking-wide ${isB ? "text-stone-700 dark:text-stone-200" : "text-stone-400"}`}>
+          Période {tag} {isB ? "· récente" : "· référence"}
+        </span>
+      </div>
+      <div className="mt-1 text-sm font-medium tabular-nums text-stone-700 dark:text-stone-300">{p.from} → {p.to}</div>
     </div>
   );
 }
 
 export default async function AnalysePage({ searchParams }: { searchParams: Promise<SP> }) {
   const sp = await searchParams;
-  const { a, b, preset } = derivePeriods(todayLocal(), sp);
+  const today = todayLocal();
+  const { a, b, preset } = derivePeriods(today, sp);
 
   const sb = await createServiceClient();
-  // Bound the metrics read to the union of both periods (avoids PostgREST's 1000-row response cap,
-  // which — unbounded + ordered asc — would return only the oldest rows and miss recent periods).
   const lo = [a.from, b.from].sort()[0];
   const hi = [a.to, b.to].sort().at(-1)!;
-  const [aRes, bRes, sports, mm] = await Promise.all([
+  const heatStart = yearsAgo(today, 1);
+  const [aRes, bRes, sports, mm, hm] = await Promise.all([
     listActivities({ from: a.from, to: a.to, order: "date_asc", limit: 1000 }),
     listActivities({ from: b.from, to: b.to, order: "date_asc", limit: 1000 }),
     getSports(),
     sb.from("daily_metrics").select("local_date,ctl,atl,tsb,acwr,sleep_score,hrv_overnight_ms,resting_hr,training_readiness")
       .gte("local_date", lo).lte("local_date", hi).order("local_date", { ascending: true }),
+    sb.from("daily_metrics").select("local_date,daily_load").gte("local_date", heatStart).order("local_date", { ascending: true }),
   ]);
 
   const metrics = (mm.data ?? []) as MetricRow[];
   const inRange = (p: Period) => metrics.filter((m) => m.local_date >= p.from && m.local_date <= p.to);
   const aM = inRange(a), bM = inRange(b);
+  const heatDays = ((hm.data ?? []) as { local_date: string; daily_load: number }[]).map((r) => ({ date: r.local_date, load: r.daily_load ?? 0 }));
 
   const aAgg = aggregate(aRes.rows), bAgg = aggregate(bRes.rows);
-  const sportById = new Map(sports.map((s) => [s.id, s]));
-  const aBySport = aggregateBySport(aRes.rows), bBySport = aggregateBySport(bRes.rows);
-  const sportIds = [...new Set([...aBySport.keys(), ...bBySport.keys()])]
-    .sort((x, y) => ((bBySport.get(y)?.load ?? 0) + (aBySport.get(y)?.load ?? 0)) - ((bBySport.get(x)?.load ?? 0) + (aBySport.get(x)?.load ?? 0)));
-  const maxSportLoad = Math.max(1, ...sportIds.map((id) => Math.max(aBySport.get(id)?.load ?? 0, bBySport.get(id)?.load ?? 0)));
+
+  // Period-B daily series (sparklines).
+  const bDays = Array.from({ length: daysBetween(b.from, b.to) + 1 }, (_, i) => addDays(b.from, i));
+  const bMetBy = new Map(bM.map((m) => [m.local_date, m]));
+  const bActBy = new Map<string, typeof bRes.rows>();
+  for (const r of bRes.rows) (bActBy.get(r.local_date) ?? bActBy.set(r.local_date, []).get(r.local_date)!).push(r);
+  const sumDay = (d: string, f: (x: typeof bRes.rows[number]) => number) => (bActBy.get(d) ?? []).reduce((s, x) => s + f(x), 0);
+  const seriesByLabel: Record<string, (number | null)[]> = {
+    "Charge totale": bDays.map((d) => sumDay(d, (x) => x.training_load ?? 0)),
+    "Aérobie": bDays.map((d) => sumDay(d, (x) => x.aerobic_load ?? 0)),
+    "Neuromusculaire": bDays.map((d) => sumDay(d, (x) => x.neuromuscular_load ?? 0)),
+    "Durée": bDays.map((d) => sumDay(d, (x) => x.duration_s ?? 0)),
+    "Distance": bDays.map((d) => sumDay(d, (x) => x.distance_m ?? 0)),
+    "Dénivelé +": bDays.map((d) => sumDay(d, (x) => x.vertical_gain_m ?? 0)),
+    "Séances": bDays.map((d) => bActBy.get(d)?.length ?? 0),
+    "Dénivelé −": bDays.map((d) => sumDay(d, (x) => x.vertical_loss_m ?? 0)),
+    "TSB moyen": bDays.map((d) => bMetBy.get(d)?.tsb ?? null),
+    "CTL moyen": bDays.map((d) => bMetBy.get(d)?.ctl ?? null),
+    "ACWR moyen": bDays.map((d) => bMetBy.get(d)?.acwr ?? null),
+    "Sommeil moyen": bDays.map((d) => bMetBy.get(d)?.sleep_score ?? null),
+    "VFC moyenne": bDays.map((d) => bMetBy.get(d)?.hrv_overnight_ms ?? null),
+    "FC repos moyenne": bDays.map((d) => bMetBy.get(d)?.resting_hr ?? null),
+  };
+
+  // Headline (big, sparkline) + detail (compact) metrics.
+  type KPI = { label: string; aVal: number | null; bVal: number | null; render: (n: number | null) => string; decimals: number; color?: string };
+  const summary: KPI[] = [
+    { label: "Charge totale", aVal: aAgg.load, bVal: bAgg.load, render: (n) => `${fmt(n, 0)} pts`, decimals: 0 },
+    { label: "Aérobie", aVal: aAgg.aerobic, bVal: bAgg.aerobic, render: (n) => `${fmt(n, 0)} pts`, decimals: 0, color: VIZ.aerobic },
+    { label: "Neuromusculaire", aVal: aAgg.neuro, bVal: bAgg.neuro, render: (n) => `${fmt(n, 0)} pts`, decimals: 0, color: VIZ.neuro },
+    { label: "Durée", aVal: aAgg.durationS, bVal: bAgg.durationS, render: dur, decimals: 0 },
+    { label: "Distance", aVal: aAgg.distanceM, bVal: bAgg.distanceM, render: km, decimals: 0 },
+    { label: "Dénivelé +", aVal: aAgg.gainM, bVal: bAgg.gainM, render: meters, decimals: 0 },
+  ];
+  const detail: KPI[] = [
+    { label: "Séances", aVal: aAgg.sessions, bVal: bAgg.sessions, render: (n) => fmt(n, 0), decimals: 0 },
+    { label: "Dénivelé −", aVal: aAgg.lossM, bVal: bAgg.lossM, render: meters, decimals: 0 },
+    { label: "TSB moyen", aVal: avg(aM.map((m) => m.tsb)), bVal: avg(bM.map((m) => m.tsb)), render: (n) => fmt(n, 1), decimals: 1 },
+    { label: "CTL moyen", aVal: avg(aM.map((m) => m.ctl)), bVal: avg(bM.map((m) => m.ctl)), render: (n) => fmt(n, 1), decimals: 1 },
+    { label: "ACWR moyen", aVal: avg(aM.map((m) => m.acwr)), bVal: avg(bM.map((m) => m.acwr)), render: (n) => fmt(n, 2), decimals: 2 },
+    { label: "Sommeil moyen", aVal: avg(aM.map((m) => m.sleep_score)), bVal: avg(bM.map((m) => m.sleep_score)), render: (n) => fmt(n, 0), decimals: 0 },
+    { label: "VFC moyenne", aVal: avg(aM.map((m) => m.hrv_overnight_ms)), bVal: avg(bM.map((m) => m.hrv_overnight_ms)), render: (n) => (n == null ? "—" : `${fmt(n, 0)} ms`), decimals: 0 },
+    { label: "FC repos moyenne", aVal: avg(aM.map((m) => m.resting_hr)), bVal: avg(bM.map((m) => m.resting_hr)), render: (n) => (n == null ? "—" : `${fmt(n, 0)} bpm`), decimals: 0 },
+  ];
 
   const cumulative = (rows: typeof aRes.rows, p: Period): number[] => {
     const days = daysBetween(p.from, p.to) + 1;
@@ -146,23 +237,43 @@ export default async function AnalysePage({ searchParams }: { searchParams: Prom
     return out;
   };
 
-  // KPI rows. agg keys come from activities; metric averages from daily_metrics.
-  const kpis: { label: string; aVal: number | null; bVal: number | null; render: (n: number | null) => string; decimals: number }[] = [
-    { label: "Séances", aVal: aAgg.sessions, bVal: bAgg.sessions, render: (n) => fmt(n, 0), decimals: 0 },
-    { label: "Charge totale", aVal: aAgg.load, bVal: bAgg.load, render: (n) => `${fmt(n, 0)} pts`, decimals: 0 },
-    { label: "Aérobie", aVal: aAgg.aerobic, bVal: bAgg.aerobic, render: (n) => `${fmt(n, 0)} pts`, decimals: 0 },
-    { label: "Neuromusculaire", aVal: aAgg.neuro, bVal: bAgg.neuro, render: (n) => `${fmt(n, 0)} pts`, decimals: 0 },
-    { label: "Durée", aVal: aAgg.durationS, bVal: bAgg.durationS, render: (n) => dur(n), decimals: 0 },
-    { label: "Distance", aVal: aAgg.distanceM, bVal: bAgg.distanceM, render: (n) => km(n), decimals: 0 },
-    { label: "Dénivelé +", aVal: aAgg.gainM, bVal: bAgg.gainM, render: (n) => meters(n), decimals: 0 },
-    { label: "Dénivelé −", aVal: aAgg.lossM, bVal: bAgg.lossM, render: (n) => meters(n), decimals: 0 },
-    { label: "TSB moyen", aVal: avg(aM.map((m) => m.tsb)), bVal: avg(bM.map((m) => m.tsb)), render: (n) => fmt(n, 1), decimals: 1 },
-    { label: "CTL moyen", aVal: avg(aM.map((m) => m.ctl)), bVal: avg(bM.map((m) => m.ctl)), render: (n) => fmt(n, 1), decimals: 1 },
-    { label: "ACWR moyen", aVal: avg(aM.map((m) => m.acwr)), bVal: avg(bM.map((m) => m.acwr)), render: (n) => fmt(n, 2), decimals: 2 },
-    { label: "Sommeil moyen", aVal: avg(aM.map((m) => m.sleep_score)), bVal: avg(bM.map((m) => m.sleep_score)), render: (n) => fmt(n, 0), decimals: 0 },
-    { label: "VFC moyenne", aVal: avg(aM.map((m) => m.hrv_overnight_ms)), bVal: avg(bM.map((m) => m.hrv_overnight_ms)), render: (n) => (n == null ? "—" : `${fmt(n, 0)} ms`), decimals: 0 },
-    { label: "FC repos moyenne", aVal: avg(aM.map((m) => m.resting_hr)), bVal: avg(bM.map((m) => m.resting_hr)), render: (n) => (n == null ? "—" : `${fmt(n, 0)} bpm`), decimals: 0 },
+  // Per-sport composition. Segments derived from BOTH periods so A and B share the same colours.
+  const comp = sportComposition([...aRes.rows, ...bRes.rows], SERIES.length);
+  const topKeys = new Set(comp.order.filter((o) => o.key !== "other").map((o) => o.key as number));
+  const keyOf = (sid: number): string => (topKeys.has(sid) ? String(sid) : "other");
+  const sportSegs: StackSeg[] = comp.order.map((o, idx) => ({
+    key: String(o.key), color: SERIES[idx % SERIES.length],
+    label: o.key === "other" ? o.name : sportName(o.code, o.name),
+    glyph: o.key === "other" ? undefined : sportIcon(o.code),
+  }));
+  const sumByKey = (rows: typeof aRes.rows) => {
+    const m = new Map<string, number>();
+    for (const r of rows) { const k = keyOf(r.sport_id); m.set(k, (m.get(k) ?? 0) + (r.training_load ?? 0)); }
+    return m;
+  };
+  const aByKey = sumByKey(aRes.rows), bByKey = sumByKey(bRes.rows);
+  const bSportData = new Map<string, Map<string, number>>();
+  for (const r of bRes.rows) {
+    const day = bSportData.get(r.local_date) ?? new Map<string, number>();
+    const k = keyOf(r.sport_id);
+    day.set(k, (day.get(k) ?? 0) + (r.training_load ?? 0));
+    bSportData.set(r.local_date, day);
+  }
+
+  // Per-channel (aéro/neuro) over period B.
+  const channelSegs: StackSeg[] = [
+    { key: "aer", color: VIZ.aerobic, label: "aérobie" },
+    { key: "neu", color: VIZ.neuro, label: "neuromusculaire" },
   ];
+  const bChannelData = new Map<string, Map<string, number>>();
+  for (const r of bRes.rows) {
+    const day = bChannelData.get(r.local_date) ?? new Map<string, number>();
+    day.set("aer", (day.get("aer") ?? 0) + (r.aerobic_load ?? 0));
+    day.set("neu", (day.get("neu") ?? 0) + (r.neuromuscular_load ?? 0));
+    bChannelData.set(r.local_date, day);
+  }
+
+  const card = "rounded-2xl border border-stone-200 bg-white p-5 dark:border-stone-800 dark:bg-stone-900";
 
   return (
     <div className="min-h-full overflow-x-hidden bg-page pt-[env(safe-area-inset-top)] font-sans text-stone-900 dark:text-stone-100">
@@ -171,98 +282,85 @@ export default async function AnalysePage({ searchParams }: { searchParams: Prom
 
         <header className="mb-6">
           <h1 className="text-lg font-bold tracking-tight">
-            Analyse <span className="font-normal text-stone-400">— comparer deux périodes</span>
+            Analyse <span className="font-normal text-stone-400">— {PRESET_LABEL[preset] ?? preset}</span>
           </h1>
           <p className="mt-1 text-sm text-stone-500 dark:text-stone-400">
-            Le delta (Δ) compare la période B (récente) à la période A (référence).
+            Tout est lu côté <span className="font-medium text-stone-700 dark:text-stone-300">période B</span> (récente),
+            comparé à <span className="font-medium text-stone-700 dark:text-stone-300">période A</span> (référence). Δ = B − A.
           </p>
         </header>
 
         <div className="space-y-5">
           <PeriodPicker />
 
-          {/* En-têtes de période */}
-          <section className="grid grid-cols-2 gap-4 rounded-2xl border border-stone-200 bg-white p-5 dark:border-stone-800 dark:bg-stone-900">
-            <PeriodHead tag="A" p={a} agg={aAgg} />
-            <PeriodHead tag="B" p={b} agg={bAgg} />
+          {/* Quelles périodes — rendu explicite */}
+          <section className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <ABChip tag="B" p={b} />
+            <ABChip tag="A" p={a} />
           </section>
 
-          {/* Tableau KPI */}
-          <section className="overflow-x-auto rounded-2xl border border-stone-200 bg-white p-5 dark:border-stone-800 dark:bg-stone-900">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-stone-200 text-left text-xs uppercase tracking-wide text-stone-500 dark:border-stone-700">
-                  <th className="py-2 pr-3 font-medium">Indicateur</th>
-                  <th className="py-2 pr-3 text-right font-medium">Période A</th>
-                  <th className="py-2 pr-3 text-right font-medium">Période B</th>
-                  <th className="py-2 text-right font-medium">Δ (B vs A)</th>
-                </tr>
-              </thead>
-              <tbody>
-                {kpis.map((k) => (
-                  <tr key={k.label} className="border-b border-stone-100 last:border-0 dark:border-stone-800">
-                    <td className="py-2 pr-3 text-stone-600 dark:text-stone-300">{k.label}</td>
-                    <td className="py-2 pr-3 text-right font-medium tabular-nums">{k.render(k.aVal)}</td>
-                    <td className="py-2 pr-3 text-right font-medium tabular-nums">{k.render(k.bVal)}</td>
-                    <td className="py-2 text-right text-xs"><Delta a={k.aVal} b={k.bVal} decimals={k.decimals} /></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          {/* Résumé — gros chiffres période B + Δ vs A + tendance B */}
+          <section className={card}>
+            <h2 className="mb-4 text-sm font-medium text-stone-700 dark:text-stone-300">Résumé</h2>
+            <div className="grid grid-cols-2 gap-x-6 gap-y-5 sm:grid-cols-3">
+              {summary.map((k) => (
+                <StatBlock key={k.label} label={k.label} aVal={k.aVal} bVal={k.bVal} render={k.render} decimals={k.decimals} series={seriesByLabel[k.label]} color={k.color} />
+              ))}
+            </div>
           </section>
 
-          {/* Répartition par sport — barres appariées (A / B), sports neutres (glyphe + nom) */}
-          <section className="rounded-2xl border border-stone-200 bg-white p-5 dark:border-stone-800 dark:bg-stone-900">
-            <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-sm font-medium text-stone-700 dark:text-stone-300">Charge par sport</h2>
+          {/* Superposition — montée en charge cumulée A vs B */}
+          <section className={card}>
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <h2 className="text-sm font-medium text-stone-700 dark:text-stone-300">Montée en charge — superposition</h2>
               <div className="flex gap-3 text-xs text-stone-500 dark:text-stone-400">
-                <span className="flex items-center gap-1.5"><span className="inline-block h-2 w-3 rounded-sm bg-stone-500 dark:bg-stone-300" />A</span>
-                <span className="flex items-center gap-1.5"><span className="inline-block h-2 w-3 rounded-sm bg-stone-300 dark:bg-stone-600" />B</span>
+                <span className="flex items-center gap-1.5"><span className="inline-block h-0.5 w-4" style={{ background: PERIOD.b }} />B</span>
+                <span className="flex items-center gap-1.5"><span className="inline-block h-0 w-4 border-t-2 border-dashed" style={{ borderColor: PERIOD.a }} />A</span>
               </div>
             </div>
-            {sportIds.length === 0 ? (
+            <CumulativeOverlay a={cumulative(aRes.rows, a)} b={cumulative(bRes.rows, b)} />
+          </section>
+
+          {/* Charge par sport — évolution (période B) + répartition A vs B (couleurs par sport) */}
+          <section className={card}>
+            {sportSegs.length === 0 ? (
               <p className="py-4 text-center text-sm text-stone-500">Aucune activité sur ces périodes.</p>
             ) : (
-              <div className="space-y-3">
-                {sportIds.map((id) => {
-                  const s = sportById.get(id);
-                  const la = aBySport.get(id)?.load ?? 0, lb = bBySport.get(id)?.load ?? 0;
-                  return (
-                    <div key={id} className="grid grid-cols-[8rem_1fr] items-center gap-3">
-                      <div className="truncate text-sm">
-                        <span className="mr-1.5" aria-hidden>{sportIcon(s?.code ?? null)}</span>
-                        {sportName(s?.code ?? null, s?.display_name ?? "—")}
-                      </div>
-                      <div className="space-y-1">
-                        <div className="flex items-center gap-2">
-                          <div className="h-2.5 flex-1 overflow-hidden rounded-full bg-stone-100 dark:bg-stone-800">
-                            <div className="h-full rounded-full bg-stone-500 dark:bg-stone-300" style={{ width: `${(la / maxSportLoad) * 100}%` }} />
-                          </div>
-                          <span className="w-12 shrink-0 text-right text-xs tabular-nums text-stone-500">{fmt(la, 0)}</span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <div className="h-2.5 flex-1 overflow-hidden rounded-full bg-stone-100 dark:bg-stone-800">
-                            <div className="h-full rounded-full bg-stone-300 dark:bg-stone-600" style={{ width: `${(lb / maxSportLoad) * 100}%` }} />
-                          </div>
-                          <span className="w-12 shrink-0 text-right text-xs tabular-nums text-stone-500">{fmt(lb, 0)}</span>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
+              <>
+                <StackedTimeChart label="Charge par sport — période B" dates={bDays} segments={sportSegs} data={bSportData} unit="points de charge / jour" />
+                <div className="mt-5 space-y-2">
+                  <div className="text-xs uppercase tracking-wide text-stone-500 dark:text-stone-400">Répartition — A vs B</div>
+                  <div className="flex items-center gap-2"><span className="w-4 shrink-0 text-xs text-stone-400">A</span><StackBar segments={sportSegs} data={aByKey} /></div>
+                  <div className="flex items-center gap-2"><span className="w-4 shrink-0 text-xs text-stone-400">B</span><StackBar segments={sportSegs} data={bByKey} /></div>
+                </div>
+              </>
             )}
           </section>
 
-          {/* Courbe de charge cumulée alignée */}
-          <section className="rounded-2xl border border-stone-200 bg-white p-5 dark:border-stone-800 dark:bg-stone-900">
-            <h2 className="mb-3 text-sm font-medium text-stone-700 dark:text-stone-300">Montée en charge (cumulée, alignée)</h2>
-            <CumulativeOverlay a={cumulative(aRes.rows, a)} b={cumulative(bRes.rows, b)} />
+          {/* Charge par canal — évolution (période B) */}
+          <section className={card}>
+            <StackedTimeChart label="Charge par canal — période B" dates={bDays} segments={channelSegs} data={bChannelData} unit="points de charge / jour" />
+          </section>
+
+          {/* Récup & forme — détails (moyennes B + Δ) */}
+          <section className={card}>
+            <h2 className="mb-4 text-sm font-medium text-stone-700 dark:text-stone-300">Récupération &amp; forme · volumes</h2>
+            <div className="grid grid-cols-2 gap-x-6 gap-y-5 sm:grid-cols-4">
+              {detail.map((k) => (
+                <StatBlock key={k.label} label={k.label} aVal={k.aVal} bVal={k.bVal} render={k.render} decimals={k.decimals} series={seriesByLabel[k.label]} big={false} />
+              ))}
+            </div>
+          </section>
+
+          {/* Heatmap — régularité 12 mois */}
+          <section className={card}>
+            <h2 className="mb-3 text-sm font-medium text-stone-700 dark:text-stone-300">Régularité — charge quotidienne (12 mois)</h2>
+            <Heatmap days={heatDays} />
           </section>
         </div>
 
         <footer className="mt-8 text-center text-xs text-stone-400">
-          Massif · comparaison {preset === "custom" ? "personnalisée" : preset}
+          Massif · A {a.from}→{a.to} · B {b.from}→{b.to}
         </footer>
       </div>
     </div>

@@ -1,17 +1,20 @@
-/** Massif coach — the agentic morning run.
+/** On-demand briefing generator — server-only. The SAME morning briefing the cron writes, but run
+ *  inline from the web app so the athlete can regenerate it on demand (the ⋮ "Régénérer" action).
  *
- * Reads the ONE unified picture (cross-sport load split into aerobic + neuromuscular channels,
- * the CTL/ATL/TSB model, and Garmin recovery), asks Claude to reason on it under the level-5
- * coaching rules, then persists a briefing + today's recommended session. Phase-7 MVP: it writes
- * today's session from scratch (no multi-week plan to reshape yet) and logs every run for audit.
- */
+ *  MIRROR of coach/src/coach.ts (web/ and coach/ are separate pnpm workspaces — no cross-import, same
+ *  as load.ts ↔ load.py and coach-context.ts ↔ context.ts). Keep the SYSTEM prompt, schema and the
+ *  coach_briefings / planned_sessions writes in sync with coach.ts. Differences here, by design:
+ *   - the chosen coach PERSONA is injected (buildPersonaInstructions), so the briefing speaks in the
+ *     same voice as the chat — the cron mirrors this via coach/src/persona.ts;
+ *   - `why` is constrained to ONE sentence (the dashboard shows it collapsed + an "Afficher plus");
+ *   - NO web push (the athlete is looking at the screen — the push is the cron's morning job). */
 import Anthropic from "@anthropic-ai/sdk";
-import { COACH_MODEL, saveBriefing, replaceTodayPlanned, briefingExists } from "./db.js";
-import { assemblePicture } from "./context.js";
-import { sendBriefingPush } from "./push.js";
-import { loadCoachSettings, buildPersonaInstructions } from "./persona.js";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import { assembleCoachContext } from "./coach-context";
+import { loadCoachSettings, buildPersonaInstructions } from "./coach-settings";
+import { COACH_MODEL } from "./coach-chat";
 
-const SYSTEM = `You are the Massif coach: a personal, single-athlete, multi-sport endurance & mountain coach
+const BRIEFING_SYSTEM = `You are the Massif coach: a personal, single-athlete, multi-sport endurance & mountain coach
 (running, trail, hiking, alpinism, climbing, plus any other sport the athlete logs).
 
 THE CORE MODEL — internalize it:
@@ -60,8 +63,8 @@ CHAMP why : UNE SEULE PHRASE — la raison principale, la plus importante, de la
 sans point-virgule enchaînant plusieurs idées). Mets le détail, les nuances et le contexte dans
 state_assessment (2-4 phrases) ; ne répète pas ce détail dans why.
 
-La PERSONNALISATION fournie plus bas gouverne le TON, la VOIX, l'adresse et les emojis du texte libre —
-mais PAS la LONGUEUR des champs, qui suit le schéma (why = 1 phrase, state_assessment = 2-4 phrases).
+La PERSONNALISATION ci-dessous gouverne le TON, la VOIX, l'adresse et les emojis du texte libre — mais PAS
+la LONGUEUR des champs, qui suit le schéma (why = 1 phrase, state_assessment = 2-4 phrases).
 
 Respond ONLY with the JSON briefing matching the provided schema.`;
 
@@ -111,31 +114,34 @@ const BRIEFING_SCHEMA = {
   required: ["readiness", "state_assessment", "today", "why", "week_skeleton", "flag", "confidence"],
 };
 
-async function main() {
-  const { today, sports, context } = await assemblePicture();
+export interface BriefingResult {
+  readiness: "green" | "amber" | "red";
+  today_session: string;
+  why: string;
+}
 
-  // Idempotent cloud cron: if today's briefing is already written, don't re-run (no duplicate push).
-  // The Mac path leaves COACH_SKIP_IF_DONE unset and always regenerates, as before.
-  if (process.env.COACH_SKIP_IF_DONE && (await briefingExists(today))) {
-    console.log(`coach: briefing for ${today} already exists — skipping (idempotent cron).`);
-    return;
-  }
+/** Regenerate today's briefing from the current DB picture (fresh profile/goals) in the athlete's
+ *  chosen coach voice, and persist it (coach_briefings + today's coach planned_session, idempotent).
+ *  Returns a compact summary for the UI toast. No push (on-demand path). */
+export async function generateBriefing(sb: SupabaseClient): Promise<BriefingResult> {
+  const [{ today, context }, settings, sportsRes] = await Promise.all([
+    assembleCoachContext(sb),
+    loadCoachSettings(sb),
+    sb.from("sports").select("id,code,is_priority,needs_manual_rpe").order("code"),
+  ]);
+  const sports = sportsRes.data ?? [];
+  const sportByCode = new Map<string, any>(sports.map((s: any) => [s.code, s]));
 
-  // The athlete's chosen coach persona/voice (same one the chat uses) shapes the briefing's free text.
-  const settings = await loadCoachSettings();
-  const system = SYSTEM + "\n\n" + buildPersonaInstructions(settings);
-
-  const sportByCode = new Map<string, any>(sports.map((s) => [s.code, s]));
+  const system = BRIEFING_SYSTEM + "\n\n" + buildPersonaInstructions(settings);
 
   const userPrompt =
-    `Allowed sport codes: ${sports.map((s) => s.code).join(", ")}.\n` +
-    `Priority sports: ${sports.filter((s) => s.is_priority).map((s) => s.code).join(", ")}.\n` +
+    `Allowed sport codes: ${sports.map((s: any) => s.code).join(", ")}.\n` +
+    `Priority sports: ${sports.filter((s: any) => s.is_priority).map((s: any) => s.code).join(", ")}.\n` +
     `Sports needing a manual RPE (no reliable HR): ` +
-    `${sports.filter((s) => s.needs_manual_rpe).map((s) => s.code).join(", ")}.\n\n` +
+    `${sports.filter((s: any) => s.needs_manual_rpe).map((s: any) => s.code).join(", ")}.\n\n` +
     `Athlete picture (JSON):\n${JSON.stringify(context, null, 1)}\n\n` +
     `Produce today's briefing for ${today}.`;
 
-  console.log(`Massif coach — ${today} — model ${COACH_MODEL}`);
   const client = new Anthropic();
   const resp = await client.messages.create({
     model: COACH_MODEL,
@@ -147,16 +153,21 @@ async function main() {
   } as any);
 
   if ((resp as any).stop_reason === "refusal") {
-    throw new Error("Coach request was refused by safety classifiers.");
+    throw new Error("La génération du briefing a été refusée par les classifieurs de sécurité.");
   }
-  const textBlock = resp.content.find((b: any) => b.type === "text") as any;
-  if (!textBlock) throw new Error("No text block in coach response.");
+  const textBlock = (resp.content as any[]).find((b: any) => b.type === "text") as any;
+  if (!textBlock) throw new Error("Réponse du coach vide (aucun bloc texte).");
   const briefing = JSON.parse(textBlock.text);
 
   // Map the recommended sport -> sport_id (fall back to 'unknown').
   const sport = sportByCode.get(briefing.today.sport_code) ?? sportByCode.get("unknown");
 
-  const plannedId = await replaceTodayPlanned(today, {
+  // Idempotent per day: drop today's still-planned coach session, then insert the new one
+  // (mirror of coach/src/db.ts replaceTodayPlanned).
+  const del = await sb.from("planned_sessions").delete()
+    .eq("planned_date", today).eq("modified_by", "coach").eq("status", "planned");
+  if (del.error) throw new Error(del.error.message);
+  const plannedIns = await sb.from("planned_sessions").insert({
     planned_date: today,
     sport_id: sport?.id ?? null,
     title: briefing.today.title,
@@ -169,50 +180,29 @@ async function main() {
     status: "planned",
     modified_by: "coach",
     modified_reason: briefing.why,
-  });
+  }).select("id").single();
+  if (plannedIns.error) throw new Error(plannedIns.error.message);
 
-  const briefingId = await saveBriefing({
+  const briefingIns = await sb.from("coach_briefings").insert({
     briefing_date: today,
     model: COACH_MODEL,
     readiness: briefing.readiness,
     today_session: briefing.today.title,
     why: briefing.why,
-    changed: null, // no prior plan to reshape in the MVP
+    changed: null,
     week_skeleton: briefing.week_skeleton,
     flag: briefing.flag,
     reasoning: briefing.state_assessment,
     input_snapshot: context,
-    actions: { created_planned_session: plannedId, today: briefing.today },
+    actions: { created_planned_session: plannedIns.data.id, today: briefing.today },
     confidence: briefing.confidence,
     raw_response: textBlock.text,
-  });
+  }).select("id").single();
+  if (briefingIns.error) throw new Error(briefingIns.error.message);
 
-  // Human-readable summary.
-  const dot = { green: "🟢", amber: "🟡", red: "🔴" }[briefing.readiness as string] ?? "•";
-  console.log(`\n${dot} Readiness: ${briefing.readiness}   (confidence ${briefing.confidence})`);
-  console.log(`State: ${briefing.state_assessment}`);
-  console.log(`\nToday → ${briefing.today.title}  [${briefing.today.sport_code} · ${briefing.today.system_tag}]`);
-  console.log(`  ${briefing.today.description}`);
-  console.log(`  ~${briefing.today.target_duration_min} min · ~${briefing.today.target_load} load pts · ${briefing.today.intensity_zone}`);
-  console.log(`Why: ${briefing.why}`);
-  if (briefing.flag) console.log(`⚠️  ${briefing.flag}`);
-  console.log(`\nWeek ahead:`);
-  for (const d of briefing.week_skeleton) console.log(`  +${d.day_offset}d  ${d.system_tag.padEnd(18)} ${d.focus}`);
-  console.log(`\nSaved: coach_briefings ${briefingId} · planned_sessions ${plannedId}`);
-
-  // Best-effort morning push to the installed PWA (never fails the briefing).
-  try {
-    await sendBriefingPush({
-      readiness: briefing.readiness,
-      title: briefing.today.title,
-      why: briefing.why,
-    });
-  } catch (e) {
-    console.log(`push: skipped (${(e as Error)?.message ?? e})`);
-  }
+  return {
+    readiness: briefing.readiness,
+    today_session: briefing.today.title,
+    why: briefing.why,
+  };
 }
-
-main().catch((e) => {
-  console.error("coach failed:", e?.message ?? e);
-  process.exit(1);
-});
