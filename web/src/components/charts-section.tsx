@@ -73,6 +73,9 @@ const FRESH_NEURO_HELP: HelpContent = { title: "Fraîcheur neuromusculaire", blo
   { type: "p", text: "Fraîcheur muscles / tendons / structures (descentes, impacts, port de charge) ; récupère lentement (~2 sem), invisible aux montres." },
   { type: "formula", lines: ["= CTL neuro − ATL neuro  (τ aigu ~14 j, plus lent)"] },
   { type: "dl", items: [{ k: "Repère", v: "ligne 0 = équilibre ; peut rester négatif après de grosses descentes même si la VFC est bonne." }] } ] };
+const FRESH_HELP: HelpContent = { title: "Fraîcheur par système", blocks: [
+  { type: "p", text: "La fraîcheur (forme) par canal. Aérobie : moteur cardio, récupère vite (jours), visible par la VFC. Neuromusculaire : muscles / tendons (descentes, impacts), récupère lentement (~2 sem), invisible aux montres." },
+  { type: "dl", items: [{ k: "Statut", v: "« dans la zone » = à l'équilibre (±10 % du CTL du canal) · « au-dessus » = frais · « en-dessous » = fatigué." }] } ] };
 
 // ── gauge zones (selected-day bars) ────────────────────────────────────────────────────────────────
 const monoZones = (max: number): Zone[] => [
@@ -141,7 +144,7 @@ function useIsNarrow(query = "(max-width: 1023px)"): boolean {
  *  crosshair, visible-window scale, synced scroll and scroll-to-left-edge history. */
 function InteractiveChart({
   label, help, score, unit, metrics, selected, onSelect, children, renderSelection, axis,
-  register, onReachStart, loadingOlder = false,
+  register, onReachStart, loadingOlder = false, height = H,
 }: {
   label: React.ReactNode;
   help?: HelpContent;
@@ -156,6 +159,7 @@ function InteractiveChart({
   register: RegisterScroll;
   onReachStart?: () => void;
   loadingOlder?: boolean;
+  height?: number;
 }) {
   const n = metrics.length;
   const w = plotWidth(n);
@@ -221,7 +225,7 @@ function InteractiveChart({
         <div className="mt-0.5">{score}</div>
       </div>
       <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-1.5">
-        <div className="flex w-7 flex-col justify-between py-0.5 text-right text-[10px] tabular-nums text-stone-400" style={{ height: H }}>
+        <div className="flex w-7 flex-col justify-between py-0.5 text-right text-[10px] tabular-nums text-stone-400" style={{ height }}>
           <span>{Math.round(ax.max)}</span><span>{Math.round(ax.min)}</span>
         </div>
         <div className="relative">
@@ -235,14 +239,14 @@ function InteractiveChart({
           )}
           <div ref={scrollRef} className="min-w-0 overflow-x-auto">
             <div style={{ width: w }}>
-              <svg width={w} height={H} viewBox={`0 0 ${w} ${H}`} className="block">
+              <svg width={w} height={height} viewBox={`0 0 ${w} ${height}`} className="block">
                 {sel >= 0 && (
-                  <rect x={leftOf(sel)} y={0} width={slotW} height={H} fill="currentColor" className="text-stone-200 dark:text-stone-700" opacity={0.5} pointerEvents="none" />
+                  <rect x={leftOf(sel)} y={0} width={slotW} height={height} fill="currentColor" className="text-stone-200 dark:text-stone-700" opacity={0.5} pointerEvents="none" />
                 )}
                 {children(vis)}
                 {sel >= 0 && (
                   <g pointerEvents="none">
-                    <line x1={centerOf(sel)} y1={0} x2={centerOf(sel)} y2={H} stroke={AXIS} strokeWidth={1} />
+                    <line x1={centerOf(sel)} y1={0} x2={centerOf(sel)} y2={height} stroke={AXIS} strokeWidth={1} />
                     {renderSelection?.(sel, vis)}
                   </g>
                 )}
@@ -250,7 +254,7 @@ function InteractiveChart({
                   aria-label="Graphique interactif — flèches gauche/droite pour parcourir les jours, Échap pour fermer"
                   className="cursor-pointer outline-none">
                   {metrics.map((m, i) => (
-                    <rect key={m.local_date} x={leftOf(i)} y={0} width={slotW} height={H} fill="transparent" onClick={() => pick(i)} aria-hidden />
+                    <rect key={m.local_date} x={leftOf(i)} y={0} width={slotW} height={height} fill="transparent" onClick={() => pick(i)} aria-hidden />
                   ))}
                 </g>
               </svg>
@@ -358,7 +362,8 @@ export function ChartsSection({
     adjustAll(dx);
   }, [metrics, adjustAll]);
 
-  const shared = { metrics, selected, onSelect: setSelected, register, onReachStart, loadingOlder };
+  const chartH = narrow ? 76 : 112; // shorter charts on mobile so the whole section fits one screen
+  const shared = { metrics, selected, onSelect: setSelected, register, onReachStart, loadingOlder, h: chartH };
   const ctlNode = <CtlAtlChart {...shared} kind="ctl" selM={selM} />;
   const atlNode = <CtlAtlChart {...shared} kind="atl" selM={selM} />;
   const fusedNode = <CtlAtlChart {...shared} kind="fused" selM={selM} />;
@@ -375,46 +380,44 @@ export function ChartsSection({
         </Link>
       </div>
 
-      {/* CTL · ATL · TSB — desktop 3-up / mobile fused + TSB. Selecting a day scrubs every indicator. */}
       {narrow ? (
-        <div className="space-y-4">{fusedNode}{tsbNode}</div>
-      ) : (
-        <div className="grid gap-5 lg:grid-cols-3">{ctlNode}{atlNode}{tsbNode}</div>
-      )}
-
-      {/* Day detail — activities of the selected (or today's) day, just under the TSB chart. */}
-      {panelDate && (
-        <DayDetailPanel
-          date={panelDate}
-          activities={activitiesByDate.get(panelDate) ?? []}
-          onClose={selected ? () => setSelected(null) : undefined}
-        />
-      )}
-
-      {/* Secondary indicators — the SELECTED day's values. Mobile: compact 3/4-circle gauges, 3-up.
-          Desktop: the horizontal bar gauges (more room). */}
-      {narrow ? (
-        <div className="mt-6 grid grid-cols-3 gap-2">
-          <ArcGauge label="Monotonie" help={MONO_HELP} value={monoV} min={0} max={monoMax} zones={monoZones(monoMax)} />
-          <ArcGauge label="ACWR" help={ACWR_HELP} value={acwrV} min={0} max={acwrMax} zones={acwrZones(acwrMax)} />
-          <ArcGauge label="Dispo. (Garmin)" help={READY_HELP} value={readyV} unit="" min={0} max={100} zones={readyZones} />
+        // Mobile — compacted to ~one screen: day recap on top, then shorter CTL/ATL + TSB charts,
+        // the 3 arc gauges, and a single freshness line. Selecting a day scrubs every indicator.
+        <div className="space-y-4">
+          {panelDate && (
+            <DayDetailPanel date={panelDate} activities={activitiesByDate.get(panelDate) ?? []}
+              onClose={selected ? () => setSelected(null) : undefined} />
+          )}
+          <div className="space-y-3">{fusedNode}{tsbNode}</div>
+          <div className="grid grid-cols-3 gap-2">
+            <ArcGauge label="Monotonie" help={MONO_HELP} value={monoV} min={0} max={monoMax} zones={monoZones(monoMax)} />
+            <ArcGauge label="ACWR" help={ACWR_HELP} value={acwrV} min={0} max={acwrMax} zones={acwrZones(acwrMax)} />
+            <ArcGauge label="Dispo. (Garmin)" help={READY_HELP} value={readyV} unit="" min={0} max={100} zones={readyZones} />
+          </div>
+          <FreshLine aero={selM?.tsb_aerobic ?? null} neuro={selM?.tsb_neuromuscular ?? null}
+            ctlAero={selM?.ctl_aerobic ?? null} ctlNeuro={selM?.ctl_neuromuscular ?? null} />
         </div>
       ) : (
-        <div className="mt-6 grid gap-5 sm:grid-cols-3">
-          <Gauge label="Monotonie · 7 j" help={MONO_HELP} value={monoV} min={0} max={monoMax} zones={monoZones(monoMax)} />
-          <Gauge label="ACWR · ratio de charge" help={ACWR_HELP} value={acwrV} min={0} max={acwrMax} zones={acwrZones(acwrMax)} />
-          <Gauge label="Disponibilité (Garmin)" help={READY_HELP} value={readyV} unit="" min={0} max={100} zones={readyZones} />
-        </div>
+        <>
+          <div className="grid gap-5 lg:grid-cols-3">{ctlNode}{atlNode}{tsbNode}</div>
+          {panelDate && (
+            <DayDetailPanel date={panelDate} activities={activitiesByDate.get(panelDate) ?? []}
+              onClose={selected ? () => setSelected(null) : undefined} />
+          )}
+          <div className="mt-6 grid gap-5 sm:grid-cols-3">
+            <Gauge label="Monotonie · 7 j" help={MONO_HELP} value={monoV} min={0} max={monoMax} zones={monoZones(monoMax)} />
+            <Gauge label="ACWR · ratio de charge" help={ACWR_HELP} value={acwrV} min={0} max={acwrMax} zones={acwrZones(acwrMax)} />
+            <Gauge label="Disponibilité (Garmin)" help={READY_HELP} value={readyV} unit="" min={0} max={100} zones={readyZones} />
+          </div>
+          <h3 className="mt-6 mb-2 text-sm font-medium text-stone-700 dark:text-stone-300">Fraîcheur par système</h3>
+          <div className="grid grid-cols-2 gap-5">
+            <FreshTile label="Fraîcheur aérobie" help={FRESH_AERO_HELP} color={VIZ.aerobic}
+              value={selM?.tsb_aerobic ?? null} series={metrics.map((m) => m.tsb_aerobic)} ctl={selM?.ctl_aerobic ?? null} />
+            <FreshTile label="Fraîcheur neuromusculaire" help={FRESH_NEURO_HELP} color={VIZ.neuro}
+              value={selM?.tsb_neuromuscular ?? null} series={metrics.map((m) => m.tsb_neuromuscular)} ctl={selM?.ctl_neuromuscular ?? null} />
+          </div>
+        </>
       )}
-
-      {/* Fraîcheur par système — the selected day's per-channel form. */}
-      <h3 className="mt-6 mb-2 text-sm font-medium text-stone-700 dark:text-stone-300">Fraîcheur par système</h3>
-      <div className="grid grid-cols-2 gap-4 sm:gap-5">
-        <FreshTile label="Fraîcheur aérobie" help={FRESH_AERO_HELP} color={VIZ.aerobic}
-          value={selM?.tsb_aerobic ?? null} series={metrics.map((m) => m.tsb_aerobic)} ctl={selM?.ctl_aerobic ?? null} />
-        <FreshTile label="Fraîcheur neuromusculaire" help={FRESH_NEURO_HELP} color={VIZ.neuro}
-          value={selM?.tsb_neuromuscular ?? null} series={metrics.map((m) => m.tsb_neuromuscular)} ctl={selM?.ctl_neuromuscular ?? null} />
-      </div>
     </section>
   );
 }
@@ -427,10 +430,11 @@ type SharedChart = {
   onReachStart?: () => void;
   loadingOlder?: boolean;
   selM: DailyMetric | null;
+  h: number; // chart plot height (shorter on mobile)
 };
 
 /** CTL / ATL line chart — or both fused (mobile). Thin ridge line(s); ATL alone shows a faint CTL ref. */
-function CtlAtlChart({ kind, metrics, selected, onSelect, register, onReachStart, loadingOlder, selM }: SharedChart & { kind: "ctl" | "atl" | "fused" }) {
+function CtlAtlChart({ kind, metrics, selected, onSelect, register, onReachStart, loadingOlder, selM, h }: SharedChart & { kind: "ctl" | "atl" | "fused" }) {
   const n = metrics.length;
   const w = plotWidth(n);
   const ctl = metrics.map((m) => m.ctl);
@@ -453,18 +457,18 @@ function CtlAtlChart({ kind, metrics, selected, onSelect, register, onReachStart
 
   return (
     <InteractiveChart
-      label={label} help={help} score={score} unit="points de charge"
+      label={label} help={help} score={score} unit="points de charge" height={h}
       metrics={metrics} selected={selected} onSelect={onSelect} register={register} onReachStart={onReachStart} loadingOlder={loadingOlder}
       axis={(vis) => ({ min: 0, max: scaleFor(vis).max })}
       renderSelection={(i, vis) => {
         const { max } = scaleFor(vis);
-        const yOf = (v: number) => H - (v / max) * H;
+        const yOf = (v: number) => h - (v / max) * h;
         return (<>{series.map((s, k) => (s.vals[i] != null ? <circle key={k} cx={cx(i)} cy={yOf(s.vals[i]!)} r={3} fill={s.color} /> : null))}</>);
       }}
     >
       {(vis) => {
         const { lo, hi, max } = scaleFor(vis);
-        const yOf = (v: number) => H - (v / max) * H;
+        const yOf = (v: number) => h - (v / max) * h;
         return (
           <>
             {refVals && <polyline points={poly(refVals, lo, hi, yOf)} fill="none" stroke={MUTED} strokeWidth={1} strokeDasharray="3 2" opacity={0.6} strokeLinejoin="round" strokeLinecap="round" />}
@@ -479,7 +483,7 @@ function CtlAtlChart({ kind, metrics, selected, onSelect, register, onReachStart
 }
 
 /** TSB bar chart — frais (green) / fatigue productive (amber) / surcharge (red), with the 0 line + zones. */
-function TsbChart({ metrics, selected, onSelect, register, onReachStart, loadingOlder, selM }: SharedChart) {
+function TsbChart({ metrics, selected, onSelect, register, onReachStart, loadingOlder, selM, h }: SharedChart) {
   const n = metrics.length;
   const w = plotWidth(n);
   const tsb = metrics.map((m) => m.tsb ?? 0);
@@ -500,17 +504,17 @@ function TsbChart({ metrics, selected, onSelect, register, onReachStart, loading
 
   return (
     <InteractiveChart
-      label="TSB · forme" help={TSB_HELP} score={fmtScore(v, scoreColor ?? STATE.rest)} unit="points · vert = frais · rouge = fatigue"
+      label="TSB · forme" help={TSB_HELP} score={fmtScore(v, scoreColor ?? STATE.rest)} unit="points · vert = frais · rouge = fatigue" height={h}
       metrics={metrics} selected={selected} onSelect={onSelect} register={register} onReachStart={onReachStart} loadingOlder={loadingOlder}
       axis={(vis) => { const s = scaleFor(vis); return { min: s.min, max: s.max }; }}
     >
       {(vis) => {
         const { lo, hi, max, min } = scaleFor(vis);
         const span = max - min || 1;
-        const yOf = (val: number) => H - ((val - min) / span) * H;
+        const yOf = (val: number) => h - ((val - min) / span) * h;
         return (
           <>
-            <rect x={0} y={yOf(-30)} width={w} height={H - yOf(-30)} fill={STATE.rest} opacity={0.07} />
+            <rect x={0} y={yOf(-30)} width={w} height={h - yOf(-30)} fill={STATE.rest} opacity={0.07} />
             <rect x={0} y={yOf(10)} width={w} height={yOf(-10) - yOf(10)} fill={STATE.ready} opacity={0.08} />
             <line x1={0} y1={yOf(0)} x2={w} y2={yOf(0)} stroke={AXIS} strokeWidth={1} strokeDasharray="3 3" />
             {Array.from({ length: Math.max(0, hi - lo + 1) }, (_, k) => lo + k).map((i) => {
@@ -541,6 +545,34 @@ function FreshTile({ label, help, color, value, series, ctl }: {
       <div className="mt-0.5 text-2xl font-semibold tabular-nums" style={{ color }}>{fmt(value, 1)}</div>
       <SparklineTile values={series} color={color} unit="pts" window="2 mois" decimals={1}
         refLine={0} zones={b > 0 ? [{ from: -b, to: b, fill: STATE.neutral }] : undefined} />
+    </div>
+  );
+}
+
+/** Mobile one-liner: the two channel freshnesses + each one's position vs its équilibre band (±10 % CTL). */
+function FreshLine({ aero, neuro, ctlAero, ctlNeuro }: {
+  aero: number | null; neuro: number | null; ctlAero: number | null; ctlNeuro: number | null;
+}) {
+  const status = (v: number | null, ctl: number | null) => {
+    if (v == null) return "—";
+    const b = ctl ? 0.1 * ctl : 0;
+    return v > b ? "au-dessus" : v < -b ? "en-dessous" : "dans la zone";
+  };
+  return (
+    <div className="flex items-center justify-between gap-2 border-t border-stone-100 pt-3 dark:border-stone-800">
+      <span className="flex items-center gap-1 text-[11px] font-medium uppercase tracking-wide text-stone-500 dark:text-stone-400">
+        Fraîcheur<HelpButton content={FRESH_HELP} />
+      </span>
+      <div className="flex gap-5">
+        <div className="text-right">
+          <div className="text-sm"><span className="text-stone-400">aéro </span><span className="font-semibold tabular-nums" style={{ color: VIZ.aerobic }}>{fmt(aero, 1)}</span></div>
+          <div className="text-[10px] text-stone-400">{status(aero, ctlAero)}</div>
+        </div>
+        <div className="text-right">
+          <div className="text-sm"><span className="text-stone-400">neuro </span><span className="font-semibold tabular-nums" style={{ color: VIZ.neuro }}>{fmt(neuro, 1)}</span></div>
+          <div className="text-[10px] text-stone-400">{status(neuro, ctlNeuro)}</div>
+        </div>
+      </div>
     </div>
   );
 }
