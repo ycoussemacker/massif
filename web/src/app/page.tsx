@@ -205,7 +205,7 @@ export default async function Dashboard() {
         {/* Graphiques (cliquables : un clic sur une barre/point ouvre le détail du jour) */}
         {metrics.length > 1 ? (
           <div className="mb-6">
-            <ChartsSection key={`${metrics.length}-${metrics.at(-1)?.local_date ?? ""}`} metrics={metrics} activities={allActivities} avgLoad={avgLoad} />
+            <ChartsSection key={`${metrics.length}-${latest?.local_date ?? ""}-${latest?.ctl ?? ""}-${latest?.tsb ?? ""}`} metrics={metrics} activities={allActivities} avgLoad={avgLoad} />
           </div>
         ) : (
           <p className="mb-6 text-sm text-stone-500">Pas encore assez de jours de données pour les courbes.</p>
