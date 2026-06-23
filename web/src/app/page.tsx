@@ -11,10 +11,111 @@ import { SorenessInput } from "@/components/soreness-input";
 import { todayLocal } from "@/lib/coach-context";
 import { fmt, avgLoadRecent } from "@/lib/format";
 import { rollingMonotony } from "@/lib/aggregate";
-import { Sparkline } from "@/components/sparkline";
+import { SparklineTile } from "@/components/sparkline";
+import { HelpButton, type HelpContent } from "@/components/help";
 import { VIZ, STATE } from "@/lib/theme";
 
 export const dynamic = "force-dynamic"; // toujours refléter le dernier sync / run du coach
+
+// Fenêtre roulante des graphiques du tableau de bord (réutilisée dans les libellés d'aide).
+const WIN = `${DASHBOARD_WINDOW_MONTHS} mois`;
+
+// Aides cliquables (popover bas d'écran sur mobile / modale sur desktop) — une par indicateur clé.
+const CTL_HELP: HelpContent = {
+  title: "CTL · forme",
+  blocks: [
+    { type: "p", text: "Ta forme de fond (« fitness ») : la charge d'entraînement moyenne lissée sur ~42 jours (moyenne mobile exponentielle). Elle monte lentement et redescend au repos." },
+    { type: "formula", lines: ["CTL = moyenne expo ~42 j de la charge quotidienne"] },
+    { type: "dl", items: [
+      { k: "Unité", v: "points de charge (≈ TSS ; 100 pts ≈ 1 h à intensité seuil)." },
+      { k: "Lecture", v: "plus haut = plus en forme ; pas de bon / mauvais absolu, c'est la tendance qui compte." },
+      { k: "Fenêtre", v: `le graphe = ${WIN} ; le grand chiffre = aujourd'hui.` },
+    ] },
+  ],
+};
+const ATL_HELP: HelpContent = {
+  title: "ATL · fatigue",
+  blocks: [
+    { type: "p", text: "Ta fatigue récente : la même charge lissée sur ~7 jours seulement. Elle monte vite et redescend en quelques jours." },
+    { type: "formula", lines: ["ATL = moyenne expo ~7 j de la charge quotidienne"] },
+    { type: "dl", items: [
+      { k: "Unité", v: "points de charge (même échelle que le CTL)." },
+      { k: "Lecture", v: "au-dessus du CTL = tu accumules de la fatigue ; en-dessous = tu récupères / affûtes." },
+      { k: "Fenêtre", v: `le graphe = ${WIN} ; le grand chiffre = aujourd'hui.` },
+    ] },
+  ],
+};
+const MONO_HELP: HelpContent = {
+  title: "Monotonie · 7 j",
+  blocks: [
+    { type: "p", text: "Mesure si l'entraînement est trop uniforme (toujours pareil, sans contraste facile / dur) → plus de risque à charge égale." },
+    { type: "formula", lines: ["Monotonie = charge moyenne ÷ écart-type (7 j glissants)"] },
+    { type: "dl", items: [
+      { k: "Unité", v: "sans unité (un ratio)." },
+      { k: "Lecture", v: "< 1,5 sain · 1,5–2 à surveiller · > 2 trop uniforme = risque." },
+      { k: "Fenêtre", v: `le graphe = ${WIN} ; calculée sur la fenêtre affichée (non stockée en base).` },
+    ] },
+  ],
+};
+const TSB_HELP: HelpContent = {
+  title: "TSB · forme",
+  blocks: [
+    { type: "p", text: "Ta fraîcheur du jour : l'écart entre ta forme de fond (CTL) et ta fatigue récente (ATL)." },
+    { type: "formula", lines: ["TSB = CTL − ATL"] },
+    { type: "dl", items: [
+      { k: "Unité", v: "points de charge." },
+      { k: "Lecture", v: "les seuils s'adaptent à ta charge (CTL) — frais > +10 % du CTL · équilibre −10 % à +10 % · charge productive −30 % à −10 % · surmenage < −30 %." },
+      { k: "Fenêtre", v: "valeur du jour (l'historique est dans la carte « Forme » plus bas)." },
+    ] },
+  ],
+};
+const ACWR_HELP: HelpContent = {
+  title: "ACWR · ratio de charge",
+  blocks: [
+    { type: "p", text: "Rapport fatigue récente / forme de fond : indique si tu montes en charge trop vite." },
+    { type: "formula", lines: ["ACWR = ATL ÷ CTL"] },
+    { type: "dl", items: [
+      { k: "Unité", v: "sans unité (un ratio)." },
+      { k: "Lecture", v: "< 0,8 sous-charge · 0,8–1,3 zone idéale · 1,3–1,5 élevé · > 1,5 risque de blessure." },
+      { k: "Fenêtre", v: "valeur du jour." },
+    ] },
+  ],
+};
+const READY_HELP: HelpContent = {
+  title: "Disponibilité (Garmin)",
+  blocks: [
+    { type: "p", text: "Score de préparation calculé par la montre Garmin ce matin (sommeil, VFC, stress, charge récente)." },
+    { type: "dl", items: [
+      { k: "Unité", v: "0 à 100." },
+      { k: "Lecture", v: "≥ 70 bon · 50–70 modéré · 30–50 bas · < 30 très bas." },
+      { k: "Source", v: "Garmin (récup du jour) ; n'inclut PAS la fatigue neuromusculaire (voir Fraîcheur par système)." },
+    ] },
+  ],
+};
+const FRESH_AERO_HELP: HelpContent = {
+  title: "Fraîcheur aérobie",
+  blocks: [
+    { type: "p", text: "Fraîcheur du moteur cardiovasculaire ; récupère vite (jours), visible dans la VFC / Body Battery." },
+    { type: "formula", lines: ["= CTL aérobie − ATL aérobie  (τ aigu ~7 j)"] },
+    { type: "dl", items: [
+      { k: "Unité", v: "points." },
+      { k: "Lecture", v: "positif = frais · négatif = fatigué." },
+      { k: "Fenêtre", v: `le graphe = ${WIN} ; le grand chiffre = aujourd'hui.` },
+    ] },
+  ],
+};
+const FRESH_NEURO_HELP: HelpContent = {
+  title: "Fraîcheur neuromusculaire",
+  blocks: [
+    { type: "p", text: "Fraîcheur muscles / tendons / structures (descentes excentriques, impacts, port de charge) ; récupère lentement (~2 sem) et invisible aux montres." },
+    { type: "formula", lines: ["= CTL neuro − ATL neuro  (τ aigu ~14 j, plus lent)"] },
+    { type: "dl", items: [
+      { k: "Unité", v: "points." },
+      { k: "Lecture", v: "peut rester négatif après de grosses descentes même si VFC et fraîcheur aérobie sont bonnes." },
+      { k: "Fenêtre", v: `le graphe = ${WIN} ; le grand chiffre = aujourd'hui.` },
+    ] },
+  ],
+};
 
 // Zones colorées (bon ↔ risqué) pour les jauges.
 // TSB bands scale with the athlete's OWN chronic load: "form" reads as a % of CTL, not fixed
@@ -141,61 +242,60 @@ export default async function Dashboard() {
                 le bon/risqué est dans leur rapport (TSB & ACWR, colorés ci-dessous). */}
             <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
               <div>
-                <div className="text-xs uppercase tracking-wide text-stone-500">CTL · forme</div>
+                <div className="flex items-center gap-1.5 text-xs uppercase tracking-wide text-stone-500">
+                  CTL · forme
+                  <HelpButton content={CTL_HELP} />
+                </div>
                 <div className="mt-1 text-2xl font-semibold tabular-nums">{fmt(latest?.ctl, 1)}</div>
-                <Sparkline values={ctlSeries} color={VIZ.aerobic} className="mt-1 w-full" />
-                <div className="text-xs text-stone-400">charge chronique ~42 j (pts)</div>
+                <SparklineTile values={ctlSeries} color={VIZ.aerobic} unit="pts" window={WIN} />
               </div>
               <div>
-                <div className="text-xs uppercase tracking-wide text-stone-500">ATL · fatigue</div>
+                <div className="flex items-center gap-1.5 text-xs uppercase tracking-wide text-stone-500">
+                  ATL · fatigue
+                  <HelpButton content={ATL_HELP} />
+                </div>
                 <div className="mt-1 text-2xl font-semibold tabular-nums">{fmt(latest?.atl, 1)}</div>
-                <Sparkline values={atlSeries} color={VIZ.neuro} className="mt-1 w-full" />
-                <div className="text-xs text-stone-400">charge aiguë ~7 j (pts)</div>
+                <SparklineTile values={atlSeries} color={VIZ.neuro} unit="pts" window={WIN} />
               </div>
               <div className="col-span-2 sm:col-span-1">
-                <div className="text-xs uppercase tracking-wide text-stone-500"
-                  title="Monotonie = charge moyenne ÷ écart-type sur 7 jours. Élevée (> 2) = entraînement trop uniforme → risque. Calculée sur la fenêtre affichée.">
+                <div className="flex items-center gap-1.5 text-xs uppercase tracking-wide text-stone-500">
                   Monotonie · 7 j
+                  <HelpButton content={MONO_HELP} />
                 </div>
                 <div className="mt-1 text-2xl font-semibold tabular-nums" style={monoColor ? { color: monoColor } : undefined}>{fmt(latestMono, 2)}</div>
-                <Sparkline values={monoSeries} className="mt-1 w-full text-stone-400" />
-                <div className="text-xs text-stone-400">régularité de la charge</div>
+                <SparklineTile values={monoSeries} unit="ratio" window={WIN} decimals={2} className="text-stone-400" />
               </div>
             </div>
             <div className="grid gap-5 sm:grid-cols-3">
-              <Gauge label="TSB · forme" value={tsb} min={tsbMin} max={tsbMax} zones={tsbZones(latest?.ctl ?? null, tsbMin, tsbMax)} />
-              <Gauge label="ACWR · ratio de charge" value={acwr} min={0} max={acwrMax} zones={acwrZones(acwrMax)} />
-              <Gauge label="Disponibilité (Garmin)" value={rec?.training_readiness ?? null} unit="" min={0} max={100} zones={readyZones} />
+              <Gauge label="TSB · forme" value={tsb} min={tsbMin} max={tsbMax} zones={tsbZones(latest?.ctl ?? null, tsbMin, tsbMax)} help={TSB_HELP} />
+              <Gauge label="ACWR · ratio de charge" value={acwr} min={0} max={acwrMax} zones={acwrZones(acwrMax)} help={ACWR_HELP} />
+              <Gauge label="Disponibilité (Garmin)" value={rec?.training_readiness ?? null} unit="" min={0} max={100} zones={readyZones} help={READY_HELP} />
             </div>
 
             {/* Fraîcheur par système : la forme (TSB) se sépare en deux canaux qui récupèrent à des
                 vitesses différentes. Positif = frais, négatif = fatigué. */}
             <div>
-              <div className="mb-2 flex items-center gap-1.5">
-                <span className="text-xs font-medium text-stone-700 dark:text-stone-300">Fraîcheur par système</span>
-                <span
-                  className="cursor-help text-xs text-stone-400"
-                  title="La forme (TSB) se décompose en deux systèmes qui récupèrent à des vitesses différentes. La fatigue aérobie (cardiaque) s'efface en ~quelques jours et se voit dans la VFC / Body Battery. La fatigue neuromusculaire (tendons, structures, descentes excentriques) traîne ~2 semaines et reste invisible aux montres — son canal aigu est calculé sur un τ plus lent (~14 j), donc ce chiffre peut rester négatif après de grosses descentes même quand la fraîcheur aérobie et la récupération Garmin paraissent bonnes."
-                >
-                  ?
-                </span>
-              </div>
+              <div className="mb-2 text-xs font-medium text-stone-700 dark:text-stone-300">Fraîcheur par système</div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <div className="text-xs uppercase tracking-wide text-stone-500">Fraîcheur aérobie</div>
+                  <div className="flex items-center gap-1.5 text-xs uppercase tracking-wide text-stone-500">
+                    Fraîcheur aérobie
+                    <HelpButton content={FRESH_AERO_HELP} />
+                  </div>
                   <div className="mt-1 text-2xl font-semibold tabular-nums" style={{ color: VIZ.aerobic }}>
                     {fmt(latest?.tsb_aerobic, 1)}
                   </div>
-                  <Sparkline values={tsbAerobicSeries} color={VIZ.aerobic} className="mt-1 w-full" />
-                  <div className="text-xs text-stone-400">récupère vite · visible par la VFC</div>
+                  <SparklineTile values={tsbAerobicSeries} color={VIZ.aerobic} unit="pts" window={WIN} />
                 </div>
                 <div>
-                  <div className="text-xs uppercase tracking-wide text-stone-500">Fraîcheur neuromusculaire</div>
+                  <div className="flex items-center gap-1.5 text-xs uppercase tracking-wide text-stone-500">
+                    Fraîcheur neuromusculaire
+                    <HelpButton content={FRESH_NEURO_HELP} />
+                  </div>
                   <div className="mt-1 text-2xl font-semibold tabular-nums" style={{ color: VIZ.neuro }}>
                     {fmt(latest?.tsb_neuromuscular, 1)}
                   </div>
-                  <Sparkline values={tsbNeuroSeries} color={VIZ.neuro} className="mt-1 w-full" />
-                  <div className="text-xs text-stone-400">récupère lentement (~2 sem) · invisible à la VFC</div>
+                  <SparklineTile values={tsbNeuroSeries} color={VIZ.neuro} unit="pts" window={WIN} />
                 </div>
               </div>
             </div>

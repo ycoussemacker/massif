@@ -2,20 +2,24 @@
  *  The interactive time-series charts live in charts-section.tsx (a client island).
  *  Colours come only from theme.ts — never hard-code hex. */
 import { MUTED } from "@/lib/theme";
+import { HelpButton, type HelpContent } from "./help";
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
 export type Zone = { from: number; to: number; color: string; label: string };
 
-export function Gauge({ label, value, unit, min, max, zones }: {
-  label: string; value: number | null; unit?: string; min: number; max: number; zones: Zone[];
+export function Gauge({ label, value, unit, min, max, zones, help }: {
+  label: string; value: number | null; unit?: string; min: number; max: number; zones: Zone[]; help?: HelpContent;
 }) {
   const pct = (v: number) => clamp(((v - min) / (max - min || 1)) * 100, 0, 100);
   const zone = value == null ? null : zones.find((z) => value >= z.from && value < z.to) ?? zones.at(-1)!;
   return (
     <div>
       <div className="mb-1 flex items-baseline justify-between gap-2">
-        <span className="text-xs font-medium text-stone-600 dark:text-stone-300">{label}</span>
+        <span className="flex items-center gap-1.5 text-xs font-medium text-stone-600 dark:text-stone-300">
+          {label}
+          {help && <HelpButton content={help} />}
+        </span>
         <span className="text-lg font-semibold tabular-nums" style={{ color: zone?.color ?? MUTED }}>
           {value == null ? "—" : value.toFixed(unit === "" ? 0 : 1)}
           {unit && <span className="ml-0.5 text-xs font-normal text-stone-400">{unit}</span>}

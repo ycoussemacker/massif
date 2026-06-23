@@ -2,6 +2,19 @@
 
 import { useState, useTransition } from "react";
 import { setSoreness } from "@/app/actions";
+import { HelpButton, type HelpContent } from "./help";
+
+const SORENESS_HELP: HelpContent = {
+  title: "Courbatures",
+  blocks: [
+    { type: "p", text: "Auto-évaluation facultative des courbatures (1 = fraîches, 5 = cuites). La VFC / Body Battery ne voient pas la fatigue musculaire et tendineuse → ce signal sert à personnaliser le canal neuromusculaire avec le temps." },
+    { type: "dl", items: [
+      { k: "Unité", v: "échelle 1–5." },
+      { k: "Lecture", v: "tape un chiffre pour enregistrer, retape-le pour effacer." },
+      { k: "Obligatoire", v: "non, entièrement facultatif." },
+    ] },
+  ],
+};
 
 /** Optional morning self-report of leg/muscle soreness (1 fresh – 5 cooked) — the neuromuscular
  *  ground-truth wearables can't see (prio 3c). Non-blocking: tap a number to log, tap it again to
@@ -22,14 +35,9 @@ export function SorenessInput({ initial }: { initial: number | null }) {
   return (
     <div className="rounded-2xl border border-stone-200 bg-white p-4 dark:border-stone-800 dark:bg-stone-900 sm:p-5">
       <div className="flex items-center justify-between gap-2">
-        <span className="text-sm font-medium text-stone-700 dark:text-stone-300">
+        <span className="flex items-center gap-1.5 text-sm font-medium text-stone-700 dark:text-stone-300">
           Jambes ce matin&nbsp;?
-          <span
-            className="ml-1.5 cursor-help text-xs text-stone-400"
-            title="Auto-évaluation facultative des courbatures (1 = fraîches, 5 = cuites). La VFC / Body Battery ne voient pas la fatigue musculaire et tendineuse ; ce signal sert à personnaliser le canal neuromusculaire avec le temps. Aucune obligation."
-          >
-            ?
-          </span>
+          <HelpButton content={SORENESS_HELP} />
         </span>
         <span className="text-xs text-stone-400">facultatif</span>
       </div>
