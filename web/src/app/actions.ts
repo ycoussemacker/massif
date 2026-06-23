@@ -5,7 +5,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { createServiceClient } from "@/lib/supabase/server";
 import { listActivities } from "@/lib/activities";
 import type { DailyMetric, Activity } from "@/lib/data";
-import { sessionRpeLoad, activeDuration, activitySpanDays } from "@/lib/load";
+import { sessionRpeLoad, activeDuration, activitySpanDays, needsReview } from "@/lib/load";
 import { generateCoachReply, COACH_MODEL, type ChatTurn } from "@/lib/coach-chat";
 import { todayLocal, whenLabelFr, dateMinusDays } from "@/lib/coach-context";
 import { sanitizeCoachSettings, type CoachSettings } from "@/lib/coach-settings";
@@ -45,14 +45,14 @@ export async function setRpe(activityId: string, rpe: number): Promise<void> {
   const sb = await createServiceClient();
   const { data: act, error } = await sb
     .from("activities")
-    .select("id,started_at,duration_s,moving_s,sport_id,vertical_loss_m,carried_load_kg")
+    .select("id,started_at,duration_s,moving_s,avg_hr,sport_id,vertical_loss_m,carried_load_kg")
     .eq("id", activityId).single();
   if (error || !act) throw new Error("Activité introuvable");
 
   const { data: sport } = await sb
     .from("sports").select("taxonomy_group").eq("id", act.sport_id).single();
-  // weight feeds the carried-mass factor of the eccentric-descent term (mirror of load.py).
-  const { data: profile } = await sb.from("athlete_profile").select("weight_kg").limit(1).single();
+  // weight feeds the carried-mass factor; max_hr feeds the outlier guard (mirror of load.py).
+  const { data: profile } = await sb.from("athlete_profile").select("weight_kg,max_hr").limit(1).single();
 
   // Score on ACTIVE time + flag multi-day, exactly like compute_load — so a multi-day manual-RPE
   // outing (elapsed counts the nights) gets the moving-based load and is spread by the rollup, not a
@@ -65,6 +65,13 @@ export async function setRpe(activityId: string, rpe: number): Promise<void> {
     weightKg: profile?.weight_kg,
   });
 
+  const review = needsReview(
+    { started_at: act.started_at, duration_s: act.duration_s, moving_s: act.moving_s, avg_hr: act.avg_hr },
+    { max_hr: profile?.max_hr },
+    load.intensity_factor,
+    effectiveDays,
+  );
+
   const { error: upErr } = await sb.from("activities").update({
     perceived_rpe: rpe,
     rpe_source: "user",
@@ -73,6 +80,7 @@ export async function setRpe(activityId: string, rpe: number): Promise<void> {
     neuromuscular_load: load.neuromuscular_load,
     intensity_factor: load.intensity_factor,
     effective_days: effectiveDays,
+    needs_review: review,
   }).eq("id", activityId);
   if (upErr) throw new Error(upErr.message);
 

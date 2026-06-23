@@ -49,6 +49,14 @@ export function ActivityCard({ a, avgLoad }: { a: Activity; avgLoad?: number | n
         <span>⏱ {dur(a.duration_s)}</span>
         <span>D+ {a.vertical_gain_m != null ? Math.round(a.vertical_gain_m) : "—"} / D− {a.vertical_loss_m != null ? Math.round(a.vertical_loss_m) : "—"}</span>
         {a.avg_hr != null && <span>FC {a.avg_hr}</span>}
+        {a.needs_review && (
+          <span
+            title="Charge possiblement sur-estimée : longtemps à l'arrêt, ou capteur FC/intensité douteux. Affine avec un RPE."
+            className="rounded bg-stone-100 px-1.5 py-0.5 text-stone-500 dark:bg-stone-800 dark:text-stone-400"
+          >
+            ⚠ à vérifier
+          </span>
+        )}
         {a.needs_manual_rpe && <RpeControl activityId={a.id} value={a.perceived_rpe} />}
         <StravaLink source={a.source} sourceActivityId={a.source_activity_id} className="ml-auto" />
       </div>
@@ -85,6 +93,14 @@ export function ActivityRow({ a, avgLoad }: { a: Activity; avgLoad?: number | nu
         <span className="whitespace-nowrap">
           <span className="mr-1.5" aria-hidden>{sportIcon(a.sport_code)}</span>
           {sportName(a.sport_code, a.sport)}
+          {a.needs_review && (
+            <span
+              title="Charge possiblement sur-estimée : longtemps à l'arrêt, ou capteur FC/intensité douteux. Affine avec un RPE."
+              className="ml-1.5 text-stone-400 dark:text-stone-500"
+            >
+              ⚠
+            </span>
+          )}
         </span>
         <StravaName a={a} className="max-w-[16rem]" />
       </td>

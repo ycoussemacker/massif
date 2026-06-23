@@ -107,14 +107,43 @@ soreness / RPE history later.
 
 ---
 
+## 2026-06-23 · Upgrade 3 — Interpretation & hygiene (prio-3 backlog)
+
+Three smaller refinements layered on Upgrades 1–2:
+
+**3a — `/analyse` multi-day awareness.** The A-vs-B comparison aggregated activities by their START date,
+so a multi-day expedition dumped its whole load into one period while the CTL/ATL/TSB KPIs (from the
+spread `daily_metrics`) disagreed. The per-day spread is now a shared `aggregate.spreadActivities()`
+(`groupByDateSpanned` builds on it); `/analyse` routes every activity-based aggregation (totals, per-sport,
+channel, cumulative, B-series) through it, clipped to each period, with the fetch widened 31 d so an
+expedition starting just before a period still attributes its in-period days.
+
+**3b — Form (TSB) bands relative to CTL.** The dashboard "TSB · forme" gauge judged form against fixed
+TrainingPeaks points (−30/−10/+8). Those don't transfer across load levels (the original "+100 looks
+huge" confusion). Bands now scale with the athlete's own CTL — **lo −30 % · mid −10 % · hi +10 % of CTL**
+(absolute fallback when CTL is unknown) — so the same TSB is judged relative to how trained you are.
+**ACWR stays absolute** (it's already a normalized ratio; its 0.8–1.3 sweet spot is scale-independent).
+`web/src/app/page.tsx` (`tsbBandBounds`/`tsbZones`), help text in `charts-section.tsx`.
+
+**3d — `needs_review` outlier guard (flag-only).** A persisted boolean flag — never a silent cap — set by
+`load.needs_review()` when a load rests on a suspect input: an HR-sensor glitch (`avg_hr > max_hr`), an
+implausible intensity factor (> 1.5), or a single-day outing scored on elapsed time that was mostly spent
+stopped (`moving/elapsed < 0.5`, ≥ 1 h elapsed — forgotten pause / lift laps / long belays → load
+overstated). Surfaced as a neutral "⚠ à vérifier" chip (deliberately NOT the readiness palette — it's a
+data-quality signal). Scoring is **unchanged** (whether a mostly-stopped outing should switch to moving
+time is the per-sport calibration question below). Mirror `load.py`↔`load.ts`; set on every write path
+(ingest, recompute, RPE); migration `…0004`. Flags 12 real activities today (snowboard / surf / alpinism
+stages / grande voie); the HR/IF rules are multi-user prophylaxis (0 hits now). Multi-day expeditions are
+already handled (`effective_days > 1`) so they are not flagged.
+
 ## Backlog (candidate upgrades, not yet built)
 
-- **Calibrate load coefficients** to the athlete (`DESCENT_LOAD_PER_1000M`, `IMPACT_FRAC`, the strength
-  split, `NEURO_ATL_DAYS`, `MULTIDAY_GAP_S`) from their own RPE / soreness / Garmin history. Today's
-  clean CTL (~85) is already sane, so this is refinement, not a fix.
-- **Relative interpretation bands** — express TSB/ACWR thresholds as percentiles of the athlete's own
-  history rather than fixed TrainingPeaks values, so the bands transfer across athletes (multi-user).
-- **Generic outlier guard** beyond multi-day — flag/cap single-activity load glitches (GPS/HR dropouts,
-  Strava↔Garmin duplicates) for the multi-user rollout.
-- **`/analyse` multi-day awareness** — the A-vs-B comparison still attributes a multi-day activity's full
-  load to the period of its start day (the dashboard day-panel and the rollup already spread it).
+- **Calibrate load coefficients** to the athlete (prio 3c — being planned) — fit `DESCENT_LOAD_PER_1000M`,
+  `IMPACT_FRAC`, the strength split, `NEURO_ATL_DAYS`, `MULTIDAY_GAP_S` to their own RPE / soreness /
+  Garmin history. Today's clean CTL (~85) is already sane, so this is refinement, not a fix; it needs a
+  ground-truth signal decided first (sparse manual RPE vs Garmin training-load vs soreness).
+- **Per-sport "moving vs elapsed" scoring** — the 12 `needs_review` single-day outings (surf / snowboard /
+  alpinism) are scored on elapsed time incl. large stops. Whether to switch them to moving time is
+  sport-dependent (alpine belay time can be effortful) — fold into the 3c calibration rather than a blunt switch.
+- **Per-day-load chart band scaling** — the dashboard TSB *bar chart* still draws fixed −30/0 reference
+  lines; only the gauge bands are CTL-relative (3b). Low priority (the chart is a trend view).

@@ -108,6 +108,33 @@ def _active_duration(a: dict) -> int:
     return dur
 
 
+# ── Outlier guard (data hygiene, multi-user-ready) ──────────────────────────────────────────────
+# Flag — never silently cap — activities whose load rests on suspect inputs, so they can be reviewed
+# (e.g. an RPE entered to refine) rather than skewing the model. Capping is deliberately NOT done: a
+# heuristic can't tell a real hard mountain day from a glitch, and suppressing genuine load is worse
+# than flagging. The scoring of flagged activities is unchanged (whether a mostly-stopped single-day
+# outing should switch to moving time is a per-sport calibration question — see docs/MODEL_UPGRADES.md).
+REVIEW_IF_CEILING = 1.5      # an intensity factor this high implies bad inputs, not a real effort
+REVIEW_STOP_RATIO = 0.5      # single-day moving/elapsed below this = mostly stopped → load likely overstated
+REVIEW_MIN_ELAPSED_S = 3600  # only consider the stop ratio once the outing is long enough to matter
+
+
+def needs_review(a: dict, profile: dict, intensity_factor: float | None, effective_days: int) -> bool:
+    """True when the computed load rests on a suspect input: an HR sensor glitch (avg_hr above the
+    athlete's max), an implausible intensity factor, or a single-day outing scored on elapsed time that
+    was mostly spent stopped (forgotten pause / lift laps / long belays). Multi-day expeditions are
+    already handled (effective_days>1) so they are not flagged here."""
+    avg_hr, max_hr = a.get("avg_hr"), profile.get("max_hr")
+    if avg_hr and max_hr and avg_hr > max_hr:
+        return True
+    if intensity_factor and intensity_factor > REVIEW_IF_CEILING:
+        return True
+    dur, mov = a.get("duration_s") or 0, a.get("moving_s")
+    if effective_days == 1 and dur >= REVIEW_MIN_ELAPSED_S and mov and mov / dur < REVIEW_STOP_RATIO:
+        return True
+    return False
+
+
 @dataclass
 class LoadResult:
     aerobic_load: float
@@ -115,6 +142,7 @@ class LoadResult:
     load_method_used: str
     intensity_factor: float | None
     effective_days: int = 1  # >1 ⇒ multi-day expedition; the rollup spreads the load across this many days
+    needs_review: bool = False  # load rests on a suspect input (see needs_review) — surface for review
 
     @property
     def training_load(self) -> float:
@@ -267,11 +295,14 @@ def compute_load(activity: dict, sport: dict, profile: dict) -> LoadResult:
         aerobic = points
         neuromuscular = impact + _descent_load(activity, profile)
 
+    eff_days = activity_span_days(
+        activity.get("started_at"), activity.get("duration_s"), activity.get("moving_s"))
+    intensity_factor = round(intensity, 3) if intensity is not None else None
     return LoadResult(
         aerobic_load=round(aerobic, 2),
         neuromuscular_load=round(neuromuscular, 2),
         load_method_used=chosen_method,
-        intensity_factor=round(intensity, 3) if intensity is not None else None,
-        effective_days=activity_span_days(
-            activity.get("started_at"), activity.get("duration_s"), activity.get("moving_s")),
+        intensity_factor=intensity_factor,
+        effective_days=eff_days,
+        needs_review=needs_review(activity, profile, intensity_factor, eff_days),
     )

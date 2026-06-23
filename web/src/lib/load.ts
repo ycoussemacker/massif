@@ -116,6 +116,7 @@ export type LoadResult = {
   load_method_used: string;
   intensity_factor: number | null;
   effective_days: number; // >1 ⇒ multi-day expedition; the rollup spreads the load across this many days
+  needs_review: boolean;  // load rests on a suspect input (see needsReview) — surface for review
 };
 
 /** Calendar days a multi-day EXPEDITION truly spans (≥2); else 1. Mirror of load.py activity_span_days:
@@ -145,6 +146,29 @@ export function activeDuration(a: LoadActivity): number {
   const dur = a.duration_s || 0;
   if (activitySpanDays(a.started_at, dur, a.moving_s) > 1) return a.moving_s || dur;
   return dur;
+}
+
+// Outlier guard — mirror of load.py. Flags (never caps) a load that rests on a suspect input.
+export const REVIEW_IF_CEILING = 1.5;
+export const REVIEW_STOP_RATIO = 0.5;
+export const REVIEW_MIN_ELAPSED_S = 3600;
+
+/** True when the computed load rests on a suspect input: an HR glitch (avg_hr above the athlete's max),
+ *  an implausible intensity factor, or a single-day outing scored on elapsed time that was mostly spent
+ *  stopped. Multi-day expeditions (effectiveDays>1) are handled by the spread, so not flagged here.
+ *  Mirror of load.py needs_review — keep in sync. */
+export function needsReview(
+  a: LoadActivity,
+  p: LoadProfile,
+  intensityFactor: number | null,
+  effectiveDays: number,
+): boolean {
+  if (a.avg_hr && p.max_hr && a.avg_hr > p.max_hr) return true;
+  if (intensityFactor && intensityFactor > REVIEW_IF_CEILING) return true;
+  const dur = a.duration_s || 0;
+  const mov = a.moving_s;
+  if (effectiveDays === 1 && dur >= REVIEW_MIN_ELAPSED_S && mov && mov / dur < REVIEW_STOP_RATIO) return true;
+  return false;
 }
 
 function tssFromIf(durationS: number, intensity: number): number {
@@ -236,11 +260,14 @@ export function computeLoad(activity: LoadActivity, sport: LoadSport, profile: L
     neuromuscular = points * (IMPACT_FRAC[group] ?? IMPACT_FRAC.other) + descentLoad(activity, profile);
   }
 
+  const effectiveDays = activitySpanDays(activity.started_at, activity.duration_s, activity.moving_s);
+  const intensityFactor = Math.round(intensity * 1000) / 1000;
   return {
     aerobic_load: round2(aerobic),
     neuromuscular_load: round2(neuromuscular),
     load_method_used: chosen,
-    intensity_factor: Math.round(intensity * 1000) / 1000,
-    effective_days: activitySpanDays(activity.started_at, activity.duration_s, activity.moving_s),
+    intensity_factor: intensityFactor,
+    effective_days: effectiveDays,
+    needs_review: needsReview(activity, profile, intensityFactor, effectiveDays),
   };
 }

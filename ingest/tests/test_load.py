@@ -180,6 +180,20 @@ def test_multiday_load_uses_moving_time_not_elapsed():
     assert single.aerobic_load > r.aerobic_load * 4   # elapsed 312 h vs moving 55.6 h
 
 
+def test_needs_review_flags_suspect_inputs_only():
+    prof = {"max_hr": 188}
+    # HR sensor glitch: avg_hr above the athlete's max.
+    assert load.needs_review({"avg_hr": 199}, prof, 0.7, 1) is True
+    # Implausible intensity factor.
+    assert load.needs_review({}, prof, 1.6, 1) is True
+    # Single-day outing mostly spent stopped (4 h elapsed, 1 h moving) → load overstated.
+    assert load.needs_review({"duration_s": 14400, "moving_s": 3600}, prof, 0.5, 1) is True
+    # Clean single-day activity (moving ≈ elapsed, plausible IF, HR ok) → not flagged.
+    assert load.needs_review({"duration_s": 14400, "moving_s": 14000, "avg_hr": 150}, prof, 0.7, 1) is False
+    # A multi-day expedition is already handled by the spread (effective_days>1), not flagged here.
+    assert load.needs_review({"duration_s": 14400, "moving_s": 3600}, prof, 0.5, 14) is False
+
+
 def test_normal_activity_unchanged_uses_elapsed_and_effective_days_one():
     # A normal single-day activity is byte-for-byte unchanged: effective_days=1 and load on elapsed.
     normal = {"started_at": "2025-06-01T08:00:00+00:00", "duration_s": 3600, "moving_s": 3500, "avg_hr": 130}

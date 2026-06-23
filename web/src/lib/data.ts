@@ -67,6 +67,7 @@ export type Activity = {
   rpe_source: string | null;
   strava_name: string | null; // Strava activity title (from sport_specific->>strava_name)
   effective_days: number | null; // >1 ⇒ multi-day expedition whose load is spread across this many days
+  needs_review: boolean | null;  // load rests on a suspect input (HR>max, implausible IF, mostly-stopped)
   // Set only on the per-day PROJECTION of a multi-day activity (see aggregate.groupByDateSpanned): this
   // row's load/duration fields then carry just that day's 1/total share; spanInfo records which day.
   spanInfo?: { index: number; total: number; fullLoad: number | null } | null;
@@ -76,7 +77,7 @@ export type Activity = {
 export const ACTIVITY_COLS =
   "id,local_date,started_at,source,source_activity_id,sport_id,training_load,aerobic_load,neuromuscular_load," +
   "load_method_used,duration_s,moving_s,distance_m,vertical_gain_m,vertical_loss_m,carried_load_kg,avg_hr," +
-  "perceived_rpe,rpe_source,effective_days,strava_name:sport_specific->>strava_name";
+  "perceived_rpe,rpe_source,effective_days,needs_review,strava_name:sport_specific->>strava_name";
 
 /** Attach sport display fields (FR-friendly name/code, taxonomy, RPE flag) to raw activity rows.
  *  Shared by getDashboard and lib/activities.listActivities so both enrich identically. */

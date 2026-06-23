@@ -43,12 +43,12 @@ const TSB_HELP: HelpContent = {
     { type: "p", text: "Le TSB (Training Stress Balance) mesure ta fraîcheur : l'écart entre ta forme de fond et ta fatigue récente." },
     { type: "formula", lines: ["TSB = CTL − ATL   (en points)"] },
     { type: "dl", items: [
-      { k: "> +5", v: "frais / affûté — idéal juste avant une course." },
-      { k: "−10 à +5", v: "équilibre." },
-      { k: "−30 à −10", v: "fatigue productive — normal en bloc d'entraînement." },
-      { k: "< −30", v: "surcharge / risque de blessure (bande rouge)." },
+      { k: "> +10% CTL", v: "frais / affûté — idéal juste avant une course." },
+      { k: "−10% à +10%", v: "équilibre." },
+      { k: "−30% à −10%", v: "fatigue productive — normal en bloc d'entraînement." },
+      { k: "< −30% CTL", v: "surcharge / risque de blessure (bande rouge)." },
     ] },
-    { type: "example", text: "CTL 35 et ATL 98 → TSB = −63 : grosse fatigue aiguë, repos conseillé." },
+    { type: "p", text: "Les seuils s'adaptent à ta charge chronique (CTL) — la même fatigue « pèse » plus quand tu es peu entraîné. À CTL 85, la zone productive va de ≈ −9 à −25 pts ; à CTL 150, de ≈ −15 à −45." },
   ],
 };
 

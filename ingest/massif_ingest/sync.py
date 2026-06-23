@@ -56,6 +56,7 @@ def recompute_activity_loads() -> int:
             "load_method_used": r.load_method_used,
             "intensity_factor": r.intensity_factor,
             "effective_days": r.effective_days,
+            "needs_review": r.needs_review,
         })
         updated += 1
     return updated

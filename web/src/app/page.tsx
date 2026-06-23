@@ -16,12 +16,23 @@ import { VIZ, STATE } from "@/lib/theme";
 export const dynamic = "force-dynamic"; // toujours refléter le dernier sync / run du coach
 
 // Zones colorées (bon ↔ risqué) pour les jauges.
-const tsbZones = (v: number, min: number, max: number): Zone[] => [
-  { from: min, to: -30, color: STATE.rest, label: "surmenage / risque" },
-  { from: -30, to: -10, color: STATE.caution, label: "charge productive" },
-  { from: -10, to: 8, color: STATE.neutral, label: "équilibre" },
-  { from: 8, to: max, color: STATE.ready, label: "frais / affûté" },
-];
+// TSB bands scale with the athlete's OWN chronic load: "form" reads as a % of CTL, not fixed
+// TrainingPeaks points, so the same TSB is judged relative to how trained you are (−27 means more when
+// CTL is 50 than when it's 150). Falls back to absolute points when CTL is unknown. ACWR stays absolute
+// below — it's already a normalized ratio, so its 0.8–1.3 sweet spot is scale-independent.
+const tsbBandBounds = (ctl: number | null): { lo: number; mid: number; hi: number } => {
+  const c = ctl && ctl > 0 ? ctl : null;
+  return c ? { lo: -0.3 * c, mid: -0.1 * c, hi: 0.1 * c } : { lo: -30, mid: -10, hi: 8 };
+};
+const tsbZones = (ctl: number | null, min: number, max: number): Zone[] => {
+  const { lo, mid, hi } = tsbBandBounds(ctl);
+  return [
+    { from: min, to: lo, color: STATE.rest, label: "surmenage / risque" },
+    { from: lo, to: mid, color: STATE.caution, label: "charge productive" },
+    { from: mid, to: hi, color: STATE.neutral, label: "équilibre" },
+    { from: hi, to: max, color: STATE.ready, label: "frais / affûté" },
+  ];
+};
 const acwrZones = (max: number): Zone[] => [
   { from: 0, to: 0.8, color: STATE.cool, label: "sous-charge" },
   { from: 0.8, to: 1.3, color: STATE.ready, label: "zone idéale" },
@@ -79,8 +90,10 @@ export default async function Dashboard() {
 
   const tsb = latest?.tsb ?? null;
   const acwr = latest?.acwr ?? null;
-  const tsbMin = Math.min(-40, (tsb ?? 0) - 5);
-  const tsbMax = Math.max(20, (tsb ?? 0) + 5);
+  // Gauge range must contain both the value and the CTL-scaled bands (which widen as CTL grows).
+  const tsbBounds = tsbBandBounds(latest?.ctl ?? null);
+  const tsbMin = Math.min(-40, tsbBounds.lo, (tsb ?? 0)) - 8;
+  const tsbMax = Math.max(20, tsbBounds.hi, (tsb ?? 0)) + 8;
   const acwrMax = Math.max(2, (acwr ?? 0) + 0.1);
 
   // Trend sparklines + a client-computed monotony (the DB doesn't persist monotony/strain).
@@ -148,7 +161,7 @@ export default async function Dashboard() {
               </div>
             </div>
             <div className="grid gap-5 sm:grid-cols-3">
-              <Gauge label="TSB · forme" value={tsb} min={tsbMin} max={tsbMax} zones={tsbZones(tsb ?? 0, tsbMin, tsbMax)} />
+              <Gauge label="TSB · forme" value={tsb} min={tsbMin} max={tsbMax} zones={tsbZones(latest?.ctl ?? null, tsbMin, tsbMax)} />
               <Gauge label="ACWR · ratio de charge" value={acwr} min={0} max={acwrMax} zones={acwrZones(acwrMax)} />
               <Gauge label="Disponibilité (Garmin)" value={rec?.training_readiness ?? null} unit="" min={0} max={100} zones={readyZones} />
             </div>
