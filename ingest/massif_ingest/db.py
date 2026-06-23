@@ -122,8 +122,8 @@ def fetch_activities_for_recompute() -> list[dict]:
     return (
         client()
         .table("activities")
-        .select("id,sport_id,duration_s,avg_hr,np_power_w,avg_power_w,avg_pace_s_per_km,"
-                "vertical_gain_m,vertical_loss_m,carried_load_kg,perceived_rpe")
+        .select("id,sport_id,started_at,duration_s,moving_s,avg_hr,np_power_w,avg_power_w,"
+                "avg_pace_s_per_km,vertical_gain_m,vertical_loss_m,carried_load_kg,perceived_rpe")
         .execute()
         .data
     )
@@ -136,6 +136,16 @@ def update_activity_load(activity_id: str, fields: dict) -> None:
 
 def upsert_daily_metric(metric: dict) -> None:
     client().table("daily_metrics").upsert(metric, on_conflict="local_date").execute()
+
+
+def upsert_daily_metrics(metrics: list[dict], chunk: int = 500) -> None:
+    """Bulk column-scoped upsert of the daily rollup (keyed on local_date), chunked to bound request
+    size. Far fewer round-trips than per-day upserts → robust against the cloud REST read-timeouts the
+    ~1800-row sequential loop kept hitting. Column-scoped exactly like upsert_daily_metric (only the
+    load/model columns are listed, so Garmin recovery columns on existing rows are left untouched)."""
+    sb = client()
+    for i in range(0, len(metrics), chunk):
+        sb.table("daily_metrics").upsert(metrics[i:i + chunk], on_conflict="local_date").execute()
 
 
 def save_streams(activity_id: str, streams: dict[str, list]) -> None:

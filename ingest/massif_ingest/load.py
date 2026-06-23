@@ -38,6 +38,7 @@ calibration gaps to revisit with real data:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 
 # Sports with no real aerobic engine: the session effort (sRPE / grade / tonnage) is itself mostly
 # muscular, so it is split aerobic : neuromuscular by taxonomy (must sum to 1.0) rather than treated
@@ -68,6 +69,44 @@ DESCENT_LOAD_PER_1000M = 70.0
 # estimate). With HR present, hrtss already captures the climb, so this is not added (no double count).
 ASCENT_AEROBIC_PER_1000M = 100.0
 
+# ── Multi-day expedition handling (data hygiene) ────────────────────────────────────────────────
+# Strava lets you publish a multi-day outing (a GR20, a trek) as ONE activity: elapsed_time then spans
+# the whole trip (nights included) and the row lands entirely on its START date. Two distortions follow:
+# the load is computed over the elapsed window (sleep counted as effort), and a trip's worth of load
+# spikes a single day — wrecking the EWMAs (ATL explodes, then CTL stays falsely high for ~2 months →
+# phantom +TSB). We detect such activities and (a) compute their load from MOVING time, not elapsed, and
+# (b) spread it across the calendar days they truly span (done in the rollup, via `effective_days`).
+# A normal session that merely crosses midnight (a night race) has elapsed≈moving → NOT flagged. The
+# tell of a real expedition is a large non-moving GAP (≥ one overnight) on top of a multi-day span.
+MULTIDAY_GAP_S = 6 * 3600  # min elapsed−moving gap (an overnight) to treat a multi-day span as a trip
+
+
+def activity_span_days(started_at: str | None, duration_s: int | None, moving_s: int | None) -> int:
+    """Calendar days a multi-day EXPEDITION truly spans (≥2); else 1 (the normal single-day case).
+
+    A trip qualifies only if its elapsed window crosses calendar-day boundaries AND it contains a large
+    non-moving gap (≥ MULTIDAY_GAP_S) — so a night race that just crosses midnight (elapsed≈moving)
+    stays a 1-day activity. Returns 1 on missing/unparsable inputs (degrade to current behaviour)."""
+    if not started_at or not duration_s:
+        return 1
+    try:
+        start = datetime.fromisoformat(started_at)
+    except (TypeError, ValueError):
+        return 1
+    end = start + timedelta(seconds=duration_s)
+    span = (end.date() - start.date()).days + 1
+    gap = duration_s - (moving_s or duration_s)
+    return span if span > 1 and gap >= MULTIDAY_GAP_S else 1
+
+
+def _active_duration(a: dict) -> int:
+    """Seconds of real effort to score. For a multi-day expedition this is MOVING time (elapsed would
+    count the nights); for every normal activity it stays elapsed `duration_s` (unchanged behaviour)."""
+    dur = a.get("duration_s") or 0
+    if activity_span_days(a.get("started_at"), dur, a.get("moving_s")) > 1:
+        return a.get("moving_s") or dur
+    return dur
+
 
 @dataclass
 class LoadResult:
@@ -75,6 +114,7 @@ class LoadResult:
     neuromuscular_load: float
     load_method_used: str
     intensity_factor: float | None
+    effective_days: int = 1  # >1 ⇒ multi-day expedition; the rollup spreads the load across this many days
 
     @property
     def training_load(self) -> float:
@@ -115,7 +155,7 @@ def _method_tss(a: dict, p: dict) -> tuple[float, float] | None:
     if not (np_w and ftp):
         return None
     intensity = np_w / ftp
-    return _tss_from_if(a["duration_s"], intensity), intensity
+    return _tss_from_if(_active_duration(a), intensity), intensity
 
 
 def _method_hrtss(a: dict, p: dict) -> tuple[float, float] | None:
@@ -125,7 +165,7 @@ def _method_hrtss(a: dict, p: dict) -> tuple[float, float] | None:
     avg_frac = _hr_fraction(avg_hr, rhr, max_hr)
     thr_frac = _hr_fraction(lthr, rhr, max_hr)
     intensity = avg_frac / thr_frac if thr_frac > 0 else DEFAULT_IF
-    return _tss_from_if(a["duration_s"], intensity), intensity
+    return _tss_from_if(_active_duration(a), intensity), intensity
 
 
 def _method_rtss(a: dict, p: dict) -> tuple[float, float] | None:
@@ -134,7 +174,7 @@ def _method_rtss(a: dict, p: dict) -> tuple[float, float] | None:
     if not (avg_pace and thr_pace):
         return None
     intensity = thr_pace / avg_pace
-    return _tss_from_if(a["duration_s"], intensity), intensity
+    return _tss_from_if(_active_duration(a), intensity), intensity
 
 
 def _method_vertical_duration(a: dict, p: dict) -> tuple[float, float] | None:
@@ -144,11 +184,10 @@ def _method_vertical_duration(a: dict, p: dict) -> tuple[float, float] | None:
     # hrtss step (alpinism / via_ferrata) still get this ascent supplement instead of stranding on
     # duration_fallback. The eccentric DESCENT cost is added separately in compute_load, regardless of
     # which aerobic method wins.
-    dur = a.get("duration_s")
-    if not dur:
+    if not a.get("duration_s"):
         return None
     vgain = a.get("vertical_gain_m") or 0.0
-    base = _tss_from_if(dur, DEFAULT_IF)
+    base = _tss_from_if(_active_duration(a), DEFAULT_IF)
     ascent_points = (vgain / 1000.0) * ASCENT_AEROBIC_PER_1000M * _mass_factor(a, p)
     return base + ascent_points, DEFAULT_IF
 
@@ -158,7 +197,7 @@ def _method_session_rpe(a: dict, p: dict) -> tuple[float, float] | None:
     if not rpe:
         return None
     intensity = rpe / 10.0
-    return _tss_from_if(a["duration_s"], intensity), intensity
+    return _tss_from_if(_active_duration(a), intensity), intensity
 
 
 def _method_grade_volume(a: dict, p: dict) -> tuple[float, float] | None:
@@ -176,7 +215,7 @@ def _method_tonnage_rpe(a: dict, p: dict) -> tuple[float, float] | None:
 def _method_duration_fallback(a: dict, p: dict) -> tuple[float, float] | None:
     if not a.get("duration_s"):
         return None
-    return _tss_from_if(a["duration_s"], DEFAULT_IF), DEFAULT_IF
+    return _tss_from_if(_active_duration(a), DEFAULT_IF), DEFAULT_IF
 
 
 _METHODS = {
@@ -233,4 +272,6 @@ def compute_load(activity: dict, sport: dict, profile: dict) -> LoadResult:
         neuromuscular_load=round(neuromuscular, 2),
         load_method_used=chosen_method,
         intensity_factor=round(intensity, 3) if intensity is not None else None,
+        effective_days=activity_span_days(
+            activity.get("started_at"), activity.get("duration_s"), activity.get("moving_s")),
     )

@@ -10,6 +10,9 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 const CTL_DAYS = 42;
 const ATL_DAYS = 7;
+// Neuromuscular acute load decays slower than aerobic (structural/tendon fatigue lingers ~weeks).
+// Mirror of sync.py NEURO_ATL_DAYS — keep in sync.
+const NEURO_ATL_DAYS = 14;
 
 /** Banister-style EWMA (CTL/ATL): alpha = 1 - e^(-1/tau), seeded at 0. Mirror of _ewma_series. */
 function ewmaSeries(values: number[], tauDays: number): number[] {
@@ -49,26 +52,35 @@ export async function rollupDailyMetrics(sb: SupabaseClient): Promise<number> {
 
   const { data: acts } = await sb
     .from("activities")
-    .select("local_date,aerobic_load,neuromuscular_load,vertical_gain_m,vertical_loss_m,sport_id");
+    .select("local_date,aerobic_load,neuromuscular_load,vertical_gain_m,vertical_loss_m,sport_id,effective_days");
   if (!acts?.length) return 0;
 
-  // Aggregate per day.
+  // Aggregate per day. A multi-day expedition (effective_days>1) is spread EVENLY across the calendar
+  // days it spans (from its local_date) so its load doesn't spike one day — mirror of sync.py.
   const days = new Map<string, DayBucket>();
   for (const a of acts as any[]) {
-    const d = a.local_date as string;
-    let b = days.get(d);
-    if (!b) {
-      b = { aer: 0, neu: 0, vup: 0, vdn: 0, byGroup: {} };
-      days.set(d, b);
-    }
-    const aer = Number(a.aerobic_load || 0);
-    const neu = Number(a.neuromuscular_load || 0);
-    b.aer += aer;
-    b.neu += neu;
-    b.vup += Number(a.vertical_gain_m || 0);
-    b.vdn += Number(a.vertical_loss_m || 0);
+    const eff = Math.max(Number(a.effective_days) || 1, 1);
+    const aer = Number(a.aerobic_load || 0) / eff;
+    const neu = Number(a.neuromuscular_load || 0) / eff;
+    const vup = Number(a.vertical_gain_m || 0) / eff;
+    const vdn = Number(a.vertical_loss_m || 0) / eff;
     const group = groupById.get(a.sport_id) ?? "other";
-    b.byGroup[group] = (b.byGroup[group] ?? 0) + aer + neu;
+    const start = new Date((a.local_date as string) + "T00:00:00Z");
+    for (let i = 0; i < eff; i++) {
+      const d = new Date(start.getTime());
+      d.setUTCDate(d.getUTCDate() + i);
+      const key = d.toISOString().slice(0, 10);
+      let b = days.get(key);
+      if (!b) {
+        b = { aer: 0, neu: 0, vup: 0, vdn: 0, byGroup: {} };
+        days.set(key, b);
+      }
+      b.aer += aer;
+      b.neu += neu;
+      b.vup += vup;
+      b.vdn += vdn;
+      b.byGroup[group] = (b.byGroup[group] ?? 0) + aer + neu;
+    }
   }
 
   // Contiguous spine min..max.
@@ -83,7 +95,7 @@ export async function rollupDailyMetrics(sb: SupabaseClient): Promise<number> {
   const ctlA = ewmaSeries(aerobic, CTL_DAYS);
   const atlA = ewmaSeries(aerobic, ATL_DAYS);
   const ctlN = ewmaSeries(neuro, CTL_DAYS);
-  const atlN = ewmaSeries(neuro, ATL_DAYS);
+  const atlN = ewmaSeries(neuro, NEURO_ATL_DAYS); // slower acute τ — structural fatigue lingers
 
   const rows = spine.map((d, i) => {
     const b = days.get(d);
@@ -100,8 +112,10 @@ export async function rollupDailyMetrics(sb: SupabaseClient): Promise<number> {
       tsb: round(ctl[i] - atl[i]),
       ctl_aerobic: round(ctlA[i]),
       atl_aerobic: round(atlA[i]),
+      tsb_aerobic: round(ctlA[i] - atlA[i]),
       ctl_neuromuscular: round(ctlN[i]),
       atl_neuromuscular: round(atlN[i]),
+      tsb_neuromuscular: round(ctlN[i] - atlN[i]),
       acwr: ctl[i] > 0 ? round(atl[i] / ctl[i]) : null,
     };
   });

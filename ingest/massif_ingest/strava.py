@@ -261,6 +261,7 @@ def _build_activity_row(
     row["neuromuscular_load"] = result.neuromuscular_load
     row["load_method_used"] = result.load_method_used
     row["intensity_factor"] = result.intensity_factor
+    row["effective_days"] = result.effective_days
     return row, sport
 
 

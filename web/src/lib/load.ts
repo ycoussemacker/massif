@@ -84,10 +84,13 @@ export function sessionRpeLoad(
 
 export const DEFAULT_IF = 0.55; // ~ easy aerobic effort
 export const ASCENT_AEROBIC_PER_1000M = 100; // no-HR mountain aerobic estimate (D+); not added when HR is present
+export const MULTIDAY_GAP_S = 6 * 3600; // overnight gap that marks a multi-day expedition (mirror load.py)
 
 /** Minimal activity shape compute_load reads (load/raw fields). */
 export type LoadActivity = {
+  started_at?: string | null;
   duration_s?: number | null;
+  moving_s?: number | null;
   avg_hr?: number | null;
   np_power_w?: number | null;
   avg_power_w?: number | null;
@@ -112,7 +115,37 @@ export type LoadResult = {
   neuromuscular_load: number;
   load_method_used: string;
   intensity_factor: number | null;
+  effective_days: number; // >1 ⇒ multi-day expedition; the rollup spreads the load across this many days
 };
+
+/** Calendar days a multi-day EXPEDITION truly spans (≥2); else 1. Mirror of load.py activity_span_days:
+ *  a trip qualifies only if its elapsed window crosses calendar days AND has a large non-moving gap
+ *  (≥ MULTIDAY_GAP_S), so a night race that merely crosses midnight (elapsed≈moving) stays 1 day. */
+export function activitySpanDays(
+  startedAt?: string | null,
+  durationS?: number | null,
+  movingS?: number | null,
+): number {
+  if (!startedAt || !durationS) return 1;
+  const start = new Date(startedAt);
+  if (Number.isNaN(start.getTime())) return 1;
+  const end = new Date(start.getTime() + durationS * 1000);
+  const startDay = Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate());
+  const endDay = Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate());
+  const span = Math.round((endDay - startDay) / 86_400_000) + 1;
+  // `movingS || durationS` (not `??`) to MIRROR Python's `moving_s or duration_s`: a moving_s of 0
+  // (GPS-less / manual log) must fall back to elapsed → gap 0 → not flagged, exactly like load.py.
+  const gap = durationS - (movingS || durationS);
+  return span > 1 && gap >= MULTIDAY_GAP_S ? span : 1;
+}
+
+/** Seconds of real effort to score: MOVING time for a multi-day expedition (elapsed counts the nights),
+ *  else elapsed `duration_s` (unchanged for every normal activity). Mirror of load.py _active_duration. */
+export function activeDuration(a: LoadActivity): number {
+  const dur = a.duration_s || 0;
+  if (activitySpanDays(a.started_at, dur, a.moving_s) > 1) return a.moving_s || dur;
+  return dur;
+}
 
 function tssFromIf(durationS: number, intensity: number): number {
   const hours = Math.max(durationS, 0) / 3600;
@@ -136,23 +169,23 @@ const METHODS: Record<string, (a: LoadActivity, p: LoadProfile) => MethodResult>
     const npw = a.np_power_w || a.avg_power_w;
     if (!npw || !p.ftp_watts) return null;
     const intensity = npw / p.ftp_watts;
-    return [tssFromIf(a.duration_s || 0, intensity), intensity];
+    return [tssFromIf(activeDuration(a), intensity), intensity];
   },
   hrtss(a, p) {
     if (!(a.avg_hr && p.resting_hr && p.max_hr && p.lthr)) return null;
     const avgFrac = hrFraction(a.avg_hr, p.resting_hr, p.max_hr);
     const thrFrac = hrFraction(p.lthr, p.resting_hr, p.max_hr);
     const intensity = thrFrac > 0 ? avgFrac / thrFrac : DEFAULT_IF;
-    return [tssFromIf(a.duration_s || 0, intensity), intensity];
+    return [tssFromIf(activeDuration(a), intensity), intensity];
   },
   rtss(a, p) {
     if (!(a.avg_pace_s_per_km && p.threshold_pace_s_per_km)) return null;
     const intensity = p.threshold_pace_s_per_km / a.avg_pace_s_per_km;
-    return [tssFromIf(a.duration_s || 0, intensity), intensity];
+    return [tssFromIf(activeDuration(a), intensity), intensity];
   },
   vertical_duration(a, p) {
     if (!a.duration_s) return null;
-    const base = tssFromIf(a.duration_s, DEFAULT_IF);
+    const base = tssFromIf(activeDuration(a), DEFAULT_IF);
     const ascent = ((a.vertical_gain_m || 0) / 1000) * ASCENT_AEROBIC_PER_1000M * massFactor(a, p);
     return [base + ascent, DEFAULT_IF];
   },
@@ -161,11 +194,11 @@ const METHODS: Record<string, (a: LoadActivity, p: LoadProfile) => MethodResult>
   session_rpe(a) {
     if (!a.perceived_rpe) return null;
     const intensity = a.perceived_rpe / 10;
-    return [tssFromIf(a.duration_s || 0, intensity), intensity];
+    return [tssFromIf(activeDuration(a), intensity), intensity];
   },
   duration_fallback(a) {
     if (!a.duration_s) return null;
-    return [tssFromIf(a.duration_s, DEFAULT_IF), DEFAULT_IF];
+    return [tssFromIf(activeDuration(a), DEFAULT_IF), DEFAULT_IF];
   },
 };
 
@@ -208,5 +241,6 @@ export function computeLoad(activity: LoadActivity, sport: LoadSport, profile: L
     neuromuscular_load: round2(neuromuscular),
     load_method_used: chosen,
     intensity_factor: Math.round(intensity * 1000) / 1000,
+    effective_days: activitySpanDays(activity.started_at, activity.duration_s, activity.moving_s),
   };
 }

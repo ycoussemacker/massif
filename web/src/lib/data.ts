@@ -24,8 +24,10 @@ export type DailyMetric = {
   acwr: number | null;
   ctl_aerobic: number | null;
   atl_aerobic: number | null;
+  tsb_aerobic: number | null;
   ctl_neuromuscular: number | null;
   atl_neuromuscular: number | null;
+  tsb_neuromuscular: number | null;
   vertical_gain_m: number | null;
   vertical_loss_m: number | null;
   sleep_score: number | null;
@@ -55,6 +57,7 @@ export type Activity = {
   neuromuscular_load: number | null;
   load_method_used: string | null;
   duration_s: number | null;
+  moving_s: number | null;
   distance_m: number | null;
   vertical_gain_m: number | null;
   vertical_loss_m: number | null;
@@ -63,13 +66,17 @@ export type Activity = {
   perceived_rpe: number | null;
   rpe_source: string | null;
   strava_name: string | null; // Strava activity title (from sport_specific->>strava_name)
+  effective_days: number | null; // >1 ⇒ multi-day expedition whose load is spread across this many days
+  // Set only on the per-day PROJECTION of a multi-day activity (see aggregate.groupByDateSpanned): this
+  // row's load/duration fields then carry just that day's 1/total share; spanInfo records which day.
+  spanInfo?: { index: number; total: number; fullLoad: number | null } | null;
 };
 
 /** Column list for an activities select that yields a full Activity (after enrichment). */
 export const ACTIVITY_COLS =
   "id,local_date,started_at,source,source_activity_id,sport_id,training_load,aerobic_load,neuromuscular_load," +
-  "load_method_used,duration_s,distance_m,vertical_gain_m,vertical_loss_m,carried_load_kg,avg_hr,perceived_rpe," +
-  "rpe_source,strava_name:sport_specific->>strava_name";
+  "load_method_used,duration_s,moving_s,distance_m,vertical_gain_m,vertical_loss_m,carried_load_kg,avg_hr," +
+  "perceived_rpe,rpe_source,effective_days,strava_name:sport_specific->>strava_name";
 
 /** Attach sport display fields (FR-friendly name/code, taxonomy, RPE flag) to raw activity rows.
  *  Shared by getDashboard and lib/activities.listActivities so both enrich identically. */
@@ -126,12 +133,16 @@ export async function getDashboard(): Promise<Dashboard> {
   // The dashboard shows a rolling window (today − N months); deeper history is in /analyse. Bounded
   // queries also stay under PostgREST's per-response row cap.
   const windowStart = monthsAgo(todayLocal(), DASHBOARD_WINDOW_MONTHS);
-  const [pm, mm, bm, chartActs, recents, sm, gm] = await Promise.all([
+  const [pm, mm, bm, chartActs, multiActs, recents, sm, gm] = await Promise.all([
     sb.from("athlete_profile").select("*").limit(1).maybeSingle(),
     sb.from("daily_metrics").select("*").gte("local_date", windowStart).order("local_date", { ascending: true }),
     sb.from("coach_briefings").select("*").order("created_at", { ascending: false }).limit(1).maybeSingle(),
     // Activities within the chart window (oldest first) — feeds the per-day detail panel.
     sb.from("activities").select(ACTIVITY_COLS).gte("local_date", windowStart).order("started_at", { ascending: true }),
+    // Multi-day expeditions (effective_days>1), UNBOUNDED: their load is spread across days the rollup
+    // covers but they START before the window/older-chunk boundary, so the per-day panel needs them
+    // regardless of the window to project their share onto in-view days (a tiny set; deduped by id below).
+    sb.from("activities").select(ACTIVITY_COLS).gt("effective_days", 1).order("started_at", { ascending: true }),
     // 15 most recent activities (any date) — the recents table.
     sb.from("activities").select(ACTIVITY_COLS).order("started_at", { ascending: false }).limit(15),
     sb.from("sports").select("id,code,display_name,taxonomy_group,needs_manual_rpe"),
@@ -142,13 +153,19 @@ export async function getDashboard(): Promise<Dashboard> {
   const sportById = new Map<number, any>((sm.data ?? []).map((s: any) => [s.id, s]));
   const sportCodeById = new Map<number, string>((sm.data ?? []).map((s: any) => [s.id, s.code]));
 
+  // Chart-window activities + any out-of-window multi-day expeditions, deduped by id, oldest first.
+  const inWindow = enrichActivities(chartActs.data ?? [], sportById);
+  const inWindowIds = new Set(inWindow.map((a) => a.id));
+  const extraMulti = enrichActivities(multiActs.data ?? [], sportById).filter((a) => !inWindowIds.has(a.id));
+  const allActivities = [...inWindow, ...extraMulti].sort((a, b) => a.started_at.localeCompare(b.started_at));
+
   return {
     profile: (pm.data as Profile) ?? null,
     topGoal: pickTopGoal(gm.data, sportCodeById),
     metrics: (mm.data as DailyMetric[]) ?? [],
     briefing: (bm.data as Briefing) ?? null,
     activities: enrichActivities(recents.data ?? [], sportById),
-    allActivities: enrichActivities(chartActs.data ?? [], sportById),
+    allActivities,
   };
 }
 

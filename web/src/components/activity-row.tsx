@@ -31,6 +31,11 @@ export function ActivityCard({ a, avgLoad }: { a: Activity; avgLoad?: number | n
         </span>
         <ActivityDate a={a} className="shrink-0 text-xs text-stone-400" />
       </div>
+      {a.spanInfo && (
+        <div className="mt-1.5 text-xs text-stone-500 dark:text-stone-400">
+          🗓 Sortie multi-jours · jour {a.spanInfo.index}/{a.spanInfo.total} · {fmt(a.spanInfo.fullLoad, 0)} pts au total répartis sur {a.spanInfo.total} j
+        </div>
+      )}
       <div className="mt-2 flex items-baseline gap-3">
         <span className="text-xl font-semibold tabular-nums" style={accent ? { color: accent } : undefined}>
           {fmt(a.training_load, 0)}<span className="ml-1 text-xs font-normal text-stone-400">pts</span>

@@ -46,6 +46,51 @@ export function groupByDate(rows: Activity[]): Map<string, Activity[]> {
   return m;
 }
 
+/** Like groupByDate, but a multi-day expedition (effective_days>1) is SPREAD across the calendar days
+ *  it spans — mirroring the daily rollup (rollup.ts / sync.py) — so the chart day-panel shows it on
+ *  every day it loaded, with that day's 1/N share, instead of dumping the whole trip on its start day
+ *  (and leaving the spanned days reading "rest"). Each projected copy carries its per-day share of the
+ *  load/duration/vertical and a spanInfo {index,total,fullLoad} so the card can label it. */
+export function groupByDateSpanned(rows: Activity[]): Map<string, Activity[]> {
+  const m = new Map<string, Activity[]>();
+  const add = (date: string, a: Activity) => {
+    const b = m.get(date);
+    if (b) b.push(a);
+    else m.set(date, [a]);
+  };
+  // Dedupe by id: a multi-day activity is fetched both unbounded (so it's always available) and within
+  // a scrolled-in window chunk, so the same id can appear twice — project it once, never double-count.
+  const seen = new Set<string>();
+  for (const r of rows) {
+    if (seen.has(r.id)) continue;
+    seen.add(r.id);
+    const eff = Math.max(r.effective_days ?? 1, 1);
+    if (eff <= 1) {
+      add(r.local_date, r);
+      continue;
+    }
+    const share = (v: number | null) => (v == null ? v : v / eff);
+    const start = new Date(r.local_date + "T00:00:00Z");
+    for (let i = 0; i < eff; i++) {
+      const d = new Date(start.getTime());
+      d.setUTCDate(d.getUTCDate() + i);
+      add(d.toISOString().slice(0, 10), {
+        ...r,
+        local_date: d.toISOString().slice(0, 10),
+        training_load: share(r.training_load),
+        aerobic_load: share(r.aerobic_load),
+        neuromuscular_load: share(r.neuromuscular_load),
+        duration_s: share(r.moving_s ?? r.duration_s), // per-day MOVING share (real effort/day, not elapsed)
+        distance_m: share(r.distance_m),
+        vertical_gain_m: share(r.vertical_gain_m),
+        vertical_loss_m: share(r.vertical_loss_m),
+        spanInfo: { index: i + 1, total: eff, fullLoad: r.training_load },
+      });
+    }
+  }
+  return m;
+}
+
 function bucketAgg<K>(rows: Activity[], key: (a: Activity) => K): Map<K, LoadAgg> {
   const groups = new Map<K, Activity[]>();
   for (const r of rows) {

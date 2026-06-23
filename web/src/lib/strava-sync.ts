@@ -236,6 +236,7 @@ export async function syncStrava(sb: SupabaseClient, afterDays = 21): Promise<St
     row.neuromuscular_load = r.neuromuscular_load;
     row.load_method_used = r.load_method_used;
     row.intensity_factor = r.intensity_factor;
+    row.effective_days = r.effective_days;
 
     const { error } = await sb.from("activities").upsert(row, { onConflict: "source,source_activity_id" });
     if (error) throw new Error(`upsert activity failed: ${error.message}`);

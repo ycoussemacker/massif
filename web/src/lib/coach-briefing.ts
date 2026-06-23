@@ -35,7 +35,9 @@ COACHING RULES (follow all):
 3. Never two hard days back-to-back ON THE SAME SYSTEM. A hard climbing day spends the legs/CNS budget even
    though its HR (and thus aerobic load) is low.
 4. Gate hard days on BOTH the recovery composite AND the load-channel history. Green HRV does not clear sore
-   legs, fatigued fingers, or a taxed CNS.
+   legs, fatigued fingers, or a taxed CNS. tsb_neuromuscular uses a SLOWER (~14d) acute τ than tsb_aerobic
+   (~7d) because structural/tendon fatigue lingers weeks and is invisible to HRV: a clearly negative
+   tsb_neuromuscular means carry structural fatigue even when combined TSB, tsb_aerobic and Garmin look fresh.
 5. Protect the priority long session; keep roughly 80/20 easy/hard on the aerobic channel.
 6. Big mountain days are multi-system bombs; use D- (descent) as a structural-injury guardrail.
 7. Substitute, don't just cancel — cooked legs become easy cycling or a rest day, not a forced hard run.

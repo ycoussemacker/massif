@@ -134,3 +134,56 @@ def test_rtss_intensity_from_pace():
                           sport, {"threshold_pace_s_per_km": 300})
     assert r.load_method_used == "rtss"
     assert round(r.aerobic_load, 1) == 100.0                         # running at threshold pace
+
+
+# ── multi-day expedition handling (data hygiene) ──────────────────────────────────────────────────
+
+def test_span_days_flags_genuine_multiday_expedition():
+    # 13 days elapsed, ~56 h moving (huge overnight gaps) → spans 14 calendar dates, flagged.
+    span = load.activity_span_days("2025-08-01T06:00:00+00:00", 13 * 86400, 200000)
+    assert span == 14
+
+
+def test_span_days_ignores_midnight_crossing_session():
+    # A 4 h night activity that crosses midnight is NOT multi-day: elapsed≈moving (tiny gap).
+    span = load.activity_span_days("2025-11-30T23:00:00+00:00", 4 * 3600, int(3.9 * 3600))
+    assert span == 1
+
+
+def test_span_days_ignores_continuous_ultra_across_days():
+    # A 25 h continuous effort spanning 2 calendar days but barely stopped (gap < overnight) stays 1 day.
+    span = load.activity_span_days("2025-06-01T06:00:00+00:00", 25 * 3600, int(24.5 * 3600))
+    assert span == 1
+
+
+def test_span_days_degrades_on_missing_inputs():
+    assert load.activity_span_days(None, 3600, 3600) == 1
+    assert load.activity_span_days("2025-06-01T08:00:00+00:00", None, None) == 1
+    assert load.activity_span_days("not-a-date", 13 * 86400, 1000) == 1
+
+
+VERT_LADDER = {"taxonomy_group": "mountain_vertical",
+               "load_method_ladder": ["vertical_duration", "hrtss", "session_rpe", "duration_fallback"]}
+HR_PROFILE = {"resting_hr": 48, "max_hr": 188, "lthr": 178}
+
+
+def test_multiday_load_uses_moving_time_not_elapsed():
+    # The GR20 bug: a multi-day activity must be scored on MOVING time (elapsed counts the nights).
+    multi = {"started_at": "2025-08-01T06:00:00+00:00", "duration_s": 13 * 86400,
+             "moving_s": 200000, "avg_hr": 130}
+    r = load.compute_load(multi, VERT_LADDER, HR_PROFILE)
+    assert r.effective_days == 14
+    # Same activity treated as single-day (no started_at → span 1) scores on elapsed (312 h ≫ 55.6 h moving).
+    single = load.compute_load({"duration_s": 13 * 86400, "moving_s": 200000, "avg_hr": 130},
+                               VERT_LADDER, HR_PROFILE)
+    assert single.effective_days == 1
+    assert single.aerobic_load > r.aerobic_load * 4   # elapsed 312 h vs moving 55.6 h
+
+
+def test_normal_activity_unchanged_uses_elapsed_and_effective_days_one():
+    # A normal single-day activity is byte-for-byte unchanged: effective_days=1 and load on elapsed.
+    normal = {"started_at": "2025-06-01T08:00:00+00:00", "duration_s": 3600, "moving_s": 3500, "avg_hr": 130}
+    r = load.compute_load(normal, VERT_LADDER, HR_PROFILE)
+    assert r.effective_days == 1
+    legacy = load.compute_load({"duration_s": 3600, "avg_hr": 130}, VERT_LADDER, HR_PROFILE)
+    assert r.aerobic_load == legacy.aerobic_load      # single-day ignores moving_s, scores on elapsed

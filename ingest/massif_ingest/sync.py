@@ -18,6 +18,14 @@ from datetime import date, timedelta
 from . import db, load
 
 
+# The neuromuscular channel's ACUTE (fatigue) load decays on a SLOWER time constant than the aerobic
+# one: eccentric/structural damage and tendon stress linger ~weeks, not the ~7 days HRV-visible aerobic
+# fatigue takes to clear. So the per-channel TSB uses atl τ = 7 d (aerobic) vs 14 d (neuromuscular),
+# making a descent-heavy block read as fatigued for longer on the neuromuscular channel. Population
+# start — personalize from the athlete's soreness/RPE history later (like the load.py coefficients).
+NEURO_ATL_DAYS = 14
+
+
 def _ewma_series(values: list[float], tau_days: float) -> list[float]:
     """Banister-style exponential moving average (CTL/ATL). alpha = 1 - e^(-1/tau)."""
     alpha = 1.0 - math.exp(-1.0 / tau_days)
@@ -47,6 +55,7 @@ def recompute_activity_loads() -> int:
             "neuromuscular_load": r.neuromuscular_load,
             "load_method_used": r.load_method_used,
             "intensity_factor": r.intensity_factor,
+            "effective_days": r.effective_days,
         })
         updated += 1
     return updated
@@ -63,26 +72,33 @@ def rollup_daily_metrics(ctl_days: int = 42, atl_days: int = 7) -> int:
         db.client()
         .table("activities")
         .select("local_date,aerobic_load,neuromuscular_load,vertical_gain_m,"
-                "vertical_loss_m,sport_id")
+                "vertical_loss_m,sport_id,effective_days")
         .execute()
         .data
     )
     if not acts:
         return 0
 
-    # Aggregate per day.
+    # Aggregate per day. A multi-day expedition (effective_days>1) is spread EVENLY across the calendar
+    # days it spans (starting at its local_date) so its load doesn't spike one day — see load.py. Normal
+    # activities have effective_days=1 and land on their single local_date as before.
     days: dict[date, dict] = {}
     for a in acts:
-        d = date.fromisoformat(a["local_date"])
-        bucket = days.setdefault(d, {"aer": 0.0, "neu": 0.0, "vup": 0.0, "vdn": 0.0, "by_group": {}})
-        aer = float(a.get("aerobic_load") or 0)
-        neu = float(a.get("neuromuscular_load") or 0)
-        bucket["aer"] += aer
-        bucket["neu"] += neu
-        bucket["vup"] += float(a.get("vertical_gain_m") or 0)
-        bucket["vdn"] += float(a.get("vertical_loss_m") or 0)
+        start = date.fromisoformat(a["local_date"])
+        eff = max(int(a.get("effective_days") or 1), 1)
+        aer = float(a.get("aerobic_load") or 0) / eff
+        neu = float(a.get("neuromuscular_load") or 0) / eff
+        vup = float(a.get("vertical_gain_m") or 0) / eff
+        vdn = float(a.get("vertical_loss_m") or 0) / eff
         group = sport_by_id.get(a["sport_id"], {}).get("taxonomy_group", "other")
-        bucket["by_group"][group] = bucket["by_group"].get(group, 0.0) + aer + neu
+        for i in range(eff):
+            d = start + timedelta(days=i)
+            bucket = days.setdefault(d, {"aer": 0.0, "neu": 0.0, "vup": 0.0, "vdn": 0.0, "by_group": {}})
+            bucket["aer"] += aer
+            bucket["neu"] += neu
+            bucket["vup"] += vup
+            bucket["vdn"] += vdn
+            bucket["by_group"][group] = bucket["by_group"].get(group, 0.0) + aer + neu
 
     # Contiguous date spine.
     start, end = min(days), max(days)
@@ -93,12 +109,14 @@ def rollup_daily_metrics(ctl_days: int = 42, atl_days: int = 7) -> int:
 
     ctl, atl = _ewma_series(total, ctl_days), _ewma_series(total, atl_days)
     ctl_a, atl_a = _ewma_series(aerobic, ctl_days), _ewma_series(aerobic, atl_days)
-    ctl_n, atl_n = _ewma_series(neuro, ctl_days), _ewma_series(neuro, atl_days)
+    # Neuromuscular ACUTE load uses the slower NEURO_ATL_DAYS τ (structural fatigue lingers); its CTL
+    # keeps the shared chronic τ. So tsb_neuromuscular stays negative longer after a descent block.
+    ctl_n, atl_n = _ewma_series(neuro, ctl_days), _ewma_series(neuro, NEURO_ATL_DAYS)
 
-    written = 0
+    rows = []
     for i, d in enumerate(spine):
         b = days.get(d, {})
-        db.upsert_daily_metric({
+        rows.append({
             "local_date": d.isoformat(),
             "daily_load": round(total[i], 2),
             "daily_aerobic_load": round(aerobic[i], 2),
@@ -111,12 +129,14 @@ def rollup_daily_metrics(ctl_days: int = 42, atl_days: int = 7) -> int:
             "tsb": round(ctl[i] - atl[i], 2),
             "ctl_aerobic": round(ctl_a[i], 2),
             "atl_aerobic": round(atl_a[i], 2),
+            "tsb_aerobic": round(ctl_a[i] - atl_a[i], 2),
             "ctl_neuromuscular": round(ctl_n[i], 2),
             "atl_neuromuscular": round(atl_n[i], 2),
+            "tsb_neuromuscular": round(ctl_n[i] - atl_n[i], 2),
             "acwr": round(atl[i] / ctl[i], 2) if ctl[i] > 0 else None,
         })
-        written += 1
-    return written
+    db.upsert_daily_metrics(rows)
+    return len(rows)
 
 
 def main() -> None:

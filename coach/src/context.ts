@@ -92,8 +92,12 @@ export async function assemblePicture(): Promise<Picture> {
     },
     fitness_model_latest: latest && {
       date: latest.local_date, ctl: latest.ctl, atl: latest.atl, tsb: latest.tsb,
-      ctl_aerobic: latest.ctl_aerobic, atl_aerobic: latest.atl_aerobic,
+      ctl_aerobic: latest.ctl_aerobic, atl_aerobic: latest.atl_aerobic, tsb_aerobic: latest.tsb_aerobic,
       ctl_neuromuscular: latest.ctl_neuromuscular, atl_neuromuscular: latest.atl_neuromuscular,
+      // Neuromuscular form uses a slower (~14d) acute τ: structural/tendon fatigue lingers weeks and is
+      // invisible to HRV. A clearly negative tsb_neuromuscular = carry structural fatigue even if aerobic
+      // freshness (tsb_aerobic) and Garmin recovery look fine.
+      tsb_neuromuscular: latest.tsb_neuromuscular,
       acwr: latest.acwr,
     },
     recovery_today: recoveryToday(dm, today),

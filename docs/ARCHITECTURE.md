@@ -110,6 +110,10 @@ Coefficients (`DESCENT_LOAD_PER_1000M`, `IMPACT_FRAC`, `ASCENT_AEROBIC_PER_1000M
 population starting points — calibrate per athlete (see "personalization"). After editing them, re-apply
 to history with `python -m massif_ingest.sync --recompute-loads`.
 
+> **Innovations layered on this baseline** (multi-day expedition splitting, per-channel form with a slower
+> neuromuscular recovery τ, …) are tracked in [`MODEL_UPGRADES.md`](MODEL_UPGRADES.md) — read it for the
+> deltas to the textbook PMC model and the tunable parameters they introduced.
+
 **RPE is hybrid**: `sports.needs_manual_rpe = true` for sports without reliable HR
 (climbing/strength/alpinism) → a one-tap post-session prompt; auto-estimated elsewhere.
 
