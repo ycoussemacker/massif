@@ -39,6 +39,7 @@ export type DailyMetric = {
   body_battery_low: number | null;
   stress_avg: number | null;
   training_readiness: number | null;
+  soreness: number | null; // optional morning self-report 1 (fresh) – 5 (cooked); neuromuscular ground truth
 };
 
 export type Activity = {

@@ -7,6 +7,7 @@ import { Nav } from "@/components/nav";
 import { GoalBadge } from "@/components/goal-badge";
 import { CoachHero } from "@/components/coach-hero";
 import { GarminRefresh } from "@/components/garmin-refresh";
+import { SorenessInput } from "@/components/soreness-input";
 import { todayLocal } from "@/lib/coach-context";
 import { fmt, avgLoadRecent } from "@/lib/format";
 import { rollingMonotony } from "@/lib/aggregate";
@@ -86,6 +87,7 @@ export default async function Dashboard() {
   const { profile, topGoal, metrics, briefing, activities, allActivities } = await getDashboard();
   const latest = latestModel(metrics);
   const rec = latestRecovery(metrics);
+  const todaySoreness = metrics.find((m) => m.local_date === todayLocal())?.soreness ?? null;
   const avgLoad = avgLoadRecent(allActivities, todayLocal(), 15);
 
   const tsb = latest?.tsb ?? null;
@@ -235,6 +237,11 @@ export default async function Dashboard() {
             </div>
           </section>
         )}
+
+        {/* Courbatures — auto-évaluation neuromusculaire facultative (la VFC n'y voit rien) */}
+        <div className="mb-6">
+          <SorenessInput initial={todaySoreness} />
+        </div>
 
         {/* Activités récentes */}
         <section className="rounded-2xl border border-stone-200 bg-white p-5 dark:border-stone-800 dark:bg-stone-900">

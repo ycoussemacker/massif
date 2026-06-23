@@ -88,6 +88,20 @@ export async function setRpe(activityId: string, rpe: number): Promise<void> {
   revalidatePath("/coach");
 }
 
+/** Log (or clear, with null) this morning's OPTIONAL leg-soreness self-report (1 fresh – 5 cooked).
+ *  Column-scoped upsert on daily_metrics(local_date) — never touches the load-rollup or Garmin-recovery
+ *  columns. The missing neuromuscular ground-truth for adaptive calibration (prio 3c); entirely optional. */
+export async function setSoreness(value: number | null): Promise<void> {
+  if (value !== null && (!Number.isInteger(value) || value < 1 || value > 5))
+    throw new Error("Courbatures : un entier 1–5 (ou aucun).");
+  const sb = await createServiceClient();
+  const { error } = await sb
+    .from("daily_metrics")
+    .upsert({ local_date: todayLocal(), soreness: value }, { onConflict: "local_date" });
+  if (error) throw new Error(error.message);
+  revalidatePath("/");
+}
+
 // ── Coach chat ────────────────────────────────────────────────────────────────
 
 const rnd = (n: number | null | undefined) => (n == null ? "—" : String(Math.round(n)));

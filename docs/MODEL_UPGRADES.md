@@ -211,8 +211,9 @@ already personalized via the FC thresholds, so this surface is intentionally thi
 calibration payoff is the neuromuscular channel**, which activates once the optional soreness log fills.
 
 **B — Soreness collection (optional).** `daily_metrics.soreness` (1–5, migration `…0006`) is the missing
-neuromuscular ground-truth (wearables are blind to it). Optional/non-blocking; the neuromuscular fits
-(`descent_load_per_1000m`, `neuro_atl_days`) join `calibrate_all()` once it accumulates.
+neuromuscular ground-truth (wearables are blind to it), with a non-blocking "Jambes ce matin ?" dashboard
+input (`SorenessInput` → `setSoreness` server action, neutral stone — a self-report, not a verdict). The
+neuromuscular fits (`descent_load_per_1000m`, `neuro_atl_days`) join `calibrate_all()` once it accumulates.
 
 **Files.** `ingest/massif_ingest/{calibrate.py (new), load.py, sync.py, db.py, strava.py}` · mirrors
 `web/src/lib/{load.ts, rollup.ts, strava-sync.ts}` · migrations `…0005_athlete_load_params`,
@@ -225,8 +226,6 @@ CTL 84.8 / TSB −27.2 unchanged). **Tunable.** `MIN_IF_SAMPLES=30`, the p20 eas
 - **Neuromuscular calibration** (the 3c payoff) — once the soreness log has data, fit
   `DESCENT_LOAD_PER_1000M` / `NEURO_ATL_DAYS` so modelled neuromuscular load predicts next-day soreness;
   add the fitters to `calibrate_all()`. Needs ~2-3 weeks of optional soreness entries.
-- **Soreness input UI** — the `daily_metrics.soreness` column exists; the optional morning "legs 1–5"
-  input + server action still to wire on the dashboard.
 - **Per-sport "moving vs elapsed" scoring** — the 12 `needs_review` single-day outings (surf / snowboard /
   alpinism) are scored on elapsed time incl. large stops. Whether to switch them to moving time is
   sport-dependent (alpine belay time can be effortful) — fold into the 3c calibration rather than a blunt switch.
