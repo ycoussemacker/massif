@@ -12,6 +12,7 @@ import { sanitizeCoachSettings, type CoachSettings } from "@/lib/coach-settings"
 import { syncStrava } from "@/lib/strava-sync";
 import { rollupDailyMetrics } from "@/lib/rollup";
 import { generateBriefing, type BriefingResult } from "@/lib/coach-briefing";
+import { postDayVerdictMessage } from "@/lib/day-verdict";
 
 /** Load an OLDER window of the Forme history on demand (dashboard infinite-scroll-back). Returns the
  *  `months` of daily_metrics + activities ending the day BEFORE `beforeDate` (the current oldest day
@@ -250,6 +251,9 @@ export async function syncNow(): Promise<{ pulled: number; newest: string | null
   const sb = await createServiceClient();
   const { pulled, newest } = await syncStrava(sb);
   const days = await rollupDailyMetrics(sb);
+  // Drop the coach's same-day "load vs plan" verdict into the conversation (LLM-free template, one row
+  // per day, updated in place). Best-effort: never let it fail the sync the athlete asked for.
+  try { await postDayVerdictMessage(sb); } catch { /* non-critical side-effect */ }
   revalidatePath("/");
   revalidatePath("/coach");
   return { pulled, newest, days };
@@ -343,6 +347,7 @@ export async function generateBriefingNow(): Promise<{ pulled: number; briefing:
   const { pulled } = await syncStrava(sb);
   await rollupDailyMetrics(sb);
   const briefing = await generateBriefing(sb);
+  try { await postDayVerdictMessage(sb); } catch { /* non-critical side-effect */ }
   revalidatePath("/");
   revalidatePath("/coach");
   return { pulled, briefing };

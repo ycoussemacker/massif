@@ -1,157 +1,18 @@
 import Link from "next/link";
 import { getDashboard, latestModel, DASHBOARD_WINDOW_MONTHS, type DailyMetric } from "@/lib/data";
-import { Gauge, type Zone } from "@/components/charts";
 import { ChartsSection } from "@/components/charts-section";
 import { ActivityCard, ActivityRow, ActivityTableHead } from "@/components/activity-row";
 import { Nav } from "@/components/nav";
 import { GoalBadge } from "@/components/goal-badge";
 import { CoachHero } from "@/components/coach-hero";
-import { DayProgress } from "@/components/day-progress";
+import { assembleVerdict } from "@/lib/day-verdict";
 import { GarminRefresh } from "@/components/garmin-refresh";
 import { SorenessInput } from "@/components/soreness-input";
 import { todayLocal } from "@/lib/coach-context";
 import { fmt, avgLoadRecent } from "@/lib/format";
-import { rollingMonotony } from "@/lib/aggregate";
-import { SparklineTile } from "@/components/sparkline";
-import { HelpButton, type HelpContent } from "@/components/help";
-import { VIZ, STATE } from "@/lib/theme";
+import { STATE } from "@/lib/theme";
 
 export const dynamic = "force-dynamic"; // toujours refléter le dernier sync / run du coach
-
-// Fenêtre roulante des graphiques du tableau de bord (réutilisée dans les libellés d'aide).
-const WIN = `${DASHBOARD_WINDOW_MONTHS} mois`;
-
-// Aides cliquables (popover bas d'écran sur mobile / modale sur desktop) — une par indicateur clé.
-const CTL_HELP: HelpContent = {
-  title: "CTL · forme",
-  blocks: [
-    { type: "p", text: "Ta forme de fond (« fitness ») : la charge d'entraînement moyenne lissée sur ~42 jours (moyenne mobile exponentielle). Elle monte lentement et redescend au repos." },
-    { type: "formula", lines: ["CTL = moyenne expo ~42 j de la charge quotidienne"] },
-    { type: "dl", items: [
-      { k: "Unité", v: "points de charge (≈ TSS ; 100 pts ≈ 1 h à intensité seuil)." },
-      { k: "Lecture", v: "plus haut = plus en forme ; pas de bon / mauvais absolu, c'est la tendance qui compte." },
-      { k: "Fenêtre", v: `le graphe = ${WIN} ; le grand chiffre = aujourd'hui.` },
-    ] },
-  ],
-};
-const ATL_HELP: HelpContent = {
-  title: "ATL · fatigue",
-  blocks: [
-    { type: "p", text: "Ta fatigue récente : la même charge lissée sur ~7 jours seulement. Elle monte vite et redescend en quelques jours." },
-    { type: "formula", lines: ["ATL = moyenne expo ~7 j de la charge quotidienne"] },
-    { type: "dl", items: [
-      { k: "Unité", v: "points de charge (même échelle que le CTL)." },
-      { k: "Lecture", v: "au-dessus du CTL = tu accumules de la fatigue ; en-dessous = tu récupères / affûtes." },
-      { k: "Repère", v: "la courbe claire en fond = ton CTL ; ATL au-dessus = tu accumules de la fatigue, en-dessous = tu récupères." },
-      { k: "Fenêtre", v: `le graphe = ${WIN} ; le grand chiffre = aujourd'hui.` },
-    ] },
-  ],
-};
-const MONO_HELP: HelpContent = {
-  title: "Monotonie · 7 j",
-  blocks: [
-    { type: "p", text: "Mesure si l'entraînement est trop uniforme (toujours pareil, sans contraste facile / dur) → plus de risque à charge égale." },
-    { type: "formula", lines: ["Monotonie = charge moyenne ÷ écart-type (7 j glissants)"] },
-    { type: "dl", items: [
-      { k: "Unité", v: "sans unité (un ratio)." },
-      { k: "Lecture", v: "< 1,5 sain · 1,5–2 à surveiller · > 2 trop uniforme = risque." },
-      { k: "Repère", v: "bande orange 1,5–2 à surveiller, rouge > 2 = trop uniforme." },
-      { k: "Fenêtre", v: `le graphe = ${WIN} ; calculée sur la fenêtre affichée (non stockée en base).` },
-    ] },
-  ],
-};
-const TSB_HELP: HelpContent = {
-  title: "TSB · forme",
-  blocks: [
-    { type: "p", text: "Ta fraîcheur du jour : l'écart entre ta forme de fond (CTL) et ta fatigue récente (ATL)." },
-    { type: "formula", lines: ["TSB = CTL − ATL"] },
-    { type: "dl", items: [
-      { k: "Unité", v: "points de charge." },
-      { k: "Lecture", v: "les seuils s'adaptent à ta charge (CTL) — frais > +10 % du CTL · équilibre −10 % à +10 % · charge productive −30 % à −10 % · surmenage < −30 %." },
-      { k: "Fenêtre", v: "valeur du jour (l'historique est dans la carte « Forme » plus bas)." },
-    ] },
-  ],
-};
-const ACWR_HELP: HelpContent = {
-  title: "ACWR · ratio de charge",
-  blocks: [
-    { type: "p", text: "Rapport fatigue récente / forme de fond : indique si tu montes en charge trop vite." },
-    { type: "formula", lines: ["ACWR = ATL ÷ CTL"] },
-    { type: "dl", items: [
-      { k: "Unité", v: "sans unité (un ratio)." },
-      { k: "Lecture", v: "< 0,8 sous-charge · 0,8–1,3 zone idéale · 1,3–1,5 élevé · > 1,5 risque de blessure." },
-      { k: "Fenêtre", v: "valeur du jour." },
-    ] },
-  ],
-};
-const READY_HELP: HelpContent = {
-  title: "Disponibilité (Garmin)",
-  blocks: [
-    { type: "p", text: "Score de préparation calculé par la montre Garmin ce matin (sommeil, VFC, stress, charge récente)." },
-    { type: "dl", items: [
-      { k: "Unité", v: "0 à 100." },
-      { k: "Lecture", v: "≥ 70 bon · 50–70 modéré · 30–50 bas · < 30 très bas." },
-      { k: "Source", v: "Garmin (récup du jour) ; n'inclut PAS la fatigue neuromusculaire (voir Fraîcheur par système)." },
-    ] },
-  ],
-};
-const FRESH_AERO_HELP: HelpContent = {
-  title: "Fraîcheur aérobie",
-  blocks: [
-    { type: "p", text: "Fraîcheur du moteur cardiovasculaire ; récupère vite (jours), visible dans la VFC / Body Battery." },
-    { type: "formula", lines: ["= CTL aérobie − ATL aérobie  (τ aigu ~7 j)"] },
-    { type: "dl", items: [
-      { k: "Unité", v: "points." },
-      { k: "Lecture", v: "positif = frais · négatif = fatigué." },
-      { k: "Repère", v: "ligne 0 = équilibre (CTL = ATL) ; la bande autour de 0 = zone d'équilibre du canal." },
-      { k: "Fenêtre", v: `le graphe = ${WIN} ; le grand chiffre = aujourd'hui.` },
-    ] },
-  ],
-};
-const FRESH_NEURO_HELP: HelpContent = {
-  title: "Fraîcheur neuromusculaire",
-  blocks: [
-    { type: "p", text: "Fraîcheur muscles / tendons / structures (descentes excentriques, impacts, port de charge) ; récupère lentement (~2 sem) et invisible aux montres." },
-    { type: "formula", lines: ["= CTL neuro − ATL neuro  (τ aigu ~14 j, plus lent)"] },
-    { type: "dl", items: [
-      { k: "Unité", v: "points." },
-      { k: "Lecture", v: "peut rester négatif après de grosses descentes même si VFC et fraîcheur aérobie sont bonnes." },
-      { k: "Repère", v: "ligne 0 = équilibre (CTL = ATL) ; la bande autour de 0 = zone d'équilibre du canal." },
-      { k: "Fenêtre", v: `le graphe = ${WIN} ; le grand chiffre = aujourd'hui.` },
-    ] },
-  ],
-};
-
-// Zones colorées (bon ↔ risqué) pour les jauges.
-// TSB bands scale with the athlete's OWN chronic load: "form" reads as a % of CTL, not fixed
-// TrainingPeaks points, so the same TSB is judged relative to how trained you are (−27 means more when
-// CTL is 50 than when it's 150). Falls back to absolute points when CTL is unknown. ACWR stays absolute
-// below — it's already a normalized ratio, so its 0.8–1.3 sweet spot is scale-independent.
-const tsbBandBounds = (ctl: number | null): { lo: number; mid: number; hi: number } => {
-  const c = ctl && ctl > 0 ? ctl : null;
-  return c ? { lo: -0.3 * c, mid: -0.1 * c, hi: 0.1 * c } : { lo: -30, mid: -10, hi: 8 };
-};
-const tsbZones = (ctl: number | null, min: number, max: number): Zone[] => {
-  const { lo, mid, hi } = tsbBandBounds(ctl);
-  return [
-    { from: min, to: lo, color: STATE.rest, label: "surmenage / risque" },
-    { from: lo, to: mid, color: STATE.caution, label: "charge productive" },
-    { from: mid, to: hi, color: STATE.neutral, label: "équilibre" },
-    { from: hi, to: max, color: STATE.ready, label: "frais / affûté" },
-  ];
-};
-const acwrZones = (max: number): Zone[] => [
-  { from: 0, to: 0.8, color: STATE.cool, label: "sous-charge" },
-  { from: 0.8, to: 1.3, color: STATE.ready, label: "zone idéale" },
-  { from: 1.3, to: 1.5, color: STATE.caution, label: "élevé" },
-  { from: 1.5, to: max, color: STATE.rest, label: "risque de blessure" },
-];
-const readyZones: Zone[] = [
-  { from: 0, to: 30, color: STATE.rest, label: "très bas" },
-  { from: 30, to: 50, color: STATE.caution, label: "bas" },
-  { from: 50, to: 70, color: STATE.cautionSoft, label: "modéré" },
-  { from: 70, to: 100, color: STATE.ready, label: "bon" },
-];
 
 function latestRecovery(metrics: DailyMetric[]): DailyMetric | null {
   for (let i = metrics.length - 1; i >= 0; i--) {
@@ -193,38 +54,18 @@ export default async function Dashboard() {
   const { profile, topGoal, metrics, briefing, activities, allActivities, todayPlan } = await getDashboard();
   const latest = latestModel(metrics);
   const rec = latestRecovery(metrics);
-  const todaySoreness = metrics.find((m) => m.local_date === todayLocal())?.soreness ?? null;
-  const avgLoad = avgLoadRecent(allActivities, todayLocal(), 15);
+  const today = todayLocal();
+  const todaySoreness = metrics.find((m) => m.local_date === today)?.soreness ?? null;
+  const avgLoad = avgLoadRecent(allActivities, today, 15);
 
-  const tsb = latest?.tsb ?? null;
-  const acwr = latest?.acwr ?? null;
-  // Gauge range must contain both the value and the CTL-scaled bands (which widen as CTL grows).
-  const tsbBounds = tsbBandBounds(latest?.ctl ?? null);
-  const tsbMin = Math.min(-40, tsbBounds.lo, (tsb ?? 0)) - 8;
-  const tsbMax = Math.max(20, tsbBounds.hi, (tsb ?? 0)) + 8;
-  const acwrMax = Math.max(2, (acwr ?? 0) + 0.1);
-
-  // Trend sparklines + a client-computed monotony (the DB doesn't persist monotony/strain).
-  const ctlSeries = metrics.map((m) => m.ctl);
-  const atlSeries = metrics.map((m) => m.atl);
-  const tsbAerobicSeries = metrics.map((m) => m.tsb_aerobic);
-  const tsbNeuroSeries = metrics.map((m) => m.tsb_neuromuscular);
-  const monoSeries = rollingMonotony(metrics.map((m) => m.daily_load ?? 0));
-  const latestMono = [...monoSeries].reverse().find((v) => v != null) ?? null;
-  const monoColor = latestMono == null ? undefined : latestMono >= 2 ? STATE.rest : latestMono >= 1.5 ? STATE.caution : undefined;
-  // Monotony interpretation bands: 1,5–2 = à surveiller (caution), > 2 = risque (rest, open-ended).
-  // The risk band's lower bound (2) extends the y-domain so it stays visible even when data is ~1,5.
-  const monoZones = [
-    { from: 1.5, to: 2, fill: STATE.caution },
-    { from: 2, to: null, fill: STATE.rest },
-  ];
-
-  // Channel balance bands (±10 % of the channel CTL) + the 0 = équilibre reference line. b is the
-  // half-width; skip the band when CTL is null/0 (no scale to anchor it) but still show the 0 line.
-  const aeroB = 0.1 * (latest?.ctl_aerobic ?? 0);
-  const neuroB = 0.1 * (latest?.ctl_neuromuscular ?? 0);
-  const freshAeroZones = aeroB > 0 ? [{ from: -aeroB, to: aeroB, fill: STATE.neutral }] : undefined;
-  const freshNeuroZones = neuroB > 0 ? [{ from: -neuroB, to: neuroB, fill: STATE.neutral }] : undefined;
+  // Verdict du jour (charge réelle vs cible coach) — LLM-free, dans la voix du coach. Affiché en tête
+  // de la carte coach ; le bouton "débriefer" (ci-dessous) appelle l'IA, lui.
+  const { voice: verdict } = assembleVerdict({
+    hasPlan: todayPlan.hasPlan, target: todayPlan.targetLoad, isRest: todayPlan.isRest,
+    activities: allActivities, avgLoad, today,
+  });
+  // Y a-t-il une séance du jour à débriefer ? (le bouton "Débrief avec {coach}" commente CE jour)
+  const debriefDate = allActivities.some((a) => a.local_date === today) ? today : null;
 
   return (
     <div className="min-h-full overflow-x-hidden bg-page pt-[env(safe-area-inset-top)] font-sans text-stone-900 dark:text-stone-100">
@@ -249,95 +90,16 @@ export default async function Dashboard() {
           </Link>
         </section>
 
-        {/* Le coach prend la parole — entrée centrale vers la discussion */}
-        <CoachHero briefing={briefing} />
+        {/* Le coach prend la parole — verdict du jour en tête, briefing repliable dessous, CTA unique */}
+        <CoachHero briefing={briefing} verdict={verdict} debriefDate={debriefDate} />
 
-        {/* Charge du jour vs. plan du coach — verdict LLM-free (atteint / en dessous / au-dessus) */}
-        <DayProgress
-          activities={allActivities}
-          today={todayLocal()}
-          hasPlan={todayPlan.hasPlan}
-          target={todayPlan.targetLoad}
-          isRest={todayPlan.isRest}
-          avgLoad={avgLoad}
-        />
-
-        {/* Indicateurs clés : chiffres + jauges colorées */}
-        <section className="mb-6 rounded-2xl border border-stone-200 bg-white p-5 dark:border-stone-800 dark:bg-stone-900">
-          <h2 className="mb-4 text-sm font-medium text-stone-700 dark:text-stone-300">Indicateurs clés</h2>
-          <div className="space-y-5">
-            {/* CTL + ATL sur une même ligne (gain de place). Pas de code couleur : magnitudes brutes —
-                le bon/risqué est dans leur rapport (TSB & ACWR, colorés ci-dessous). */}
-            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
-              <div>
-                <div className="flex items-center gap-1.5 text-xs uppercase tracking-wide text-stone-500">
-                  CTL · forme
-                  <HelpButton content={CTL_HELP} />
-                </div>
-                <div className="mt-1 text-2xl font-semibold tabular-nums">{fmt(latest?.ctl, 1)}</div>
-                <SparklineTile values={ctlSeries} color={VIZ.aerobic} unit="pts" window={WIN} />
-              </div>
-              <div>
-                <div className="flex items-center gap-1.5 text-xs uppercase tracking-wide text-stone-500">
-                  ATL · fatigue
-                  <HelpButton content={ATL_HELP} />
-                </div>
-                <div className="mt-1 text-2xl font-semibold tabular-nums">{fmt(latest?.atl, 1)}</div>
-                <SparklineTile values={atlSeries} color={VIZ.neuro} unit="pts" window={WIN} refCurve={ctlSeries} />
-              </div>
-              <div className="col-span-2 sm:col-span-1">
-                <div className="flex items-center gap-1.5 text-xs uppercase tracking-wide text-stone-500">
-                  Monotonie · 7 j
-                  <HelpButton content={MONO_HELP} />
-                </div>
-                <div className="mt-1 text-2xl font-semibold tabular-nums" style={monoColor ? { color: monoColor } : undefined}>{fmt(latestMono, 2)}</div>
-                <SparklineTile values={monoSeries} unit="ratio" window={WIN} decimals={2} className="text-stone-400"
-                  zones={monoZones} />
-              </div>
-            </div>
-            <div className="grid gap-5 sm:grid-cols-3">
-              <Gauge label="TSB · forme" value={tsb} min={tsbMin} max={tsbMax} zones={tsbZones(latest?.ctl ?? null, tsbMin, tsbMax)} help={TSB_HELP} />
-              <Gauge label="ACWR · ratio de charge" value={acwr} min={0} max={acwrMax} zones={acwrZones(acwrMax)} help={ACWR_HELP} />
-              <Gauge label="Disponibilité (Garmin)" value={rec?.training_readiness ?? null} unit="" min={0} max={100} zones={readyZones} help={READY_HELP} />
-            </div>
-
-            {/* Fraîcheur par système : la forme (TSB) se sépare en deux canaux qui récupèrent à des
-                vitesses différentes. Positif = frais, négatif = fatigué. */}
-            <div>
-              <div className="mb-2 text-xs font-medium text-stone-700 dark:text-stone-300">Fraîcheur par système</div>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <div className="flex items-center gap-1.5 text-xs uppercase tracking-wide text-stone-500">
-                    Fraîcheur aérobie
-                    <HelpButton content={FRESH_AERO_HELP} />
-                  </div>
-                  <div className="mt-1 text-2xl font-semibold tabular-nums" style={{ color: VIZ.aerobic }}>
-                    {fmt(latest?.tsb_aerobic, 1)}
-                  </div>
-                  <SparklineTile values={tsbAerobicSeries} color={VIZ.aerobic} unit="pts" window={WIN} refLine={0} zones={freshAeroZones} />
-                </div>
-                <div>
-                  <div className="flex items-center gap-1.5 text-xs uppercase tracking-wide text-stone-500">
-                    Fraîcheur neuromusculaire
-                    <HelpButton content={FRESH_NEURO_HELP} />
-                  </div>
-                  <div className="mt-1 text-2xl font-semibold tabular-nums" style={{ color: VIZ.neuro }}>
-                    {fmt(latest?.tsb_neuromuscular, 1)}
-                  </div>
-                  <SparklineTile values={tsbNeuroSeries} color={VIZ.neuro} unit="pts" window={WIN} refLine={0} zones={freshNeuroZones} />
-                </div>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        {/* Graphiques (cliquables : un clic sur une barre/point ouvre le détail du jour) */}
+        {/* Indicateurs clés — CTL/ATL/TSB interactifs (sélection = scrubber) + indicateurs du jour. */}
         {metrics.length > 1 ? (
           <div className="mb-6">
             <ChartsSection key={`${metrics.length}-${latest?.local_date ?? ""}-${latest?.ctl ?? ""}-${latest?.tsb ?? ""}`} metrics={metrics} activities={allActivities} avgLoad={avgLoad} />
           </div>
         ) : (
-          <p className="mb-6 text-sm text-stone-500">Pas encore assez de jours de données pour les courbes.</p>
+          <p className="mb-6 text-sm text-stone-500">Pas encore assez de jours de données pour les indicateurs.</p>
         )}
 
         {/* Récupération */}
@@ -408,7 +170,7 @@ export default async function Dashboard() {
         </section>
 
         <footer className="mt-8 text-center text-xs text-stone-400">
-          Massif · graphiques sur {DASHBOARD_WINDOW_MONTHS} mois ({metrics.length} jours) · historique complet dans Analyse
+          Massif · indicateurs sur {DASHBOARD_WINDOW_MONTHS} mois ({metrics.length} jours) · historique complet dans Analyse
         </footer>
       </div>
     </div>

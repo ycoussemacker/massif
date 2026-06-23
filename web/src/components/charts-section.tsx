@@ -1,81 +1,103 @@
 "use client";
 
-/** Interactive Forme charts for the dashboard. Dependency-free SVG, minimal style (no y-axis column,
- *  no gridlines — matching the indicator sparklines). The two "Forme" charts (fitness CTL/ATL and TSB)
- *  share ONE fused card with the selected-day detail, a synced cursor AND a synced horizontal scroll.
- *
- *  Two behaviours specific to this card:
- *   • The vertical scale adapts to the VISIBLE window — only the points within the scroll viewport set
- *     max/min, so an off-screen extreme never squashes what you're looking at. (We also only DRAW the
- *     visible slice, so it stays fast no matter how much history is loaded.)
- *   • History loads ON DEMAND only: scroll to the left edge → a loader shows → the previous 2 months
- *     are fetched and prepended (scroll position preserved). Nothing older is fetched otherwise. */
+/** "Indicateurs clés" — the unified dashboard section. CTL / ATL / TSB are interactive charts that keep
+ *  the Forme interaction (synced crosshair + synced horizontal scroll + scroll-to-edge history) AND the
+ *  KPI tile look (thin "mountain-ridge" curve, current/selected score, y-axis min/max). Selecting a day
+ *  is a SCRUBBER: every indicator below (the 3 scores, Monotonie/ACWR/Disponibilité bars, Fraîcheur, and
+ *  the day-detail panel) shows that day's value; with no selection everything shows today — flagged by
+ *  the « (aujourd'hui) » → date label. Desktop: CTL · ATL · TSB side by side. Mobile: CTL+ATL fused, then
+ *  TSB; movement always synchronised. Dependency-free SVG. */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import type { DailyMetric, Activity } from "@/lib/data";
 import { loadOlderForme } from "@/app/actions";
 import { HelpButton, type HelpContent } from "./help";
 import { DayDetailPanel } from "./day-detail-panel";
-import { groupByDateSpanned } from "@/lib/aggregate";
-import { VIZ, STATE, AXIS } from "@/lib/theme";
+import { Gauge, type Zone } from "./charts";
+import { SparklineTile } from "./sparkline";
+import { groupByDateSpanned, rollingMonotony } from "@/lib/aggregate";
+import { fmt } from "@/lib/format";
+import { VIZ, STATE, AXIS, MUTED } from "@/lib/theme";
 
-const LOAD_MONTHS = 2; // months fetched per scroll-to-edge
-
-const FITNESS_HELP: HelpContent = {
-  title: "Forme : fitness (CTL) vs fatigue (ATL)",
-  blocks: [
-    { type: "p", text: "Chaque séance produit une charge en « points » : ~100 = 1 h à l'intensité seuil sur le canal aérobie, auxquels s'ajoute le coût neuromusculaire (descente, port de charge, impact, escalade). CTL et ATL sont deux moyennes mobiles exponentielles de cette charge quotidienne (aérobie + neuro)." },
-    { type: "dl", items: [
-      { k: "CTL (forme)", v: "moyenne lissée sur ~42 jours : ta condition de fond, monte lentement." },
-      { k: "ATL (fatigue)", v: "moyenne lissée sur ~7 jours : ta fatigue récente, réagit vite." },
-    ] },
-    { type: "formula", lines: [
-      "CTL(j) = CTL(j-1) + α·(charge_jour − CTL(j-1))",
-      "α = 1 − e^(−1/42) ≈ 0,023   (ATL : 1/7 ≈ 0,13)",
-    ] },
-    { type: "p", text: "L'échelle verticale s'adapte à ce qui est visible ; fais défiler vers la gauche jusqu'à la butée pour charger l'historique antérieur. Clique un point pour le détail du jour." },
-  ],
-};
-
-const TSB_HELP: HelpContent = {
-  title: "TSB — fraîcheur (forme du jour)",
-  blocks: [
-    { type: "p", text: "Le TSB (Training Stress Balance) mesure ta fraîcheur : l'écart entre ta forme de fond et ta fatigue récente." },
-    { type: "formula", lines: ["TSB = CTL − ATL   (en points)"] },
-    { type: "dl", items: [
-      { k: "> +10% CTL", v: "frais / affûté — idéal juste avant une course." },
-      { k: "−10% à +10%", v: "équilibre." },
-      { k: "−30% à −10%", v: "fatigue productive — normal en bloc d'entraînement." },
-      { k: "< −30% CTL", v: "surcharge / risque de blessure (bande rouge)." },
-    ] },
-    { type: "p", text: "Les seuils s'adaptent à ta charge chronique (CTL) — la même fatigue « pèse » plus quand tu es peu entraîné. À CTL 85, la zone productive va de ≈ −9 à −25 pts ; à CTL 150, de ≈ −15 à −45." },
-  ],
-};
-
-const H = 150;
-const PX_PER_DAY = 20;
-const plotWidth = (n: number) => Math.max(620, n * PX_PER_DAY);
+const H = 112;
+const PX_PER_DAY = 12;
+const LOAD_MONTHS = 2;
+const plotWidth = (n: number) => n * PX_PER_DAY;
 const MONTHS_FR = ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc."];
-// Abscissa label for a month boundary — month name, plus the 2-digit year each January.
-const monthLabel = (iso: string) => {
-  const m = Number(iso.slice(5, 7));
-  return MONTHS_FR[m - 1] + (m === 1 ? ` ${iso.slice(2, 4)}` : "");
-};
+const monthLabel = (iso: string) => MONTHS_FR[Number(iso.slice(5, 7)) - 1] + (iso.slice(5, 7) === "01" ? ` ${iso.slice(2, 4)}` : "");
+const shortDate = (iso: string) => new Date(iso + "T00:00:00").toLocaleDateString("fr-FR", { day: "numeric", month: "short" });
 
-const Dot = ({ color, text }: { color: string; text: string }) => (
-  <span className="flex items-center gap-1.5 text-xs text-stone-500 dark:text-stone-400">
-    <span className="inline-block h-2 w-2 rounded-full" style={{ background: color }} />{text}
-  </span>
-);
+// ── help popovers ────────────────────────────────────────────────────────────────────────────────
+const CTL_HELP: HelpContent = { title: "CTL · forme", blocks: [
+  { type: "p", text: "Ta forme de fond (« fitness ») : la charge d'entraînement moyenne lissée sur ~42 jours. Monte lentement, redescend au repos." },
+  { type: "formula", lines: ["CTL = moyenne expo ~42 j de la charge quotidienne"] },
+  { type: "dl", items: [
+    { k: "Unité", v: "points de charge (≈ TSS ; 100 pts ≈ 1 h à intensité seuil)." },
+    { k: "Lecture", v: "plus haut = plus en forme ; c'est la tendance qui compte." },
+    { k: "Sélection", v: "clique un jour → tous les indicateurs passent sur ce jour ; sinon = aujourd'hui." },
+  ] } ] };
+const ATL_HELP: HelpContent = { title: "ATL · fatigue", blocks: [
+  { type: "p", text: "Ta fatigue récente : la même charge lissée sur ~7 jours. Monte vite, redescend en quelques jours." },
+  { type: "formula", lines: ["ATL = moyenne expo ~7 j de la charge quotidienne"] },
+  { type: "dl", items: [
+    { k: "Unité", v: "points de charge (même échelle que le CTL)." },
+    { k: "Repère", v: "la courbe claire en fond = ton CTL ; ATL au-dessus = tu accumules de la fatigue, en-dessous = tu récupères." },
+  ] } ] };
+const TSB_HELP: HelpContent = { title: "TSB · forme (fraîcheur)", blocks: [
+  { type: "p", text: "Ta fraîcheur : l'écart entre ta forme de fond et ta fatigue récente." },
+  { type: "formula", lines: ["TSB = CTL − ATL   (en points)"] },
+  { type: "dl", items: [
+    { k: "Lecture", v: "les seuils s'adaptent au CTL — frais > +10 % · équilibre ±10 % · fatigue productive −30 % à −10 % · surcharge < −30 %." },
+    { k: "Barres", v: "vert = frais · ambre = fatigue productive · rouge = surcharge." },
+  ] } ] };
+const MONO_HELP: HelpContent = { title: "Monotonie · 7 j", blocks: [
+  { type: "p", text: "Mesure si l'entraînement est trop uniforme (toujours pareil, sans contraste facile / dur) → plus de risque à charge égale." },
+  { type: "formula", lines: ["Monotonie = charge moyenne ÷ écart-type (7 j glissants)"] },
+  { type: "dl", items: [{ k: "Lecture", v: "< 1,5 sain · 1,5–2 à surveiller · > 2 risque." }] } ] };
+const ACWR_HELP: HelpContent = { title: "ACWR · ratio de charge", blocks: [
+  { type: "p", text: "Rapport fatigue récente / forme de fond : indique si tu montes en charge trop vite." },
+  { type: "formula", lines: ["ACWR = ATL ÷ CTL"] },
+  { type: "dl", items: [{ k: "Lecture", v: "< 0,8 sous-charge · 0,8–1,3 zone idéale · 1,3–1,5 élevé · > 1,5 risque." }] } ] };
+const READY_HELP: HelpContent = { title: "Disponibilité (Garmin)", blocks: [
+  { type: "p", text: "Score de préparation calculé par la montre Garmin (sommeil, VFC, stress, charge récente)." },
+  { type: "dl", items: [
+    { k: "Unité", v: "0 à 100." },
+    { k: "Lecture", v: "≥ 70 bon · 50–70 modéré · 30–50 bas · < 30 très bas." },
+    { k: "Source", v: "Garmin ; n'inclut PAS la fatigue neuromusculaire (voir Fraîcheur)." },
+  ] } ] };
+const FRESH_AERO_HELP: HelpContent = { title: "Fraîcheur aérobie", blocks: [
+  { type: "p", text: "Fraîcheur du moteur cardiovasculaire ; récupère vite (jours), visible dans la VFC / Body Battery." },
+  { type: "formula", lines: ["= CTL aérobie − ATL aérobie  (τ aigu ~7 j)"] },
+  { type: "dl", items: [{ k: "Repère", v: "ligne 0 = équilibre ; positif = frais, négatif = fatigué." }] } ] };
+const FRESH_NEURO_HELP: HelpContent = { title: "Fraîcheur neuromusculaire", blocks: [
+  { type: "p", text: "Fraîcheur muscles / tendons / structures (descentes, impacts, port de charge) ; récupère lentement (~2 sem), invisible aux montres." },
+  { type: "formula", lines: ["= CTL neuro − ATL neuro  (τ aigu ~14 j, plus lent)"] },
+  { type: "dl", items: [{ k: "Repère", v: "ligne 0 = équilibre ; peut rester négatif après de grosses descentes même si la VFC est bonne." }] } ] };
+
+// ── gauge zones (selected-day bars) ────────────────────────────────────────────────────────────────
+const monoZones = (max: number): Zone[] => [
+  { from: 0, to: 1.5, color: STATE.ready, label: "sain" },
+  { from: 1.5, to: 2, color: STATE.caution, label: "à surveiller" },
+  { from: 2, to: max, color: STATE.rest, label: "risque" },
+];
+const acwrZones = (max: number): Zone[] => [
+  { from: 0, to: 0.8, color: STATE.cool, label: "sous-charge" },
+  { from: 0.8, to: 1.3, color: STATE.ready, label: "zone idéale" },
+  { from: 1.3, to: 1.5, color: STATE.caution, label: "élevé" },
+  { from: 1.5, to: max, color: STATE.rest, label: "risque de blessure" },
+];
+const readyZones: Zone[] = [
+  { from: 0, to: 30, color: STATE.rest, label: "très bas" },
+  { from: 30, to: 50, color: STATE.caution, label: "bas" },
+  { from: 50, to: 70, color: STATE.cautionSoft, label: "modéré" },
+  { from: 70, to: 100, color: STATE.ready, label: "bon" },
+];
 
 type Vis = { lo: number; hi: number };
 type RegisterScroll = (el: HTMLDivElement, onScroll: () => void) => () => void;
 
-/** Horizontal-scroll sync for sibling charts. Mutable state (the element set + a re-entrancy lock)
- *  lives in refs touched only inside callbacks — never during render — so it's compiler-clean. */
+/** Horizontal-scroll sync for sibling charts (mutable state in refs, touched only in callbacks). */
 function useScrollSync(): { register: RegisterScroll; adjustAll: (dx: number) => void } {
-  // Lazily create the Set INSIDE the callbacks (not in the useRef initializer) so the compiler doesn't
-  // treat it — and the DOM nodes reachable from it — as render-frozen / immutable.
   const elsRef = useRef<Set<HTMLDivElement> | null>(null);
   const lock = useRef(false);
   const register = useCallback<RegisterScroll>((el, onScroll) => {
@@ -102,16 +124,28 @@ function useScrollSync(): { register: RegisterScroll; adjustAll: (dx: number) =>
   return { register, adjustAll };
 }
 
-/** Shared interactive shell. Controlled selection (synced crosshair) + synced scroll (via `register`)
- *  + visible-window scale (children/renderSelection receive the visible index range) + a
- *  scroll-to-left-edge callback for on-demand history. */
+/** Viewport-width watcher → lets us render the desktop (3-up) vs mobile (fused) chart set, never both. */
+function useIsNarrow(query = "(max-width: 1023px)"): boolean {
+  const [narrow, setNarrow] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia(query);
+    const on = () => setNarrow(mq.matches);
+    on();
+    mq.addEventListener("change", on);
+    return () => mq.removeEventListener("change", on);
+  }, [query]);
+  return narrow;
+}
+
+/** Shared interactive shell: KPI header (label + help + score) over an interactive plot with a synced
+ *  crosshair, visible-window scale, synced scroll and scroll-to-left-edge history. */
 function InteractiveChart({
-  label, legend, help, unit, metrics, selected, onSelect, children, renderSelection, axis,
-  bare = false, register, onReachStart, loadingOlder = false,
+  label, help, score, unit, metrics, selected, onSelect, children, renderSelection, axis,
+  register, onReachStart, loadingOlder = false,
 }: {
-  label: string;
-  legend?: React.ReactNode;
+  label: React.ReactNode;
   help?: HelpContent;
+  score: React.ReactNode;
   unit: string;
   metrics: DailyMetric[];
   selected: string | null;
@@ -119,7 +153,6 @@ function InteractiveChart({
   children: (vis: Vis) => React.ReactNode;
   renderSelection?: (i: number, vis: Vis) => React.ReactNode;
   axis: (vis: Vis) => { min: number; max: number };
-  bare?: boolean;
   register: RegisterScroll;
   onReachStart?: () => void;
   loadingOlder?: boolean;
@@ -136,9 +169,6 @@ function InteractiveChart({
   const pick = (i: number) => onSelect(dates[i] === selected ? null : dates[i]);
 
   const [vis, setVis] = useState<Vis>({ lo: 0, hi: Math.max(0, n - 1) });
-
-  // Latest geometry + callback, read by the (mount-only) scroll listener so it stays correct after the
-  // series grows on a prepend without re-binding (which would re-trigger the scroll-to-newest).
   const paramsRef = useRef({ n, w, slotW, onReachStart });
   useEffect(() => { paramsRef.current = { n, w, slotW, onReachStart }; });
 
@@ -168,34 +198,31 @@ function InteractiveChart({
     return () => { cleanup(); cancelAnimationFrame(raf); };
   }, [register]);
 
-  // Keep the selected column in view when the cursor moves (sync propagates to grouped siblings).
   useEffect(() => {
     if (sel < 0) return;
     const el = scrollRef.current;
     if (!el) return;
     const x = centerOf(sel);
-    const pad = 48;
+    const pad = 40;
     if (x < el.scrollLeft + pad) el.scrollLeft = x - pad;
     else if (x > el.scrollLeft + el.clientWidth - pad) el.scrollLeft = x - el.clientWidth + pad;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected]);
 
-  const ax = axis(vis); // ordinate scale for the CURRENT visible window
+  const ax = axis(vis);
   const monthTicks = dates.flatMap((d, i) => (d.slice(8, 10) === "01" ? [{ i, x: leftOf(i), label: monthLabel(d) }] : []));
 
   return (
-    <div className={bare ? "min-w-0" : "min-w-0 rounded-xl border border-stone-200 bg-white p-4 dark:border-stone-800 dark:bg-stone-900"}>
-      <div className="mb-2 flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
-        <h3 className="flex items-center gap-1.5 text-sm font-medium text-stone-700 dark:text-stone-300">
-          {label}
-          {help && <HelpButton content={help} />}
-        </h3>
-        {legend}
+    <div className="min-w-0">
+      <div className="mb-1.5">
+        <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-stone-500 dark:text-stone-400">
+          {label}{help && <HelpButton content={help} />}
+        </div>
+        <div className="mt-0.5">{score}</div>
       </div>
-      <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-2">
-        {/* Ordinate values — reflect the VISIBLE window's scale (update as you scroll/rescale). */}
-        <div className="flex w-9 flex-col justify-between py-0.5 text-right text-[10px] tabular-nums text-stone-400" style={{ height: H }}>
-          <span>{Math.round(ax.max)}</span><span>{Math.round((ax.max + ax.min) / 2)}</span><span>{Math.round(ax.min)}</span>
+      <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-1.5">
+        <div className="flex w-7 flex-col justify-between py-0.5 text-right text-[10px] tabular-nums text-stone-400" style={{ height: H }}>
+          <span>{Math.round(ax.max)}</span><span>{Math.round(ax.min)}</span>
         </div>
         <div className="relative">
           {loadingOlder && (
@@ -227,7 +254,6 @@ function InteractiveChart({
                   ))}
                 </g>
               </svg>
-              {/* Abscissa — key dates (month boundaries), scrolling with the plot. */}
               <div className="relative h-3.5" style={{ width: w }}>
                 {monthTicks.map((t) => (
                   <span key={t.i} className="absolute top-0 whitespace-nowrap text-[10px] tabular-nums text-stone-400" style={{ left: t.x }}>{t.label}</span>
@@ -237,116 +263,38 @@ function InteractiveChart({
           </div>
         </div>
       </div>
-      <div className="mt-1 pl-9 text-center text-[10px] text-stone-400">{unit}</div>
+      <div className="mt-1 pl-[34px] text-[10px] text-stone-400">{unit}</div>
     </div>
   );
 }
 
-type ChartProps = {
-  metrics: DailyMetric[];
-  selected: string | null;
-  onSelect: (date: string | null) => void;
-  bare?: boolean;
-  register: RegisterScroll;
-  onReachStart?: () => void;
-  loadingOlder?: boolean;
-};
+const fmtScore = (v: number | null | undefined, color?: string) => (
+  <div className="text-2xl font-semibold leading-none tabular-nums" style={color ? { color } : undefined}>{fmt(v, 1)}</div>
+);
 
-function FitnessChart(props: ChartProps) {
-  const { metrics } = props;
-  const w = plotWidth(metrics.length);
-  const n = metrics.length;
-  const ctl = metrics.map((m) => m.ctl);
-  const atl = metrics.map((m) => m.atl);
+// thin "mountain-ridge" line over the visible window, shared-scale, with optional faint reference curve
+function lineChart(
+  series: { vals: (number | null)[]; color: string }[], refVals: (number | null)[] | null, n: number, w: number,
+) {
   const cx = (i: number) => ((i + 0.5) / n) * w;
   const scaleFor = (vis: Vis) => {
     const lo = Math.max(0, vis.lo - 1), hi = Math.min(n - 1, vis.hi + 1);
     let mx = 1;
-    for (let i = lo; i <= hi; i++) { const c = ctl[i], a = atl[i]; if (c != null) mx = Math.max(mx, c); if (a != null) mx = Math.max(mx, a); }
+    for (let i = lo; i <= hi; i++) {
+      for (const s of series) { const v = s.vals[i]; if (v != null) mx = Math.max(mx, v); }
+      if (refVals) { const r = refVals[i]; if (r != null) mx = Math.max(mx, r); }
+    }
     return { lo, hi, max: mx * 1.1 };
   };
-  const lineOf = (vals: (number | null)[], lo: number, hi: number, yOf: (v: number) => number) => {
+  const poly = (vals: (number | null)[], lo: number, hi: number, yOf: (v: number) => number) => {
     const pts: string[] = [];
     for (let i = lo; i <= hi; i++) { const v = vals[i]; if (v != null) pts.push(`${cx(i).toFixed(1)},${yOf(v).toFixed(1)}`); }
     return pts.join(" ");
   };
-  return (
-    <InteractiveChart
-      label="Forme — fitness vs fatigue" unit="points de charge" help={FITNESS_HELP}
-      bare={props.bare} register={props.register} onReachStart={props.onReachStart} loadingOlder={props.loadingOlder}
-      metrics={metrics} selected={props.selected} onSelect={props.onSelect}
-      axis={(vis) => ({ min: 0, max: scaleFor(vis).max })}
-      legend={<div className="flex gap-3"><Dot color={VIZ.aerobic} text="CTL (forme)" /><Dot color={VIZ.neuro} text="ATL (fatigue)" /></div>}
-      renderSelection={(i, vis) => {
-        const { max } = scaleFor(vis);
-        const yOf = (v: number) => H - (v / max) * H;
-        return (
-          <>
-            {ctl[i] != null && <circle cx={cx(i)} cy={yOf(ctl[i]!)} r={3} fill={VIZ.aerobic} />}
-            {atl[i] != null && <circle cx={cx(i)} cy={yOf(atl[i]!)} r={3} fill={VIZ.neuro} />}
-          </>
-        );
-      }}
-    >
-      {(vis) => {
-        const { lo, hi, max } = scaleFor(vis);
-        const yOf = (v: number) => H - (v / max) * H;
-        return (
-          <>
-            <polyline points={lineOf(ctl, lo, hi, yOf)} fill="none" stroke={VIZ.aerobic} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
-            <polyline points={lineOf(atl, lo, hi, yOf)} fill="none" stroke={VIZ.neuro} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
-          </>
-        );
-      }}
-    </InteractiveChart>
-  );
+  return { cx, scaleFor, poly };
 }
 
-function FormChart(props: ChartProps) {
-  const { metrics } = props;
-  const w = plotWidth(metrics.length);
-  const n = metrics.length;
-  const tsb = metrics.map((m) => m.tsb ?? 0);
-  const bw = (w / Math.max(1, n)) * 0.7;
-  const scaleFor = (vis: Vis) => {
-    const lo = Math.max(0, vis.lo - 1), hi = Math.min(n - 1, vis.hi + 1);
-    let mx = 15, mn = -30;
-    for (let i = lo; i <= hi; i++) { mx = Math.max(mx, tsb[i]); mn = Math.min(mn, tsb[i]); }
-    return { lo, hi, max: mx, min: mn };
-  };
-  return (
-    <InteractiveChart
-      label="Forme (TSB) — frais vs fatigué" unit="points (vert = frais · rouge = fatigue)" help={TSB_HELP}
-      bare={props.bare} register={props.register} onReachStart={props.onReachStart} loadingOlder={props.loadingOlder}
-      metrics={metrics} selected={props.selected} onSelect={props.onSelect}
-      axis={(vis) => { const s = scaleFor(vis); return { min: s.min, max: s.max }; }}
-    >
-      {(vis) => {
-        const { lo, hi, max, min } = scaleFor(vis);
-        const span = max - min || 1;
-        const yOf = (v: number) => H - ((v - min) / span) * H;
-        return (
-          <>
-            <rect x={0} y={yOf(-30)} width={w} height={H - yOf(-30)} fill={STATE.rest} opacity={0.07} />
-            <rect x={0} y={yOf(10)} width={w} height={yOf(-10) - yOf(10)} fill={STATE.ready} opacity={0.08} />
-            <line x1={0} y1={yOf(0)} x2={w} y2={yOf(0)} stroke={AXIS} strokeWidth={1} strokeDasharray="3 3" />
-            {Array.from({ length: Math.max(0, hi - lo + 1) }, (_, k) => lo + k).map((i) => {
-              const v = tsb[i];
-              const x = ((i + 0.5) / n) * w - bw / 2;
-              const y = yOf(Math.max(v, 0));
-              const h = Math.abs(yOf(v) - yOf(0));
-              return <rect key={i} x={x} y={y} width={bw} height={Math.max(0.5, h)} rx={1}
-                fill={v >= 0 ? STATE.ready : v > -30 ? STATE.caution : STATE.rest} opacity={0.9} />;
-            })}
-          </>
-        );
-      }}
-    </InteractiveChart>
-  );
-}
-
-/** Dashboard "Forme" card — fused CTL/ATL + TSB + day detail, synced cursor + synced scroll, with
- *  on-demand history (scroll to the left edge loads the previous months, position preserved). */
+// ── the dashboard section ──────────────────────────────────────────────────────────────────────────
 export function ChartsSection({
   metrics: initialMetrics, activities: initialActivities, avgLoad,
 }: {
@@ -360,13 +308,25 @@ export function ChartsSection({
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [reachedFloor, setReachedFloor] = useState(false);
   const { register, adjustAll } = useScrollSync();
-  const busyRef = useRef(false);     // synchronous guard (two synced charts fire in the same tick)
-  const pendingPrepend = useRef(0);   // days prepended, awaiting scroll-position preservation
+  const busyRef = useRef(false);
+  const pendingPrepend = useRef(0);
+  const narrow = useIsNarrow();
 
   const activitiesByDate = useMemo(() => groupByDateSpanned(activities), [activities]);
-  const selMetric = selected ? metrics.find((m) => m.local_date === selected) ?? null : null;
-  // A server refresh (new data) remounts this island via its `key` in page.tsx → state resets to the
-  // fresh 2-month window. No prop→state sync effect needed.
+  const monoSeries = useMemo(() => rollingMonotony(metrics.map((m) => m.daily_load ?? 0)), [metrics]);
+
+  // The day every indicator reflects: the selected day, else the latest day that has a computed model.
+  const latestIdx = useMemo(() => {
+    for (let i = metrics.length - 1; i >= 0; i--) if (metrics[i].ctl != null) return i;
+    return metrics.length - 1;
+  }, [metrics]);
+  const latestDate = metrics[latestIdx]?.local_date ?? null;
+  const selIdx = selected ? metrics.findIndex((m) => m.local_date === selected) : latestIdx;
+  const selM = metrics[selIdx] ?? null;
+  const isToday = !selected || selected === latestDate;
+  const dayLabel = isToday ? "(aujourd'hui)" : shortDate(selected!);
+  const panelDate = selected ?? latestDate;
+  const panelMetric = selM;
 
   const onReachStart = useCallback(() => {
     if (busyRef.current || reachedFloor) return;
@@ -386,8 +346,6 @@ export function ChartsSection({
       .finally(() => { busyRef.current = false; setLoadingOlder(false); });
   }, [reachedFloor, metrics]);
 
-  // Preserve the viewport when older data is prepended (the SVG grows on the left). Every grouped
-  // scroll element gets the same delta, so the resulting scroll/sync events are a no-op.
   useLayoutEffect(() => {
     if (pendingPrepend.current <= 0) return;
     const dx = pendingPrepend.current * PX_PER_DAY;
@@ -395,27 +353,184 @@ export function ChartsSection({
     adjustAll(dx);
   }, [metrics, adjustAll]);
 
+  const shared = { metrics, selected, onSelect: setSelected, register, onReachStart, loadingOlder };
+  const ctlNode = <CtlAtlChart {...shared} kind="ctl" selM={selM} />;
+  const atlNode = <CtlAtlChart {...shared} kind="atl" selM={selM} />;
+  const fusedNode = <CtlAtlChart {...shared} kind="fused" selM={selM} />;
+  const tsbNode = <TsbChart {...shared} selM={selM} />;
+
   return (
     <section className="rounded-2xl border border-stone-200 bg-white p-4 dark:border-stone-800 dark:bg-stone-900 sm:p-5">
-      <div className="mb-3 flex items-center justify-between">
-        <h2 className="text-sm font-medium text-stone-700 dark:text-stone-300">Forme</h2>
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <h2 className="text-sm font-medium text-stone-700 dark:text-stone-300">
+          Indicateurs clés <span className={`ml-1 text-xs font-normal ${isToday ? "text-stone-400" : "text-alpine-600 dark:text-alpine-400"}`}>{dayLabel}</span>
+        </h2>
         <Link href="/analyse" className="inline-flex shrink-0 items-center gap-1 text-sm font-medium text-stone-500 transition-colors hover:text-alpine-700 dark:text-stone-400 dark:hover:text-alpine-300">
           Analyser / comparer →
         </Link>
       </div>
-      <div className="grid gap-4 lg:grid-cols-2">
-        <FitnessChart metrics={metrics} selected={selected} onSelect={setSelected} bare register={register} onReachStart={onReachStart} loadingOlder={loadingOlder} />
-        <FormChart metrics={metrics} selected={selected} onSelect={setSelected} bare register={register} onReachStart={onReachStart} loadingOlder={loadingOlder} />
-      </div>
-      {selected && (
+
+      {/* CTL · ATL · TSB — desktop 3-up / mobile fused + TSB. Selecting a day scrubs every indicator. */}
+      {narrow ? (
+        <div className="space-y-4">{fusedNode}{tsbNode}</div>
+      ) : (
+        <div className="grid gap-5 lg:grid-cols-3">{ctlNode}{atlNode}{tsbNode}</div>
+      )}
+
+      {/* Day detail — activities of the selected (or today's) day, just under the TSB chart. */}
+      {panelDate && (
         <DayDetailPanel
-          date={selected}
-          metric={selMetric}
-          activities={activitiesByDate.get(selected) ?? []}
+          date={panelDate}
+          metric={panelMetric}
+          activities={activitiesByDate.get(panelDate) ?? []}
           avgLoad={avgLoad}
-          onClose={() => setSelected(null)}
+          onClose={selected ? () => setSelected(null) : undefined}
         />
       )}
+
+      {/* Secondary indicators — the SELECTED day's values. */}
+      <div className="mt-6 grid gap-5 sm:grid-cols-3">
+        <Gauge label="Monotonie · 7 j" help={MONO_HELP} value={monoSeries[selIdx] ?? null} min={0}
+          max={Math.max(2.2, (monoSeries[selIdx] ?? 0) + 0.2)} zones={monoZones(Math.max(2.2, (monoSeries[selIdx] ?? 0) + 0.2))} />
+        <Gauge label="ACWR · ratio de charge" help={ACWR_HELP} value={selM?.acwr ?? null} min={0}
+          max={Math.max(2, (selM?.acwr ?? 0) + 0.1)} zones={acwrZones(Math.max(2, (selM?.acwr ?? 0) + 0.1))} />
+        <Gauge label="Disponibilité (Garmin)" help={READY_HELP} value={selM?.training_readiness ?? null} unit="" min={0} max={100} zones={readyZones} />
+      </div>
+
+      {/* Fraîcheur par système — the selected day's per-channel form. */}
+      <h3 className="mt-6 mb-2 text-sm font-medium text-stone-700 dark:text-stone-300">Fraîcheur par système</h3>
+      <div className="grid gap-5 sm:grid-cols-2">
+        <FreshTile label="Fraîcheur aérobie" help={FRESH_AERO_HELP} color={VIZ.aerobic}
+          value={selM?.tsb_aerobic ?? null} series={metrics.map((m) => m.tsb_aerobic)} ctl={selM?.ctl_aerobic ?? null} />
+        <FreshTile label="Fraîcheur neuromusculaire" help={FRESH_NEURO_HELP} color={VIZ.neuro}
+          value={selM?.tsb_neuromuscular ?? null} series={metrics.map((m) => m.tsb_neuromuscular)} ctl={selM?.ctl_neuromuscular ?? null} />
+      </div>
     </section>
+  );
+}
+
+type SharedChart = {
+  metrics: DailyMetric[];
+  selected: string | null;
+  onSelect: (d: string | null) => void;
+  register: RegisterScroll;
+  onReachStart?: () => void;
+  loadingOlder?: boolean;
+  selM: DailyMetric | null;
+};
+
+/** CTL / ATL line chart — or both fused (mobile). Thin ridge line(s); ATL alone shows a faint CTL ref. */
+function CtlAtlChart({ kind, metrics, selected, onSelect, register, onReachStart, loadingOlder, selM }: SharedChart & { kind: "ctl" | "atl" | "fused" }) {
+  const n = metrics.length;
+  const w = plotWidth(n);
+  const ctl = metrics.map((m) => m.ctl);
+  const atl = metrics.map((m) => m.atl);
+  const series = kind === "ctl" ? [{ vals: ctl, color: VIZ.aerobic }]
+    : kind === "atl" ? [{ vals: atl, color: VIZ.neuro }]
+    : [{ vals: ctl, color: VIZ.aerobic }, { vals: atl, color: VIZ.neuro }];
+  const refVals = kind === "atl" ? ctl : null; // faint CTL behind ATL
+  const { cx, scaleFor, poly } = lineChart(series, refVals, n, w);
+
+  const label = kind === "ctl" ? "CTL · forme" : kind === "atl" ? "ATL · fatigue" : "CTL · ATL";
+  const help = kind === "atl" ? ATL_HELP : CTL_HELP;
+  const score = kind === "fused" ? (
+    <div className="flex items-baseline gap-3">
+      <span className="text-2xl font-semibold tabular-nums" style={{ color: VIZ.aerobic }}>{fmt(selM?.ctl, 1)}</span>
+      <span className="text-2xl font-semibold tabular-nums" style={{ color: VIZ.neuro }}>{fmt(selM?.atl, 1)}</span>
+      <span className="text-[11px] text-stone-400">CTL · ATL</span>
+    </div>
+  ) : fmtScore(kind === "ctl" ? selM?.ctl : selM?.atl, kind === "atl" ? VIZ.neuro : undefined);
+
+  return (
+    <InteractiveChart
+      label={label} help={help} score={score} unit="points de charge"
+      metrics={metrics} selected={selected} onSelect={onSelect} register={register} onReachStart={onReachStart} loadingOlder={loadingOlder}
+      axis={(vis) => ({ min: 0, max: scaleFor(vis).max })}
+      renderSelection={(i, vis) => {
+        const { max } = scaleFor(vis);
+        const yOf = (v: number) => H - (v / max) * H;
+        return (<>{series.map((s, k) => (s.vals[i] != null ? <circle key={k} cx={cx(i)} cy={yOf(s.vals[i]!)} r={3} fill={s.color} /> : null))}</>);
+      }}
+    >
+      {(vis) => {
+        const { lo, hi, max } = scaleFor(vis);
+        const yOf = (v: number) => H - (v / max) * H;
+        return (
+          <>
+            {refVals && <polyline points={poly(refVals, lo, hi, yOf)} fill="none" stroke={MUTED} strokeWidth={1} strokeDasharray="3 2" opacity={0.6} strokeLinejoin="round" strokeLinecap="round" />}
+            {series.map((s, k) => (
+              <polyline key={k} points={poly(s.vals, lo, hi, yOf)} fill="none" stroke={s.color} strokeWidth={1.6} strokeLinejoin="round" strokeLinecap="round" />
+            ))}
+          </>
+        );
+      }}
+    </InteractiveChart>
+  );
+}
+
+/** TSB bar chart — frais (green) / fatigue productive (amber) / surcharge (red), with the 0 line + zones. */
+function TsbChart({ metrics, selected, onSelect, register, onReachStart, loadingOlder, selM }: SharedChart) {
+  const n = metrics.length;
+  const w = plotWidth(n);
+  const tsb = metrics.map((m) => m.tsb ?? 0);
+  const bw = (w / Math.max(1, n)) * 0.66;
+  const scaleFor = (vis: Vis) => {
+    const lo = Math.max(0, vis.lo - 1), hi = Math.min(n - 1, vis.hi + 1);
+    let mx = 12, mn = -30;
+    for (let i = lo; i <= hi; i++) { mx = Math.max(mx, tsb[i]); mn = Math.min(mn, tsb[i]); }
+    return { lo, hi, max: mx, min: mn };
+  };
+  // Score colour: CTL-relative bands (frais > +10% CTL · productive > −30% · else surcharge).
+  const v = selM?.tsb ?? null;
+  const c = selM?.ctl ?? null;
+  const scoreColor = v == null ? undefined
+    : c && v >= 0.1 * c ? STATE.ready
+    : c && v >= -0.3 * c ? STATE.caution
+    : v >= 0 ? STATE.ready : STATE.caution;
+
+  return (
+    <InteractiveChart
+      label="TSB · forme" help={TSB_HELP} score={fmtScore(v, scoreColor ?? STATE.rest)} unit="points · vert = frais · rouge = fatigue"
+      metrics={metrics} selected={selected} onSelect={onSelect} register={register} onReachStart={onReachStart} loadingOlder={loadingOlder}
+      axis={(vis) => { const s = scaleFor(vis); return { min: s.min, max: s.max }; }}
+    >
+      {(vis) => {
+        const { lo, hi, max, min } = scaleFor(vis);
+        const span = max - min || 1;
+        const yOf = (val: number) => H - ((val - min) / span) * H;
+        return (
+          <>
+            <rect x={0} y={yOf(-30)} width={w} height={H - yOf(-30)} fill={STATE.rest} opacity={0.07} />
+            <rect x={0} y={yOf(10)} width={w} height={yOf(-10) - yOf(10)} fill={STATE.ready} opacity={0.08} />
+            <line x1={0} y1={yOf(0)} x2={w} y2={yOf(0)} stroke={AXIS} strokeWidth={1} strokeDasharray="3 3" />
+            {Array.from({ length: Math.max(0, hi - lo + 1) }, (_, k) => lo + k).map((i) => {
+              const val = tsb[i];
+              const x = ((i + 0.5) / n) * w - bw / 2;
+              const y = yOf(Math.max(val, 0));
+              const h = Math.abs(yOf(val) - yOf(0));
+              return <rect key={i} x={x} y={y} width={bw} height={Math.max(0.5, h)} rx={1}
+                fill={val >= 0 ? STATE.ready : val > -30 ? STATE.caution : STATE.rest} opacity={0.9} />;
+            })}
+          </>
+        );
+      }}
+    </InteractiveChart>
+  );
+}
+
+/** Per-channel freshness tile — selected-day value as the score + the full-series sparkline (0-line). */
+function FreshTile({ label, help, color, value, series, ctl }: {
+  label: string; help: HelpContent; color: string; value: number | null; series: (number | null)[]; ctl: number | null;
+}) {
+  const b = ctl ? 0.1 * ctl : 0;
+  return (
+    <div className="min-w-0">
+      <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-stone-500 dark:text-stone-400">
+        {label}<HelpButton content={help} />
+      </div>
+      <div className="mt-0.5 text-2xl font-semibold tabular-nums" style={{ color }}>{fmt(value, 1)}</div>
+      <SparklineTile values={series} color={color} unit="pts" window="2 mois" decimals={1}
+        refLine={0} zones={b > 0 ? [{ from: -b, to: b, fill: STATE.neutral }] : undefined} />
+    </div>
   );
 }
