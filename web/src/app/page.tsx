@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { Suspense } from "react";
 import { getDashboard, latestModel, DASHBOARD_WINDOW_MONTHS, type DailyMetric } from "@/lib/data";
 import { ChartsSection } from "@/components/charts-section";
 import { ActivityCard, ActivityRow, ActivityTableHead } from "@/components/activity-row";
@@ -14,6 +15,7 @@ import { getSports } from "@/lib/activities";
 import { todayLocal } from "@/lib/coach-context";
 import { fmt, avgLoadRecent } from "@/lib/format";
 import { STATE } from "@/lib/theme";
+import { DashboardBodySkeleton } from "@/components/dashboard-skeleton";
 
 export const dynamic = "force-dynamic"; // toujours refléter le dernier sync / run du coach
 
@@ -71,7 +73,20 @@ const cBattery = (high: number | null) => (high == null ? undefined : high >= 70
 const linkCls =
   "inline-flex shrink-0 items-center gap-1 text-sm font-medium text-stone-500 transition-colors hover:text-alpine-700 dark:text-stone-400 dark:hover:text-alpine-300";
 
-export default async function Dashboard() {
+export default function Dashboard() {
+  return (
+    <div className="min-h-full overflow-x-hidden bg-page pt-[env(safe-area-inset-top)] font-sans text-stone-900 dark:text-stone-100">
+      <div className="mx-auto w-full max-w-5xl px-4 pt-6 pb-[calc(4rem+env(safe-area-inset-bottom))] sm:px-6 sm:pt-8 md:pb-8">
+        <Nav current="dashboard" />
+        <Suspense fallback={<DashboardBodySkeleton />}>
+          <DashboardBody />
+        </Suspense>
+      </div>
+    </div>
+  );
+}
+
+async function DashboardBody() {
   const [{ profile, topGoal, metrics, briefing, activities, allActivities, todayPlan, projection, weekPlan }, sports] = await Promise.all([
     getDashboard(),
     getSports(),
@@ -93,10 +108,7 @@ export default async function Dashboard() {
   const todayActivities = allActivities.filter((a) => a.local_date === today);
 
   return (
-    <div className="min-h-full overflow-x-hidden bg-page pt-[env(safe-area-inset-top)] font-sans text-stone-900 dark:text-stone-100">
-      <div className="mx-auto w-full max-w-5xl px-4 pt-6 pb-[calc(4rem+env(safe-area-inset-bottom))] sm:px-6 sm:pt-8 md:pb-8">
-        <Nav current="dashboard" />
-
+    <>
         {/* Ton plan d'entraînement — objectif (1 ligne) + 7 jours à venir + actions. La saisie d'une
             activité prévue passe par une modale (bouton primaire) plutôt qu'un champ toujours ouvert :
             le formulaire repart vide à chaque ouverture et se ferme à l'enregistrement, ce qui évite de
@@ -243,7 +255,6 @@ export default async function Dashboard() {
         <footer className="mt-8 text-center text-xs text-stone-400">
           Massif · indicateurs sur {DASHBOARD_WINDOW_MONTHS} mois ({metrics.length} jours) · historique complet dans Analyse
         </footer>
-      </div>
-    </div>
+    </>
   );
 }
