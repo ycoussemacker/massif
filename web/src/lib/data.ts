@@ -10,8 +10,10 @@ function monthsAgo(iso: string, n: number): string {
   return d.toISOString().slice(0, 10);
 }
 
-/** Rolling window (in months) shown by the dashboard charts. Deeper history lives in /analyse. */
-export const DASHBOARD_WINDOW_MONTHS = 2;
+/** Rolling window (in months) shown by the dashboard charts. Kept tight (1 month) so the homepage stays
+ *  light to load; deeper history lives in /analyse. (CTL/ATL/TSB are precomputed server-side over full
+ *  history in the rollup, so a shorter display window doesn't change their values — only the chart span.) */
+export const DASHBOARD_WINDOW_MONTHS = 1;
 
 export type DailyMetric = {
   local_date: string;
@@ -39,6 +41,10 @@ export type DailyMetric = {
   body_battery_low: number | null;
   stress_avg: number | null;
   training_readiness: number | null;
+  // Garmin/Firstbeat acclimation — CONTEXT for reading HR/recovery, NOT readiness or training load.
+  // Often null (only present once trained in heat/altitude); render only when non-null.
+  heat_acclimation_pct: number | null; // 0–100 %, builds when training above ~22 °C
+  altitude_acclimation_m: number | null; // metres, builds when above ~800 m
   soreness: number | null; // optional morning self-report 1 (fresh) – 5 (cooked); neuromuscular ground truth
 };
 
@@ -134,7 +140,7 @@ export type Dashboard = {
   topGoal: GoalHeader | null;
   metrics: DailyMetric[];
   briefing: Briefing | null;
-  activities: Activity[];     // 15 most recent (newest first) — recents table
+  activities: Activity[];     // 3 most recent (newest first) — homepage recents preview
   allActivities: Activity[];  // full charted-window set (oldest first) — feeds the interactive charts
   todayPlan: TodayPlan;       // coach's recommended load for today
 };
@@ -155,8 +161,9 @@ export async function getDashboard(): Promise<Dashboard> {
     // covers but they START before the window/older-chunk boundary, so the per-day panel needs them
     // regardless of the window to project their share onto in-view days (a tiny set; deduped by id below).
     sb.from("activities").select(ACTIVITY_COLS).gt("effective_days", 1).order("started_at", { ascending: true }),
-    // 15 most recent activities (any date) — the recents table.
-    sb.from("activities").select(ACTIVITY_COLS).order("started_at", { ascending: false }).limit(15),
+    // 3 most recent activities (any date) — the homepage recents preview (full list lives in /activites,
+    // reached via the "Voir tout" CTA). Kept tiny so the dashboard stays light.
+    sb.from("activities").select(ACTIVITY_COLS).order("started_at", { ascending: false }).limit(3),
     sb.from("sports").select("id,code,display_name,taxonomy_group,needs_manual_rpe"),
     sb.from("goals").select("title,sport_id,target_date,target_horizon,target_detail")
       .eq("status", "active").order("priority_rank", { ascending: true }).limit(1),

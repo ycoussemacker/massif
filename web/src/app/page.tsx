@@ -22,6 +22,24 @@ function latestRecovery(metrics: DailyMetric[]): DailyMetric | null {
   return null;
 }
 
+/** Most recent acclimation reading in the window. Heat/altitude acclimation is a slow-moving status
+ *  (days–weeks) that Garmin does NOT repopulate every day, so the latest recovery row usually lacks it —
+ *  carry forward the last known value (with its date) instead of requiring it on today's row. */
+function latestAcclimation(
+  metrics: DailyMetric[],
+): { heat: number | null; altitude: number | null; date: string } | null {
+  for (let i = metrics.length - 1; i >= 0; i--) {
+    const m = metrics[i];
+    if (m.heat_acclimation_pct != null || m.altitude_acclimation_m != null)
+      return { heat: m.heat_acclimation_pct, altitude: m.altitude_acclimation_m, date: m.local_date };
+  }
+  return null;
+}
+
+const fmtDayMonth = (iso: string) =>
+  new Intl.DateTimeFormat("fr-FR", { day: "numeric", month: "short", timeZone: "UTC" })
+    .format(new Date(iso + "T00:00:00Z"));
+
 function Tile({ label, value, sub, color }: { label: string; value: string; sub?: string; color?: string }) {
   return (
     <div className="rounded-xl border border-stone-200 bg-white p-4 dark:border-stone-800 dark:bg-stone-900">
@@ -54,6 +72,7 @@ export default async function Dashboard() {
   const { profile, topGoal, metrics, briefing, activities, allActivities, todayPlan } = await getDashboard();
   const latest = latestModel(metrics);
   const rec = latestRecovery(metrics);
+  const acclim = latestAcclimation(metrics); // last known heat/altitude acclimation (carried forward)
   const today = todayLocal();
   const todaySoreness = metrics.find((m) => m.local_date === today)?.soreness ?? null;
   const avgLoad = avgLoadRecent(allActivities, today, 15);
@@ -126,6 +145,27 @@ export default async function Dashboard() {
               <Tile label="Stress" value={fmt(rec.stress_avg)} color={cStress(rec.stress_avg)} sub="/ 100 (bas = mieux)" />
               <Tile label="Disponibilité" value={fmt(rec.training_readiness)} color={cReadiness(rec.training_readiness)} sub="/ 100" />
             </div>
+            {/* Acclimation chaleur/altitude (Firstbeat) — statut LENT (jours–semaines) que Garmin ne
+                repopule pas chaque jour, donc on reporte la dernière valeur connue (avec sa date si ce
+                n'est pas celle du jour). Contexte pour lire la FC/récup, pas un score de forme. Neutre
+                (stone), jamais le code couleur de la disponibilité. Ligne unique, compacte. */}
+            {acclim && (
+              <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-stone-100 pt-3 text-xs text-stone-500 dark:border-stone-800 dark:text-stone-400">
+                <span className="text-stone-400 dark:text-stone-500">
+                  Acclimation{acclim.date !== rec.local_date && ` (au ${fmtDayMonth(acclim.date)})`} :
+                </span>
+                {acclim.heat != null && (
+                  <span title="Acclimatation à la chaleur (Firstbeat) — élevée = mieux protégé par temps chaud. Contexte, pas un indicateur de forme.">
+                    🌡️ <span className="font-medium tabular-nums text-stone-700 dark:text-stone-300">{fmt(acclim.heat, 0)} %</span>
+                  </span>
+                )}
+                {acclim.altitude != null && (
+                  <span title="Acclimatation à l'altitude (Firstbeat), en mètres. Contexte, pas un indicateur de forme.">
+                    🏔️ <span className="font-medium tabular-nums text-stone-700 dark:text-stone-300">{fmt(acclim.altitude, 0)} m</span>
+                  </span>
+                )}
+              </div>
+            )}
           </section>
         )}
 
@@ -166,6 +206,16 @@ export default async function Dashboard() {
                 )}
               </tbody>
             </table>
+          </div>
+
+          {/* Seules les 3 dernières sont chargées ici (accueil léger) — tout le reste dans Activités. */}
+          <div className="mt-4 flex justify-center border-t border-stone-100 pt-4 dark:border-stone-800">
+            <Link
+              href="/activites"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-stone-200 px-4 py-2 text-sm font-medium text-stone-700 transition-colors hover:border-alpine-300 hover:text-alpine-700 dark:border-stone-700 dark:text-stone-200 dark:hover:border-alpine-700 dark:hover:text-alpine-300"
+            >
+              Voir toutes les activités →
+            </Link>
           </div>
         </section>
 

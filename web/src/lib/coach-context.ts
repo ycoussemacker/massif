@@ -74,13 +74,25 @@ function recoveryToday(dm: any[], today: string): Record<string, unknown> {
 
 /** Heat & altitude EXPOSURE over the last 7 days + today's acclimation — context the coach uses to read
  *  HR/recovery, never a load input (docs/research/heat-altitude.md). Mirror of context.ts environment. */
-function environment(acts7: any[], todayRow: any): Record<string, unknown> {
+function environment(acts7: any[], dm: any[]): Record<string, unknown> {
   const temps = acts7.map((a) => a.avg_temp_c).filter((v) => v != null) as number[];
   const alts = acts7.map((a) => a.max_altitude_m).filter((v) => v != null) as number[];
   const timeHighS = acts7.reduce((t, a) => t + Number(a.time_high_altitude_s || 0), 0);
+  // Acclimation is a slow status (days–weeks) Garmin doesn't write every day → carry forward the last
+  // known value across the window, with its date, rather than reading today's (usually empty) row.
+  let heat: number | null = null, alt: number | null = null, asOf: string | null = null;
+  for (let i = dm.length - 1; i >= 0; i--) {
+    if (dm[i].heat_acclimation_pct != null || dm[i].altitude_acclimation_m != null) {
+      heat = dm[i].heat_acclimation_pct ?? null;
+      alt = dm[i].altitude_acclimation_m ?? null;
+      asOf = dm[i].local_date;
+      break;
+    }
+  }
   return {
-    heat_acclimation_pct: todayRow?.heat_acclimation_pct ?? null,
-    altitude_acclimation_m: todayRow?.altitude_acclimation_m ?? null,
+    heat_acclimation_pct: heat,
+    altitude_acclimation_m: alt,
+    acclimation_as_of: asOf, // date of the carried-forward acclimation (may be earlier than today)
     hot_sessions_7d: temps.filter((t) => t >= 22).length, // sessions at/above Garmin's ~22 °C heat threshold
     hottest_temp_c_7d: temps.length ? Math.max(...temps) : null,
     max_altitude_m_7d: alts.length ? Math.max(...alts) : null,
@@ -182,7 +194,7 @@ export async function assembleCoachContext(sb: SupabaseClient): Promise<{ today:
     },
     recovery_today: recoveryToday(dm, today),
     // Heat/altitude EXPOSURE + acclimation — read HR & recovery through this lens; never a load input.
-    environment: environment(acts7, dm.find((d) => d.local_date === today) ?? null),
+    environment: environment(acts7, dm),
     daily_load_21d: dm.map((d) => ({
       date: d.local_date, load: d.daily_load, aerobic: d.daily_aerobic_load, neuro: d.daily_neuromuscular_load,
       by_group: d.load_by_group, dplus: d.vertical_gain_m, dminus: d.vertical_loss_m,

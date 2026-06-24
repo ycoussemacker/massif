@@ -102,6 +102,48 @@ def test_vertical_loss_hysteresis():
     assert strava.vertical_loss_from_altitude([]) == 0.0
 
 
+# ── heat & altitude extraction (docs/research/heat-altitude.md) ───────────────────────────────────
+
+def test_altitude_stats():
+    # max + mean of the stream; time_high = (fraction of samples ≥ ~1500 m) × duration.
+    mx, avg, th = strava.altitude_stats([600, 900, 1500, 1800, 2400, 2000, 1000], duration_s=3600)
+    assert mx == 2400.0
+    assert avg == 1457.1                              # 10200 / 7, rounded to 0.1
+    assert th == round((4 / 7) * 3600)                # 4 of 7 samples ≥ 1500 m
+    assert strava.altitude_stats([], duration_s=3600) == (None, None, None)
+    assert strava.altitude_stats([1000, 1100], duration_s=None)[2] is None  # no duration → no dose
+
+
+_RIDE_MAP = {"Ride": {"id": 1, "code": "cycling", "taxonomy_group": "paced_endurance",
+                      "load_method_ladder": ["tss", "duration_fallback"],
+                      "uses_distance": True, "uses_hr": True, "needs_manual_rpe": False},
+             "unknown": SPORT_MAP["unknown"]}
+
+
+def test_build_row_sets_env_and_altitude_corrects_power_only():
+    act = _summary(sport_type="Ride", type="Ride", average_watts=200, weighted_average_watts=200,
+                   average_temp=31, distance=0.0, average_heartrate=None, max_heartrate=None)
+    flat, _ = strava._build_activity_row(act, _RIDE_MAP, {"ftp_watts": 250})
+    high, _ = strava._build_activity_row(act, _RIDE_MAP, {"ftp_watts": 250},
+                                         alt_stats=(2400.0, 1857.1, 600))
+    assert flat.get("avg_temp_c") == 31               # ambient temp from the summary, always when present
+    assert "avg_altitude_m" not in flat               # altitude fields only set when alt_stats provided
+    assert high["max_altitude_m"] == 2400.0 and high["avg_altitude_m"] == 1857.1
+    assert high["time_high_altitude_s"] == 600
+    assert high["load_method_used"] == "tss"
+    assert high["aerobic_load"] > flat["aerobic_load"]  # altitude lifts the power (tss) load — rec 3
+
+
+def test_build_row_resolves_thresholds_by_date():
+    # A lower FTP recorded as-of the activity date raises the tss load vs the current profile — rec 2.
+    act = _summary(sport_type="Ride", type="Ride", average_watts=200, weighted_average_watts=200,
+                   distance=0.0, average_heartrate=None, max_heartrate=None)
+    cur, _ = strava._build_activity_row(act, _RIDE_MAP, {"ftp_watts": 250})
+    hist, _ = strava._build_activity_row(act, _RIDE_MAP, {"ftp_watts": 250},
+                                         threshold_history=[{"effective_date": "2026-01-01", "ftp_watts": 200}])
+    assert hist["aerobic_load"] > cur["aerobic_load"]   # FTP resolved to 200 as-of the date → higher IF
+
+
 # ── refresh-token source precedence (web OAuth → integration_tokens) over .env ────────────────
 from types import SimpleNamespace
 
