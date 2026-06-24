@@ -56,6 +56,24 @@ def load_threshold_history() -> list[dict]:
         return []
 
 
+def latest_activity_coords() -> tuple[float, float] | None:
+    """(lat, lng) of the most recent GPS activity's Strava start_latlng, or None — the fallback location
+    for the weather forecast when athlete_profile.home_lat/lng isn't set (indoor activities have []/null)."""
+    rows = (client().table("activities").select("raw_payload")
+            .order("started_at", desc=True).limit(25).execute().data)
+    for r in rows:
+        ll = (r.get("raw_payload") or {}).get("start_latlng")
+        if isinstance(ll, list) and len(ll) == 2 and all(isinstance(x, (int, float)) for x in ll):
+            return float(ll[0]), float(ll[1])
+    return None
+
+
+def upsert_weather(rows: list[dict]) -> None:
+    """Upsert daily_weather rows (keyed on local_date), column-scoped to the weather columns only."""
+    if rows:
+        client().table("daily_weather").upsert(rows, on_conflict="local_date").execute()
+
+
 def upsert_load_param(param: str, value: float, source: str = "fitted", n_samples: int | None = None) -> None:
     """Insert/update a personalized load coefficient (keyed on param). fitted_at/updated_at: DB defaults."""
     client().table("athlete_load_params").upsert(

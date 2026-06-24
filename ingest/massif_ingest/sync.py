@@ -187,7 +187,7 @@ def main() -> None:
         print(f"recompute: {recompute_activity_loads()} activities re-scored")
 
     if not args.skip_pull and not args.recompute_loads and not args.calibrate:
-        from . import calibrate, garmin, strava
+        from . import calibrate, garmin, strava, weather
 
         # One provider failing (bad creds, API 4xx/5xx, network blip) must not abort the other
         # pull OR the rollup below — the nightly job stays resilient and always recomputes.
@@ -204,6 +204,14 @@ def main() -> None:
             print(f"garmin: {n} days")
         except Exception as e:
             print(f"garmin: skipped ({type(e).__name__}: {e})")
+
+        # Weather forecast (Open-Meteo) for the athlete's location — the UPCOMING heat the coach reads
+        # acclimation against. Independent of the providers; a failure must not abort the rollup.
+        try:
+            n = weather.sync()
+            print(f"weather: {n} days")
+        except Exception as e:
+            print(f"weather: skipped ({type(e).__name__}: {e})")
 
         # Adaptive calibration (prio 3c): re-fit personalized coefficients from the freshly-updated
         # history. Cheap; only triggers a full re-score when a coefficient actually moved.

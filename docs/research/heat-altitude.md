@@ -163,6 +163,43 @@ rule 8) instruct the coach to use heat/altitude to read **HR and recovery** — 
 - **Personalization** of every coefficient/slope from this athlete's own paired Strava+Garmin history is the
   natural next step (folds into the prio-3c calibration backlog in `MODEL_UPGRADES.md`).
 
+## Follow-up (2026-06-24): prospective context — weather forecast + planned-session altitude
+
+Acclimation is only actionable against an UPCOMING demand. Two additions close that loop so the coach can
+advise *prospectively* (not just diagnose the past):
+
+1. **Daily weather forecast (Open-Meteo, keyless).** `ingest/massif_ingest/weather.py` resolves the
+   athlete's location (`athlete_profile.home_lat/lng`, else the most recent GPS activity's `start_latlng`)
+   and upserts today−1..+7 into `daily_weather` (`temp_min/max_c`, `feels_max_c` = apparent temperature —
+   the better heat-strain proxy, `precip_mm`, `wind_kmh`). Wired into `sync.py` after Garmin (resilient).
+   Both coach context assemblers inject a `weather` block (today..+7, each day flagged `hot` when
+   feels-like ≥ 25 °C). Migration `…0002_daily_weather.sql`. Pure `_normalize` unit-tested.
+2. **Expected altitude on planned sessions/events.** `planned_sessions.expected_altitude_m`
+   (migration `…0003`), surfaced on `declared_events[]` (`planning.ts` mirror) and editable in the event
+   forms (`quick-add-event.tsx` / `event-edit.tsx` → `actions.ts`). Lets the coach anticipate hypoxia on
+   a planned mountain day.
+3. **Prompt rule 8 (d) — ANTICIPATE.** The coach now uses `weather` + `declared_events[].expected_altitude_m`
+   to: prescribe by effort/zone (not HR) on a hot/high day, expect HR drift when acclimation is low, advise
+   timing/hydration, and suggest a gradual acclimation block before a hot/high KEY event (timed close — it
+   fades in ~2-3 weeks). Both `briefing-shared.ts` mirrors.
+
+Data-flow note: weather is fetched by the Python sync only (like Garmin recovery); the web on-demand paths
+READ `daily_weather` from the DB. So `weather` populates on the next `python -m massif_ingest.sync`.
+**UI surfacing (sober, decision-driven).** A pure helper `web/src/lib/weather.ts` drives the display on TWO
+complementary axes so a day reads fully — `weatherIcon`/`weatherLabel` (sky CONDITION from the WMO
+`weather_code`: ☀️🌧️⛈️🌨️…) shown ALONGSIDE `weatherTempBadge` (TEMPERATURE: 🥵 grande chaleur / 🥶 grand
+froid). A stormy heatwave therefore reads as **⛈️🥵**, not just one glyph. `weatherAlerts(row)` returns the
+0–2 notable badges (condition: orage/pluie forte/vent fort + temperature: canicule/grand froid) for the
+homepage. Three placements: (a) **séance detail** — recorded temp/altitude for a realised
+activity ("mesuré"), forecast for a today/future planned one ("prévu"); (b) **homepage** — an alert glyph on
+a day's plan pill ONLY when notable; (c) **calendrier** — a quiet forecast glyph on today/future cells (never
+past). Added `daily_weather.weather_code` (WMO; migration `…0004`) for the icon + storm/snow detection;
+helpers degrade gracefully (fallback icon from precip/wind/temp) when it's null, so the UI works before a
+re-sync backfills it — only "orage" needs the code. Everything neutral `stone`, never the readiness palette.
+
+**Still kept for later (lower priority):** structured goal-race conditions (date + altitude profile + seasonal
+climate) for race-readiness, and an acclimation target/decay model to time blocks precisely.
+
 ## Key sources
 - Lafrenz/Wingo/Ganio/Cureton 2008, *MSSE* — PMID 18461000 (heat CV drift)
 - Montain & Coyle 1992, *J Appl Physiol* — PMID 1447078 (dehydration → HR)
