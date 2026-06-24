@@ -9,7 +9,7 @@ import { personaName } from "@/lib/coach-settings";
 export const dynamic = "force-dynamic"; // refléter le dernier briefing / sync / échange
 
 export default async function CoachPage() {
-  const { timeline, topGoal, settings } = await getConversation();
+  const { timeline, topGoal, settings, windowStart, hasMore } = await getConversation();
   // Nom du coach = celui du persona choisi (Gaston, Génie, Maud…), accordé au genre choisi.
   const coachName = personaName(settings.persona, settings.persona_gender);
 
@@ -46,7 +46,7 @@ export default async function CoachPage() {
         </header>
 
         <div className="min-h-0 flex-1">
-          <CoachChat timeline={timeline} />
+          <CoachChat timeline={timeline} initialWindowStart={windowStart} initialHasMore={hasMore} />
         </div>
       </div>
     </div>

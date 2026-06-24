@@ -13,6 +13,7 @@ import { syncStrava } from "@/lib/strava-sync";
 import { rollupDailyMetrics } from "@/lib/rollup";
 import { generateBriefing, type BriefingResult } from "@/lib/coach-briefing";
 import { postDayVerdictMessage } from "@/lib/day-verdict";
+import { buildTimeline, oldestContentDate, BATCH_DAYS, type TimelineItem } from "@/lib/chat";
 
 /** Load an OLDER window of the Forme history on demand (dashboard infinite-scroll-back). Returns the
  *  `months` of daily_metrics + activities ending the day BEFORE `beforeDate` (the current oldest day
@@ -35,6 +36,33 @@ export async function loadOlderForme(
     listActivities({ from, to, order: "date_asc", limit: 1000 }),
   ]);
   return { metrics: (mm.data ?? []) as DailyMetric[], activities: acts.rows };
+}
+
+/** Load the next OLDER batch of the coach conversation (scroll-to-top in /coach). Steps back from
+ *  `beforeDate` (the oldest LOCAL date currently loaded, exclusive) in BATCH_DAYS-day windows, SKIPPING
+ *  empty windows, and returns the first window that carries content + the new window start + whether the
+ *  start of history is reached (so the client can stop). Never pre-fetched. Mirrors loadOlderForme's
+ *  on-demand shape; the timeline build is shared with getConversation via buildTimeline. */
+export async function loadOlderConversation(
+  beforeDate: string,
+): Promise<{ items: TimelineItem[]; windowStart: string; done: boolean }> {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(beforeDate)) return { items: [], windowStart: beforeDate, done: true };
+  const sb = await createServiceClient();
+  const today = todayLocal();
+  const oldest = await oldestContentDate(sb);
+  if (!oldest || oldest >= beforeDate) return { items: [], windowStart: beforeDate, done: true };
+
+  let to = dateMinusDays(beforeDate, 1);
+  let from = dateMinusDays(beforeDate, BATCH_DAYS);
+  // Walk back in fixed windows until one has content (or we hit the start of history). The clamp keeps
+  // the final batch from over-reaching past the oldest stored day.
+  while (true) {
+    if (from < oldest) from = oldest;
+    const items = await buildTimeline(sb, today, from, to);
+    if (items.length || from <= oldest) return { items, windowStart: from, done: from <= oldest };
+    to = dateMinusDays(from, 1);
+    from = dateMinusDays(from, BATCH_DAYS);
+  }
 }
 
 /** Log a post-session RPE (1–10) for an activity and recompute its load via session_rpe.
