@@ -13,7 +13,7 @@ import { StravaLink } from "./brand";
  *  the whole row a link to the Activités page filtered on this day + sport (→ affordance). Fits one line
  *  (the title truncates); no card, no nested controls — the compact read used inside the dashboard. */
 export function ActivityLine({ a }: { a: Activity }) {
-  const href = `/activites?from=${a.local_date}&to=${a.local_date}${a.sport_id ? `&sport=${a.sport_id}` : ""}`;
+  const href = `/seance/${a.id}`;
   return (
     <Link
       href={href}
@@ -50,11 +50,11 @@ export function ActivityCard({ a, avgLoad }: { a: Activity; avgLoad?: number | n
   return (
     <div className="rounded-xl border border-stone-200 p-3 dark:border-stone-800">
       <div className="flex items-start justify-between gap-2">
-        <span className="min-w-0 font-medium">
+        <Link href={`/seance/${a.id}`} className="group min-w-0 font-medium transition-colors hover:text-alpine-700 dark:hover:text-alpine-300">
           <span className="mr-1.5" aria-hidden>{sportIcon(a.sport_code)}</span>
           {sportName(a.sport_code, a.sport)}
           <StravaName a={a} />
-        </span>
+        </Link>
         <ActivityDate a={a} className="shrink-0 text-xs text-stone-400" />
       </div>
       {a.spanInfo && (
@@ -116,7 +116,7 @@ export function ActivityRow({ a, avgLoad }: { a: Activity; avgLoad?: number | nu
     <tr className="border-b border-stone-100 last:border-0 dark:border-stone-800">
       <td className="py-2 pr-3 align-top"><ActivityDate a={a} className="text-stone-500" /></td>
       <td className="py-2 pr-3">
-        <span className="whitespace-nowrap">
+        <Link href={`/seance/${a.id}`} className="whitespace-nowrap font-medium transition-colors hover:text-alpine-700 dark:hover:text-alpine-300">
           <span className="mr-1.5" aria-hidden>{sportIcon(a.sport_code)}</span>
           {sportName(a.sport_code, a.sport)}
           {a.needs_review && (
@@ -127,7 +127,7 @@ export function ActivityRow({ a, avgLoad }: { a: Activity; avgLoad?: number | nu
               ⚠
             </span>
           )}
-        </span>
+        </Link>
         <StravaName a={a} className="max-w-[16rem]" />
       </td>
       <td className="py-2 pr-3 text-right align-top font-medium tabular-nums" style={accent ? { color: accent } : undefined}>

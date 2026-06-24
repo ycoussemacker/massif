@@ -1,8 +1,10 @@
 /** Assemble the ONE unified training picture from the DB — shared by the briefing run and Q&A. */
 import {
-  ATHLETE_TZ, todayLocal, daysBetween, dateMinusDays,
+  ATHLETE_TZ, todayLocal, nowLocal, daysBetween, dateMinusDays,
   loadProfile, loadSports, loadDailyMetrics, loadRecentActivities, loadUpcomingPlanned, loadGoals,
+  loadNeuroAtlDays, loadWeather,
 } from "./db.js";
+import { buildPlanningView, favouriteSports, athleteConstraints } from "./planning.js";
 
 /** Map raw goal rows → the coach's compact, ranked goal view (sport code + days-to / fuzzy horizon). */
 export function mapGoals(goals: any[], codeById: Map<number, string>, today: string) {
@@ -91,17 +93,37 @@ export interface Picture {
   context: Record<string, unknown>;
 }
 
+/** Upcoming forecast the coach reads heat/acclimation advice against — today..+7, each day flagged `hot`
+ *  (apparent "feels-like" ≥ 25 °C, else dry max ≥ 25). CONTEXT, never a load input. Mirror of
+ *  coach-context.ts weatherView. */
+function weatherView(rows: any[]): any[] {
+  return (rows ?? []).map((r) => {
+    const feels = r.feels_max_c ?? r.temp_max_c;
+    return {
+      date: r.local_date,
+      temp_max_c: r.temp_max_c, temp_min_c: r.temp_min_c, feels_max_c: r.feels_max_c,
+      precip_mm: r.precip_mm, wind_kmh: r.wind_kmh,
+      hot: feels != null && feels >= 25,
+    };
+  });
+}
+
 /** Read profile + 21d of daily metrics + 14d of activities + upcoming plan → one compact picture. */
 export async function assemblePicture(): Promise<Picture> {
   const today = todayLocal();
-  const [profile, sports, dm, goals] = await Promise.all([
-    loadProfile(), loadSports(), loadDailyMetrics(21), loadGoals(),
+  const [profile, sports, dm, goals, neuroAtlDays, weatherRows] = await Promise.all([
+    loadProfile(), loadSports(), loadDailyMetrics(21), loadGoals(), loadNeuroAtlDays(), loadWeather(today),
   ]);
   const acts = await loadRecentActivities(dateMinusDays(today, 14));
   const upcoming = await loadUpcomingPlanned(today);
 
   const codeById = new Map<number, string>(sports.map((s) => [s.id, s.code]));
   const mappedGoals = mapGoals(goals, codeById, today);
+  // Declared events (with their persisted load estimate + projected J-1 form), the coach's prior plan,
+  // and any chat-accepted PINNED sessions (fixed anchors the coach plans around).
+  const { declared_events, coach_prior_plan, pinned_sessions } = buildPlanningView({
+    today, daysBetween, dateMinusDays, dm, upcoming, codeById, neuroAtlDays: neuroAtlDays ?? undefined,
+  });
   // The last calendar row is often a Garmin recovery-only upsert (no rollup past the last activity),
   // so its CTL/ATL/TSB are null — use the most recent row that actually has the computed model.
   let latest: any = null;
@@ -112,8 +134,12 @@ export async function assemblePicture(): Promise<Picture> {
   const acts7 = acts.filter((a) => a.local_date >= since7);
   const sum = (xs: any[], k: string) => Math.round(xs.reduce((t, a) => t + Number(a[k] || 0), 0) * 10) / 10;
 
+  const nowL = nowLocal();
   const context = {
     today,
+    // Current LOCAL time (HH:MM) + weekday — reason with the HOUR of day, not only the date: never advise a
+    // slot already passed ("ce matin avant 8h" à 15h30), adapt to the hours left or push to another day.
+    now_local: `${nowL.weekday} ${nowL.time}`,
     athlete_tz: ATHLETE_TZ,
     // Ranked objectives (most important first). Each may be sport-linked and may have a structured
     // date (days_to) and/or a fuzzy horizon (e.g. "avant mes 30 ans"); some have neither.
@@ -135,6 +161,9 @@ export async function assemblePicture(): Promise<Picture> {
     recovery_today: recoveryToday(dm, today),
     // Heat/altitude EXPOSURE + acclimation — read HR & recovery through this lens; never a load input.
     environment: environment(acts7, dm),
+    // Upcoming forecast (today..+7) — the heat the coach reads acclimation against for PROSPECTIVE advice
+    // (a `hot` day + low heat_acclimation ⇒ expect HR drift / higher RPE; advise timing/hydration/pacing).
+    weather: weatherView(weatherRows),
     daily_load_21d: dm.map((d) => ({
       date: d.local_date, load: d.daily_load, aerobic: d.daily_aerobic_load, neuro: d.daily_neuromuscular_load,
       by_group: d.load_by_group, dplus: d.vertical_gain_m, dminus: d.vertical_loss_m,
@@ -147,7 +176,18 @@ export async function assemblePicture(): Promise<Picture> {
       temp_c: a.avg_temp_c ?? null, alt_max_m: a.max_altitude_m ?? null,
     })),
     trailing_7d: { d_plus_m: sum(acts7, "vertical_gain_m"), d_minus_m: sum(acts7, "vertical_loss_m") },
-    upcoming_planned: upcoming,
+    // Favourite sports (recent frequency) — prefer these when filling the 7-day plan.
+    favourite_sports: favouriteSports(acts, codeById),
+    // Limits + injury/weakness memory the coach plans around (no_hard_days, weekly cap, free-text notes).
+    athlete_constraints: athleteConstraints(profile),
+    // Activities the athlete DECLARED for the week (coach plans around them, never overwrites). Each
+    // carries its persisted load estimate + the CTL/ATL/TSB projected the day before it under the plan.
+    declared_events,
+    // What the coach previously planned forward (so it can stay coherent / reshape, not contradict).
+    coach_prior_plan,
+    // Sessions the athlete ACCEPTED from a coach proposal in chat — FIXED prescriptions: plan around them,
+    // never overwrite them (set anchors_event_ref to their ref on their day, like a declared event).
+    pinned_sessions,
   };
 
   return { today, sports, context };

@@ -6,7 +6,7 @@ import { BriefingDetail } from "./briefing-detail";
 import { BriefingCollapsible } from "./briefing-collapsible";
 import { CoachCta } from "./coach-cta";
 import { ActivitySnapshot } from "./activity-snapshot";
-import { READINESS, SYSTEM_TAG_FR, sportIcon, type Readiness } from "@/lib/labels";
+import { READINESS, sportIcon, type Readiness } from "@/lib/labels";
 import { todayLocal, dateMinusDays, ATHLETE_TZ } from "@/lib/coach-context";
 import { loadCoachSettings, personaAvatar, personaName } from "@/lib/coach-settings";
 import { createServiceClient } from "@/lib/supabase/server";
@@ -55,10 +55,10 @@ function genWhen(briefing: Briefing, today: string): string {
   return `${dayLabel(dateStr)} à ${time}`;
 }
 
-/** The full morning briefing, rendered FLAT (no nested toggle) for use inside the "Voir le plan du
- *  coach" collapsible when the day verdict takes the headline. */
+/** The morning briefing's narrative, rendered FLAT (no nested toggle) for use inside the "Voir le plan
+ *  du coach" collapsible when the day verdict takes the headline. The 7-day plan strip lives at the top
+ *  of the dashboard ("Ton plan d'entraînement") now, so it's intentionally omitted here. */
 function BriefingPlan({ briefing }: { briefing: Briefing }) {
-  const week = briefing.week_skeleton;
   return (
     <>
       {briefing.today_session && (
@@ -73,19 +73,6 @@ function BriefingPlan({ briefing }: { briefing: Briefing }) {
       )}
       {briefing.reasoning && (
         <p className="text-sm leading-relaxed text-stone-600 dark:text-stone-300">{briefing.reasoning}</p>
-      )}
-      {!!week?.length && (
-        <div className="flex flex-wrap gap-1.5">
-          {week.map((d) => (
-            <span
-              key={d.day_offset}
-              title={d.focus}
-              className="rounded-md border border-stone-200 px-2 py-1 text-xs text-stone-600 dark:border-stone-700 dark:text-stone-300"
-            >
-              <span className="font-medium">+{d.day_offset} j</span> {SYSTEM_TAG_FR[d.system_tag] ?? d.system_tag}
-            </span>
-          ))}
-        </div>
       )}
     </>
   );
@@ -229,7 +216,7 @@ export async function CoachHero({
                       ⚠️ {briefing.flag}
                     </p>
                   )}
-                  <BriefingDetail reasoning={briefing.reasoning} weekSkeleton={briefing.week_skeleton} />
+                  <BriefingDetail reasoning={briefing.reasoning} />
                 </>
               ) : (
                 <p className="mt-1 rounded-2xl rounded-tl-sm bg-stone-100 px-3.5 py-2.5 text-sm text-stone-600 dark:bg-stone-800 dark:text-stone-300">

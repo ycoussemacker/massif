@@ -29,6 +29,14 @@ export function todayLocal(tz = ATHLETE_TZ): string {
   }).format(new Date());
 }
 
+/** Current local time HH:MM (24h) + weekday in the athlete's timezone — so the coach reasons with the
+ *  HOUR, not just the date (don't advise "run before 8am" at 15h30). Mirror of web coach-context.ts nowLocal. */
+export function nowLocal(tz = ATHLETE_TZ): { time: string; weekday: string } {
+  const time = new Intl.DateTimeFormat("fr-FR", { timeZone: tz, hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date());
+  const weekday = new Intl.DateTimeFormat("fr-FR", { timeZone: tz, weekday: "long" }).format(new Date());
+  return { time, weekday };
+}
+
 export function daysBetween(fromISO: string, toISO: string): number {
   const ms = Date.parse(toISO + "T00:00:00Z") - Date.parse(fromISO + "T00:00:00Z");
   return Math.round(ms / 86_400_000);
@@ -90,9 +98,27 @@ export async function loadRecentActivities(sinceDate: string): Promise<any[]> {
 export async function loadUpcomingPlanned(fromDate: string): Promise<any[]> {
   const { data, error } = await db
     .from("planned_sessions").select("*")
-    .gte("planned_date", fromDate).order("planned_date");
+    .gte("planned_date", fromDate).neq("status", "skipped").order("planned_date");
   if (error) throw error;
   return data ?? [];
+}
+
+/** Daily weather forecast from `fromDate` onward (today..+7). Lenient: returns [] on error / missing
+ *  table (pre-migration) so the coach simply gets no `weather` rather than failing the run. */
+export async function loadWeather(fromDate: string): Promise<any[]> {
+  const { data, error } = await db
+    .from("daily_weather")
+    .select("local_date,temp_min_c,temp_max_c,feels_max_c,precip_mm,wind_kmh")
+    .gte("local_date", fromDate).order("local_date", { ascending: true });
+  if (error) return [];
+  return data ?? [];
+}
+
+/** Personalized neuromuscular acute τ (athlete_load_params.neuro_atl_days) or null → projection default. */
+export async function loadNeuroAtlDays(): Promise<number | null> {
+  const { data } = await db.from("athlete_load_params").select("value").eq("param", "neuro_atl_days").maybeSingle();
+  const v = Number((data as any)?.value);
+  return Number.isFinite(v) && v > 0 ? v : null;
 }
 
 // ── writes ──────────────────────────────────────────────────────────────────
@@ -123,4 +149,23 @@ export async function replaceTodayPlanned(date: string, row: Record<string, unkn
   const { data, error } = await db.from("planned_sessions").insert(row).select("id").single();
   if (error) throw error;
   return (data as any).id;
+}
+
+/** Materialize the coach's full forward plan (today..today+6). Idempotent + SAFE: the delete is scoped
+ *  to the coach's OWN still-planned, not-yet-done rows in the window, so athlete-declared events
+ *  (modified_by='user'), completed/modified rows, and rows already linked to an activity are never
+ *  touched. Returns the inserted ids. Mirror of the inline version in web/src/lib/coach-briefing.ts. */
+export async function replaceForwardCoachPlan(
+  today: string,
+  rows: Record<string, unknown>[],
+): Promise<string[]> {
+  const horizonEnd = dateMinusDays(today, -6); // today + 6
+  const del = await db.from("planned_sessions").delete()
+    .gte("planned_date", today).lte("planned_date", horizonEnd)
+    .eq("modified_by", "coach").eq("status", "planned").is("linked_activity_id", null);
+  if (del.error) throw del.error;
+  if (!rows.length) return [];
+  const { data, error } = await db.from("planned_sessions").insert(rows).select("id");
+  if (error) throw error;
+  return (data ?? []).map((r: any) => r.id);
 }

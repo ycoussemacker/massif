@@ -9,10 +9,11 @@
  *  TSB; movement always synchronised. Dependency-free SVG. */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import type { DailyMetric, Activity } from "@/lib/data";
+import type { DailyMetric, Activity, DashboardProjection, ProjectedPoint, ProjectedEvent } from "@/lib/data";
 import { loadOlderForme } from "@/app/actions";
 import { HelpButton, type HelpContent } from "./help";
-import { DayDetailPanel } from "./day-detail-panel";
+import { DayDetailPanel, type PlannedDetail } from "./day-detail-panel";
+import { sportIcon } from "@/lib/labels";
 import { Gauge, ArcGauge, type Zone } from "./charts";
 import { SparklineTile } from "./sparkline";
 import { groupByDateSpanned, rollingMonotony } from "@/lib/aggregate";
@@ -23,6 +24,12 @@ const H = 112;
 const PX_PER_DAY = 12;
 const LOAD_MONTHS = 2;
 const plotWidth = (n: number) => n * PX_PER_DAY;
+// Dotted forecast to the nearest declared event (≤7 d ahead): a contiguous future region (one slot/day,
+// same PX_PER_DAY cadence as the real region) reserved on EVERY synced chart so horizontal scroll stays
+// aligned; the projected line + event "target" marker are drawn on all three charts. MARKER_PAD reserves
+// room past the marker for the sport glyph. canvas x continues the real index axis: cxAt(i)=(i+.5)·PX_PER_DAY.
+const MARKER_PAD_DAYS = 1.5;
+const cxAt = (vi: number) => (vi + 0.5) * PX_PER_DAY;
 const MONTHS_FR = ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc."];
 const monthLabel = (iso: string) => MONTHS_FR[Number(iso.slice(5, 7)) - 1] + (iso.slice(5, 7) === "01" ? ` ${iso.slice(2, 4)}` : "");
 const shortDate = (iso: string) => new Date(iso + "T00:00:00").toLocaleDateString("fr-FR", { day: "numeric", month: "short" });
@@ -144,7 +151,7 @@ function useIsNarrow(query = "(max-width: 1023px)"): boolean {
  *  crosshair, visible-window scale, synced scroll and scroll-to-left-edge history. */
 function InteractiveChart({
   label, help, score, unit, metrics, selected, onSelect, children, renderSelection, axis,
-  register, onReachStart, loadingOlder = false, height = H,
+  register, onReachStart, loadingOlder = false, height = H, trailingPx = 0, renderTrailing, defaultDate = null,
 }: {
   label: React.ReactNode;
   help?: HelpContent;
@@ -153,6 +160,9 @@ function InteractiveChart({
   metrics: DailyMetric[];
   selected: string | null;
   onSelect: (date: string | null) => void;
+  // Day the cursor rests on when NOTHING is explicitly selected (today / last day with a model) — drawn so
+  // the section always opens with a visible "you are here" cursor on today rather than a bare chart.
+  defaultDate?: string | null;
   children: (vis: Vis) => React.ReactNode;
   renderSelection?: (i: number, vis: Vis) => React.ReactNode;
   axis: (vis: Vis) => { min: number; max: number };
@@ -160,12 +170,22 @@ function InteractiveChart({
   onReachStart?: () => void;
   loadingOlder?: boolean;
   height?: number;
+  // Extra canvas width past the last real day (same on every synced chart so scroll stays aligned) +
+  // an overlay drawn there — the detached "future target" point. cx/leftOf are i·PX_PER_DAY, so widening
+  // the canvas never stretches the real region.
+  trailingPx?: number;
+  renderTrailing?: (vis: Vis) => React.ReactNode;
 }) {
   const n = metrics.length;
   const w = plotWidth(n);
+  const canvasW = w + trailingPx;
   const slotW = w / n;
   const dates = metrics.map((m) => m.local_date);
   const sel = selected == null ? -1 : dates.indexOf(selected);
+  // The cursor that's actually drawn: the explicit selection, else (when nothing is selected) today's
+  // default day. Stays -1 when a FUTURE event is selected (sel<0 but selected!=null) — its marker is the cursor.
+  const defaultIdx = defaultDate ? dates.indexOf(defaultDate) : -1;
+  const cursorIdx = sel >= 0 ? sel : (selected == null ? defaultIdx : -1);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const leftOf = (i: number) => (i / n) * w;
@@ -178,8 +198,9 @@ function InteractiveChart({
 
   const onKey = (e: React.KeyboardEvent) => {
     if (e.key === "Escape") { onSelect(null); return; }
-    if (e.key === "ArrowRight") { e.preventDefault(); onSelect(dates[Math.min((sel < 0 ? -1 : sel) + 1, n - 1)]); }
-    else if (e.key === "ArrowLeft") { e.preventDefault(); onSelect(dates[Math.max((sel < 0 ? n : sel) - 1, 0)]); }
+    // Arrows scrub relative to the current cursor (today when nothing is selected yet).
+    if (e.key === "ArrowRight") { e.preventDefault(); onSelect(dates[Math.min((cursorIdx < 0 ? -1 : cursorIdx) + 1, n - 1)]); }
+    else if (e.key === "ArrowLeft") { e.preventDefault(); onSelect(dates[Math.max((cursorIdx < 0 ? n : cursorIdx) - 1, 0)]); }
   };
 
   useEffect(() => {
@@ -238,18 +259,21 @@ function InteractiveChart({
             </div>
           )}
           <div ref={scrollRef} className="min-w-0 overflow-x-auto">
-            <div style={{ width: w }}>
-              <svg width={w} height={height} viewBox={`0 0 ${w} ${height}`} className="block">
-                {sel >= 0 && (
-                  <rect x={leftOf(sel)} y={0} width={slotW} height={height} fill="currentColor" className="text-stone-200 dark:text-stone-700" opacity={0.5} pointerEvents="none" />
+            <div style={{ width: canvasW }}>
+              <svg width={canvasW} height={height} viewBox={`0 0 ${canvasW} ${height}`} className="block">
+                {/* the cursor (today by default, else the pinned day) — a solid line + grey block, so it
+                    reads as "selected" and never gets confused with the dashed future-event guides */}
+                {cursorIdx >= 0 && (
+                  <rect x={leftOf(cursorIdx)} y={0} width={slotW} height={height} fill="currentColor" className="text-stone-200 dark:text-stone-700" opacity={0.5} pointerEvents="none" />
                 )}
                 {children(vis)}
-                {sel >= 0 && (
+                {cursorIdx >= 0 && (
                   <g pointerEvents="none">
-                    <line x1={centerOf(sel)} y1={0} x2={centerOf(sel)} y2={height} stroke={AXIS} strokeWidth={1} />
-                    {renderSelection?.(sel, vis)}
+                    <line x1={centerOf(cursorIdx)} y1={0} x2={centerOf(cursorIdx)} y2={height} stroke={AXIS} strokeWidth={1} />
+                    {renderSelection?.(cursorIdx, vis)}
                   </g>
                 )}
+                {renderTrailing?.(vis)}
                 <g role="group" tabIndex={0} onKeyDown={onKey}
                   aria-label="Graphique interactif — flèches gauche/droite pour parcourir les jours, Échap pour fermer"
                   className="cursor-pointer outline-none">
@@ -258,7 +282,7 @@ function InteractiveChart({
                   ))}
                 </g>
               </svg>
-              <div className="relative h-3.5" style={{ width: w }}>
+              <div className="relative h-3.5" style={{ width: canvasW }}>
                 {monthTicks.map((t) => (
                   <span key={t.i} className="absolute top-0 whitespace-nowrap text-[10px] tabular-nums text-stone-400" style={{ left: t.x }}>{t.label}</span>
                 ))}
@@ -298,12 +322,44 @@ function lineChart(
   return { cx, scaleFor, poly };
 }
 
+/** Half-width (px) of each event marker's clickable hit-rect — clamped so neighbouring markers (events a
+ *  day apart sit only PX_PER_DAY apart) can't overlap; lone markers get the comfortable full width. */
+function hitHalves(events: ProjectedEvent[]): number[] {
+  return events.map((e, i) => {
+    let gapDays = Infinity;
+    if (i > 0) gapDays = Math.min(gapDays, e.offset - events[i - 1].offset);
+    if (i < events.length - 1) gapDays = Math.min(gapDays, events[i + 1].offset - e.offset);
+    return Math.min(PX_PER_DAY * 0.8, (gapDays * PX_PER_DAY) / 2);
+  });
+}
+
+/** The event "target" marker in a chart's trailing region: a dashed vertical guide + the sport glyph,
+ *  clickable to reveal the planned event in the day panel. When a no-LLM readiness flag is raised (arriving
+ *  fatigued under the plan), the guide takes the warn colour and a ⚠️ sits by the glyph. Shared by CTL/ATL
+ *  and TSB so they stay aligned. */
+function FutureMarker({ x, h, sportCode, active, warn, hitHalf, onPick }: {
+  x: number; h: number; sportCode: string | null; active: boolean; warn: "caution" | "hard" | null; hitHalf: number; onPick: () => void;
+}) {
+  const warnColor = warn === "hard" ? STATE.rest : warn === "caution" ? STATE.caution : null;
+  return (
+    <g>
+      {/* selected event → solid, thicker guide (clear emphasis); unselected → dashed = projected/future */}
+      <line x1={x} y1={0} x2={x} y2={h} stroke={warnColor ?? AXIS} strokeWidth={active ? 1.5 : 1}
+        strokeDasharray={active ? undefined : "3 3"} opacity={active ? 1 : warn ? 0.8 : 0.5} />
+      <text x={x} y={11} textAnchor="middle" fontSize={11}>{sportIcon(sportCode)}</text>
+      {warn && <text x={x + 6} y={6} textAnchor="middle" fontSize={8.5}>⚠️</text>}
+      <rect x={x - hitHalf} y={0} width={hitHalf * 2} height={h} fill="transparent" className="cursor-pointer" onClick={onPick} />
+    </g>
+  );
+}
+
 // ── the dashboard section ──────────────────────────────────────────────────────────────────────────
 export function ChartsSection({
-  metrics: initialMetrics, activities: initialActivities,
+  metrics: initialMetrics, activities: initialActivities, projection = null,
 }: {
   metrics: DailyMetric[];
   activities: Activity[];
+  projection?: DashboardProjection | null;
 }) {
   const [metrics, setMetrics] = useState(initialMetrics);
   const [activities, setActivities] = useState(initialActivities);
@@ -363,11 +419,23 @@ export function ChartsSection({
   }, [metrics, adjustAll]);
 
   const chartH = narrow ? 76 : 112; // shorter charts on mobile so the whole section fits one screen
-  const shared = { metrics, selected, onSelect: setSelected, register, onReachStart, loadingOlder, h: chartH };
-  const ctlNode = <CtlAtlChart {...shared} kind="ctl" selM={selM} />;
-  const atlNode = <CtlAtlChart {...shared} kind="atl" selM={selM} />;
-  const fusedNode = <CtlAtlChart {...shared} kind="fused" selM={selM} />;
-  const tsbNode = <TsbChart {...shared} selM={selM} />;
+  // Reserve the trailing future region on EVERY chart (so synced scroll stays aligned), wide enough to
+  // reach the furthest event marker (lastOffset days past the real region) plus glyph room. Only when projecting.
+  const trailingPx = projection ? Math.round((projection.lastOffset + MARKER_PAD_DAYS) * PX_PER_DAY) : 0;
+  const shared = { metrics, selected, onSelect: setSelected, register, onReachStart, loadingOlder, h: chartH, trailingPx, baseIdx: latestIdx, defaultDate: latestDate };
+  const ctlNode = <CtlAtlChart {...shared} kind="ctl" selM={selM} projection={projection} />;
+  const atlNode = <CtlAtlChart {...shared} kind="atl" selM={selM} projection={projection} />;
+  const fusedNode = <CtlAtlChart {...shared} kind="fused" selM={selM} projection={projection} />;
+  const tsbNode = <TsbChart {...shared} selM={selM} projection={projection} />;
+
+  // When the selected day is one of the projected events (not a real metrics row), show its prevision +
+  // readiness flag in the panel.
+  const selEvent = projection?.events.find((e) => e.date === panelDate) ?? null;
+  const plannedDetail: PlannedDetail | null = selEvent ? {
+    eventId: selEvent.eventId, sportCode: selEvent.sportCode, title: selEvent.title,
+    predictedLoad: selEvent.predictedLoad, targetCtl: selEvent.targetCtl, targetAtl: selEvent.targetAtl,
+    targetTsb: selEvent.targetTsb, warn: selEvent.warn,
+  } : null;
 
   return (
     <section className="rounded-2xl border border-stone-200 bg-white p-4 dark:border-stone-800 dark:bg-stone-900 sm:p-5">
@@ -386,7 +454,7 @@ export function ChartsSection({
         <div className="space-y-4">
           {panelDate && (
             <DayDetailPanel date={panelDate} activities={activitiesByDate.get(panelDate) ?? []}
-              onClose={selected ? () => setSelected(null) : undefined} />
+              planned={plannedDetail} onClose={selected ? () => setSelected(null) : undefined} />
           )}
           <div className="space-y-3">{fusedNode}{tsbNode}</div>
           <div className="grid grid-cols-3 gap-2">
@@ -402,7 +470,7 @@ export function ChartsSection({
           <div className="grid gap-5 lg:grid-cols-3">{ctlNode}{atlNode}{tsbNode}</div>
           {panelDate && (
             <DayDetailPanel date={panelDate} activities={activitiesByDate.get(panelDate) ?? []}
-              onClose={selected ? () => setSelected(null) : undefined} />
+              planned={plannedDetail} onClose={selected ? () => setSelected(null) : undefined} />
           )}
           <div className="mt-6 grid gap-5 sm:grid-cols-3">
             <Gauge label="Monotonie · 7 j" help={MONO_HELP} value={monoV} min={0} max={monoMax} zones={monoZones(monoMax)} />
@@ -431,19 +499,64 @@ type SharedChart = {
   loadingOlder?: boolean;
   selM: DailyMetric | null;
   h: number; // chart plot height (shorter on mobile)
+  trailingPx?: number; // future-region reserve (same on every chart so scroll stays synced)
+  baseIdx?: number; // index of the last day WITH a model (CTL) — the future region continues from here (not n-1)
+  defaultDate?: string | null; // day the cursor rests on when nothing is selected (today)
 };
 
-/** CTL / ATL line chart — or both fused (mobile). Thin ridge line(s); ATL alone shows a faint CTL ref. */
-function CtlAtlChart({ kind, metrics, selected, onSelect, register, onReachStart, loadingOlder, selM, h }: SharedChart & { kind: "ctl" | "atl" | "fused" }) {
+/** CTL / ATL line chart — or both fused (mobile). Thin ridge line(s); ATL alone shows a faint CTL ref.
+ *  When an event is declared ahead, a DOTTED projected line continues each channel over the planned loads
+ *  from the last real point to the event's hollow "target" marker. */
+function CtlAtlChart({ kind, metrics, selected, onSelect, register, onReachStart, loadingOlder, selM, h, trailingPx, baseIdx, defaultDate, projection }: SharedChart & { kind: "ctl" | "atl" | "fused"; projection?: DashboardProjection | null }) {
   const n = metrics.length;
   const w = plotWidth(n);
   const ctl = metrics.map((m) => m.ctl);
   const atl = metrics.map((m) => m.atl);
-  const series = kind === "ctl" ? [{ vals: ctl, color: VIZ.aerobic }]
-    : kind === "atl" ? [{ vals: atl, color: VIZ.neuro }]
-    : [{ vals: ctl, color: VIZ.aerobic }, { vals: atl, color: VIZ.neuro }];
+  // Future days/events count their offset from the last day WITH a model (baseIdx) — NOT n-1, which may be a
+  // recovery-only row with null CTL; keeping them aligned stops the dotted line skipping a column.
+  const base = baseIdx ?? n - 1;
+  type S = { vals: (number | null)[]; color: string; projSel: (p: ProjectedPoint) => number; targetSel: (e: ProjectedEvent) => number | null };
+  const series: S[] = kind === "ctl" ? [{ vals: ctl, color: VIZ.aerobic, projSel: (p) => p.ctl, targetSel: (e) => e.targetCtl }]
+    : kind === "atl" ? [{ vals: atl, color: VIZ.neuro, projSel: (p) => p.atl, targetSel: (e) => e.targetAtl }]
+    : [{ vals: ctl, color: VIZ.aerobic, projSel: (p) => p.ctl, targetSel: (e) => e.targetCtl },
+       { vals: atl, color: VIZ.neuro, projSel: (p) => p.atl, targetSel: (e) => e.targetAtl }];
   const refVals = kind === "atl" ? ctl : null; // faint CTL behind ATL
-  const { cx, scaleFor, poly } = lineChart(series, refVals, n, w);
+  const { cx, poly } = lineChart(series, refVals, n, w);
+
+  const proj = projection?.series ?? [];
+  const events = projection?.events ?? [];
+  const xOfEvent = (e: ProjectedEvent) => cxAt(base + e.offset);
+  // Last real (non-null) point of a series — the dotted projection anchors here for visual continuity.
+  const lastReal = (vals: (number | null)[]) => {
+    for (let i = vals.length - 1; i >= 0; i--) if (vals[i] != null) return { i, v: vals[i]! };
+    return null;
+  };
+  // Per-window scale that folds in the projection when the future region is on screen (vis.hi==n-1) so the
+  // dotted line + markers never clip; otherwise (scrolled into history) the projection is off-screen.
+  const scaleFor = (vis: Vis) => {
+    const lo = Math.max(0, vis.lo - 1), hi = Math.min(n - 1, vis.hi + 1);
+    let mx = 1;
+    for (let i = lo; i <= hi; i++) {
+      for (const s of series) { const v = s.vals[i]; if (v != null) mx = Math.max(mx, v); }
+      if (refVals) { const r = refVals[i]; if (r != null) mx = Math.max(mx, r); }
+    }
+    if (projection && vis.hi >= n - 1) {
+      for (const s of series) {
+        for (const p of proj) mx = Math.max(mx, s.projSel(p));
+        for (const e of events) { const t = s.targetSel(e); if (t != null) mx = Math.max(mx, t); }
+      }
+    }
+    return { lo, hi, max: mx * 1.1 };
+  };
+  // Dotted forecast points for a channel: last real point → each projected day (event days carry the
+  // arrival/eve form so markers sit on the line; post-event days reflect each event's load).
+  const projPoly = (s: S, yOf: (v: number) => number) => {
+    const pts: string[] = [];
+    const a = lastReal(s.vals);
+    if (a) pts.push(`${cxAt(a.i).toFixed(1)},${yOf(a.v).toFixed(1)}`);
+    for (const p of proj) pts.push(`${cxAt(base + p.offset).toFixed(1)},${yOf(s.projSel(p)).toFixed(1)}`);
+    return pts.length > 1 ? pts.join(" ") : "";
+  };
 
   const label = kind === "ctl" ? "CTL · forme" : kind === "atl" ? "ATL · fatigue" : "CTL · ATL";
   const help = kind === "atl" ? ATL_HELP : CTL_HELP;
@@ -459,22 +572,47 @@ function CtlAtlChart({ kind, metrics, selected, onSelect, register, onReachStart
     <InteractiveChart
       label={label} help={help} score={score} unit="points de charge" height={h}
       metrics={metrics} selected={selected} onSelect={onSelect} register={register} onReachStart={onReachStart} loadingOlder={loadingOlder}
+      trailingPx={trailingPx} defaultDate={defaultDate}
       axis={(vis) => ({ min: 0, max: scaleFor(vis).max })}
       renderSelection={(i, vis) => {
         const { max } = scaleFor(vis);
         const yOf = (v: number) => h - (v / max) * h;
         return (<>{series.map((s, k) => (s.vals[i] != null ? <circle key={k} cx={cx(i)} cy={yOf(s.vals[i]!)} r={3} fill={s.color} /> : null))}</>);
       }}
+      renderTrailing={projection ? () => {
+        const hh = hitHalves(events);
+        return (
+          <>
+            {events.map((e, i) => (
+              <FutureMarker key={e.date} x={xOfEvent(e)} h={h} sportCode={e.sportCode} active={selected === e.date}
+                warn={e.warn?.level ?? null} hitHalf={hh[i]} onPick={() => onSelect(selected === e.date ? null : e.date)} />
+            ))}
+          </>
+        );
+      } : undefined}
     >
       {(vis) => {
         const { lo, hi, max } = scaleFor(vis);
-        const yOf = (v: number) => h - (v / max) * h;
+        const yOf = (v: number) => h - (Math.min(Math.max(v, 0), max) / max) * h;
         return (
           <>
             {refVals && <polyline points={poly(refVals, lo, hi, yOf)} fill="none" stroke={MUTED} strokeWidth={1} strokeDasharray="3 2" opacity={0.6} strokeLinejoin="round" strokeLinecap="round" />}
             {series.map((s, k) => (
               <polyline key={k} points={poly(s.vals, lo, hi, yOf)} fill="none" stroke={s.color} strokeWidth={1.6} strokeLinejoin="round" strokeLinecap="round" />
             ))}
+            {/* dotted projected continuation over the planned loads (each channel keeps its hue) */}
+            {projection && series.map((s, k) => {
+              const pts = projPoly(s, yOf);
+              return pts ? <polyline key={`p${k}`} points={pts} fill="none" stroke={s.color} strokeWidth={1.4} strokeDasharray="2 2.5" opacity={0.85} strokeLinejoin="round" strokeLinecap="round" /> : null;
+            })}
+            {/* event-target markers: hollow + dashed = projected; FILLED when that event is selected */}
+            {events.flatMap((e) => series.map((s, k) => {
+              const t = s.targetSel(e);
+              if (t == null) return null;
+              const on = selected === e.date;
+              return <circle key={`f${e.date}-${k}`} cx={xOfEvent(e)} cy={yOf(t)} r={on ? 4 : 3.5}
+                fill={on ? s.color : "none"} stroke={s.color} strokeWidth={1.6} strokeDasharray={on ? undefined : "2 1.5"} />;
+            }))}
           </>
         );
       }}
@@ -482,16 +620,31 @@ function CtlAtlChart({ kind, metrics, selected, onSelect, register, onReachStart
   );
 }
 
-/** TSB bar chart — frais (green) / fatigue productive (amber) / surcharge (red), with the 0 line + zones. */
-function TsbChart({ metrics, selected, onSelect, register, onReachStart, loadingOlder, selM, h }: SharedChart) {
+/** TSB bar chart — frais (green) / fatigue productive (amber) / surcharge (red), with the 0 line + zones.
+ *  When an event is declared ahead, a DOTTED projected freshness path continues from the last real bar to
+ *  the event's hollow target marker (coloured by the arrival state). */
+function TsbChart({ metrics, selected, onSelect, register, onReachStart, loadingOlder, selM, h, trailingPx, baseIdx, defaultDate, projection }: SharedChart & { projection?: DashboardProjection | null }) {
   const n = metrics.length;
   const w = plotWidth(n);
   const tsb = metrics.map((m) => m.tsb ?? 0);
   const bw = (w / Math.max(1, n)) * 0.66;
+  const base = baseIdx ?? n - 1; // future region continues from the last day WITH a model (see CtlAtlChart)
+  const proj = projection?.series ?? [];
+  const events = projection?.events ?? [];
+  const xOfEvent = (e: ProjectedEvent) => cxAt(base + e.offset);
+  const tsbBand = (val: number) => (val >= 0 ? STATE.ready : val > -30 ? STATE.caution : STATE.rest);
+  const lastRealTsb = (() => {
+    for (let i = metrics.length - 1; i >= 0; i--) if (metrics[i].tsb != null) return { i, v: metrics[i].tsb! };
+    return null;
+  })();
   const scaleFor = (vis: Vis) => {
     const lo = Math.max(0, vis.lo - 1), hi = Math.min(n - 1, vis.hi + 1);
     let mx = 12, mn = -30;
     for (let i = lo; i <= hi; i++) { mx = Math.max(mx, tsb[i]); mn = Math.min(mn, tsb[i]); }
+    if (projection && vis.hi >= n - 1) {
+      for (const p of proj) { mx = Math.max(mx, p.tsb); mn = Math.min(mn, p.tsb); }
+      for (const e of events) if (e.targetTsb != null) { mx = Math.max(mx, e.targetTsb); mn = Math.min(mn, e.targetTsb); }
+    }
     return { lo, hi, max: mx, min: mn };
   };
   // Score colour: CTL-relative bands (frais > +10% CTL · productive > −30% · else surcharge).
@@ -506,24 +659,53 @@ function TsbChart({ metrics, selected, onSelect, register, onReachStart, loading
     <InteractiveChart
       label="TSB · forme" help={TSB_HELP} score={fmtScore(v, scoreColor ?? STATE.rest)} unit="points · vert = frais · rouge = fatigue" height={h}
       metrics={metrics} selected={selected} onSelect={onSelect} register={register} onReachStart={onReachStart} loadingOlder={loadingOlder}
+      trailingPx={trailingPx} defaultDate={defaultDate}
       axis={(vis) => { const s = scaleFor(vis); return { min: s.min, max: s.max }; }}
+      renderTrailing={projection ? () => {
+        const hh = hitHalves(events);
+        return (
+          <>
+            {events.map((e, i) => (
+              <FutureMarker key={e.date} x={xOfEvent(e)} h={h} sportCode={e.sportCode} active={selected === e.date}
+                warn={e.warn?.level ?? null} hitHalf={hh[i]} onPick={() => onSelect(selected === e.date ? null : e.date)} />
+            ))}
+          </>
+        );
+      } : undefined}
     >
       {(vis) => {
         const { lo, hi, max, min } = scaleFor(vis);
         const span = max - min || 1;
         const yOf = (val: number) => h - ((val - min) / span) * h;
+        // Dotted freshness path: last real bar → each projected day (event days carry the arrival/eve form).
+        const projPts: string[] = [];
+        if (projection) {
+          if (lastRealTsb) projPts.push(`${cxAt(lastRealTsb.i).toFixed(1)},${yOf(lastRealTsb.v).toFixed(1)}`);
+          for (const p of proj) projPts.push(`${cxAt(base + p.offset).toFixed(1)},${yOf(p.tsb).toFixed(1)}`);
+        }
         return (
           <>
             <rect x={0} y={yOf(-30)} width={w} height={h - yOf(-30)} fill={STATE.rest} opacity={0.07} />
             <rect x={0} y={yOf(10)} width={w} height={yOf(-10) - yOf(10)} fill={STATE.ready} opacity={0.08} />
             <line x1={0} y1={yOf(0)} x2={w} y2={yOf(0)} stroke={AXIS} strokeWidth={1} strokeDasharray="3 3" />
             {Array.from({ length: Math.max(0, hi - lo + 1) }, (_, k) => lo + k).map((i) => {
+              if (metrics[i].tsb == null) return null; // no real bar on a recovery-only (null-model) day
               const val = tsb[i];
               const x = ((i + 0.5) / n) * w - bw / 2;
               const y = yOf(Math.max(val, 0));
               const h = Math.abs(yOf(val) - yOf(0));
               return <rect key={i} x={x} y={y} width={bw} height={Math.max(0.5, h)} rx={1}
-                fill={val >= 0 ? STATE.ready : val > -30 ? STATE.caution : STATE.rest} opacity={0.9} />;
+                fill={tsbBand(val)} opacity={0.9} />;
+            })}
+            {/* dotted projected freshness path (neutral so it doesn't imply a single state) + per-event targets */}
+            {projection && projPts.length > 1 && (
+              <polyline points={projPts.join(" ")} fill="none" stroke={MUTED} strokeWidth={1.4} strokeDasharray="2 2.5" opacity={0.85} strokeLinejoin="round" strokeLinecap="round" />
+            )}
+            {events.map((e) => {
+              if (e.targetTsb == null) return null;
+              const on = selected === e.date;
+              return <circle key={`f${e.date}`} cx={xOfEvent(e)} cy={yOf(e.targetTsb)} r={on ? 4 : 3.5}
+                fill={on ? tsbBand(e.targetTsb) : "none"} stroke={tsbBand(e.targetTsb)} strokeWidth={1.6} strokeDasharray={on ? undefined : "2 1.5"} />;
             })}
           </>
         );

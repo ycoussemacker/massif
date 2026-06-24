@@ -2,6 +2,7 @@
  *  Mirrors coach/src/context.ts (web/ and coach/ are separate pnpm workspaces — no cross-import,
  *  same as load.ts ↔ load.py). Keep the shape in sync so the chat reasons like the briefing run. */
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { buildPlanningView, favouriteSports, athleteConstraints } from "./planning";
 
 export const ATHLETE_TZ = process.env.ATHLETE_TZ ?? "Europe/Paris";
 
@@ -10,6 +11,14 @@ export function todayLocal(tz = ATHLETE_TZ): string {
   return new Intl.DateTimeFormat("en-CA", {
     timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit",
   }).format(new Date());
+}
+
+/** Current local time HH:MM (24h) + weekday in the athlete's timezone — so the coach reasons with the
+ *  HOUR, not just the date (don't advise "run before 8am" at 15h30). Mirror of coach/src/db.ts nowLocal. */
+export function nowLocal(tz = ATHLETE_TZ): { time: string; weekday: string } {
+  const time = new Intl.DateTimeFormat("fr-FR", { timeZone: tz, hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date());
+  const weekday = new Intl.DateTimeFormat("fr-FR", { timeZone: tz, weekday: "long" }).format(new Date());
+  return { time, weekday };
 }
 
 export function daysBetween(fromISO: string, toISO: string): number {
@@ -100,6 +109,21 @@ function environment(acts7: any[], dm: any[]): Record<string, unknown> {
   };
 }
 
+/** Upcoming forecast the coach reads heat/acclimation advice against — today..+7, each day flagged `hot`
+ *  (apparent "feels-like" ≥ 25 °C, else dry max ≥ 25). CONTEXT, never a load input. Mirror of
+ *  context.ts weatherView. */
+function weatherView(rows: any[]): any[] {
+  return (rows ?? []).map((r) => {
+    const feels = r.feels_max_c ?? r.temp_max_c;
+    return {
+      date: r.local_date,
+      temp_max_c: r.temp_max_c, temp_min_c: r.temp_min_c, feels_max_c: r.feels_max_c,
+      precip_mm: r.precip_mm, wind_kmh: r.wind_kmh,
+      hot: feels != null && feels >= 25,
+    };
+  });
+}
+
 /** Today's coach briefing (the latest if it was regenerated), compact — so the chat stays consistent
  *  with the morning call instead of silently re-deriving a different one. Null when none yet today. */
 export async function loadTodayBriefing(
@@ -129,7 +153,7 @@ export async function assembleCoachContext(sb: SupabaseClient): Promise<{ today:
   const today = todayLocal();
   const since14 = dateMinusDays(today, 14);
 
-  const [pm, mm, am, sm, plm, gm] = await Promise.all([
+  const [pm, mm, am, sm, plm, gm, npm, wm] = await Promise.all([
     sb.from("athlete_profile").select("*").limit(1).maybeSingle(),
     sb.from("daily_metrics").select("*").order("local_date", { ascending: false }).limit(21),
     sb.from("activities")
@@ -138,10 +162,13 @@ export async function assembleCoachContext(sb: SupabaseClient): Promise<{ today:
               "avg_temp_c,max_altitude_m,time_high_altitude_s")
       .gte("local_date", since14).order("local_date", { ascending: false }),
     sb.from("sports").select("id,code"),
-    sb.from("planned_sessions").select("*").gte("planned_date", today).order("planned_date"),
+    sb.from("planned_sessions").select("*").gte("planned_date", today).neq("status", "skipped").order("planned_date"),
     sb.from("goals")
       .select("title,sport_id,kind,priority_rank,target_date,target_horizon,target_detail,notes,status")
       .eq("status", "active").order("priority_rank", { ascending: true }),
+    sb.from("athlete_load_params").select("value").eq("param", "neuro_atl_days").maybeSingle(),
+    sb.from("daily_weather").select("local_date,temp_min_c,temp_max_c,feels_max_c,precip_mm,wind_kmh")
+      .gte("local_date", today).order("local_date", { ascending: true }),
   ]);
 
   const profile: any = pm.data ?? {};
@@ -149,6 +176,13 @@ export async function assembleCoachContext(sb: SupabaseClient): Promise<{ today:
   const acts: any[] = am.data ?? [];
   const upcoming: any[] = plm.data ?? [];
   const codeById = new Map<number, string>((sm.data ?? []).map((s: any) => [s.id, s.code]));
+  const neuroAtlDays = Number((npm.data as any)?.value) || undefined;
+  const weatherRows = (wm.data ?? []) as any[]; // upcoming forecast (today..+7); [] if table absent
+  // Declared events (with persisted estimate + projected J-1 form), the coach's prior plan, and any
+  // chat-accepted PINNED sessions (fixed anchors the coach plans around).
+  const { declared_events, coach_prior_plan, pinned_sessions } = buildPlanningView({
+    today, daysBetween, dateMinusDays, dm, upcoming, codeById, neuroAtlDays,
+  });
 
   // Ranked objectives (most important first), mirroring coach/src/context.ts mapGoals.
   const mappedGoals = (gm.data ?? []).map((g: any) => ({
@@ -172,8 +206,12 @@ export async function assembleCoachContext(sb: SupabaseClient): Promise<{ today:
   const acts7 = acts.filter((a) => a.local_date >= since7);
   const sum = (xs: any[], k: string) => Math.round(xs.reduce((t, a) => t + Number(a[k] || 0), 0) * 10) / 10;
 
+  const nowL = nowLocal();
   const context = {
     today,
+    // Current LOCAL time (HH:MM) + weekday — reason with the HOUR of day, not only the date: never advise a
+    // slot already passed ("ce matin avant 8h" à 15h30), adapt to the hours left or push to another day.
+    now_local: `${nowL.weekday} ${nowL.time}`,
     athlete_tz: ATHLETE_TZ,
     // Ranked objectives (most important first); each may be sport-linked, dated (days_to) and/or have
     // a fuzzy horizon ("avant mes 30 ans"). Mirrors coach/src/context.ts.
@@ -195,6 +233,9 @@ export async function assembleCoachContext(sb: SupabaseClient): Promise<{ today:
     recovery_today: recoveryToday(dm, today),
     // Heat/altitude EXPOSURE + acclimation — read HR & recovery through this lens; never a load input.
     environment: environment(acts7, dm),
+    // Upcoming forecast (today..+7) — the heat the coach reads acclimation against for PROSPECTIVE advice
+    // (a `hot` day + low heat_acclimation ⇒ expect HR drift / higher RPE; advise timing/hydration/pacing).
+    weather: weatherView(weatherRows),
     daily_load_21d: dm.map((d) => ({
       date: d.local_date, load: d.daily_load, aerobic: d.daily_aerobic_load, neuro: d.daily_neuromuscular_load,
       by_group: d.load_by_group, dplus: d.vertical_gain_m, dminus: d.vertical_loss_m,
@@ -207,7 +248,18 @@ export async function assembleCoachContext(sb: SupabaseClient): Promise<{ today:
       temp_c: a.avg_temp_c ?? null, alt_max_m: a.max_altitude_m ?? null,
     })),
     trailing_7d: { d_plus_m: sum(acts7, "vertical_gain_m"), d_minus_m: sum(acts7, "vertical_loss_m") },
-    upcoming_planned: upcoming,
+    // Favourite sports (recent frequency) — prefer these when filling the 7-day plan.
+    favourite_sports: favouriteSports(acts, codeById),
+    // Limits + injury/weakness memory the coach plans around (no_hard_days, weekly cap, free-text notes).
+    athlete_constraints: athleteConstraints(profile),
+    // Activities the athlete DECLARED for the week (coach plans around them, never overwrites). Each
+    // carries its persisted load estimate + the CTL/ATL/TSB projected the day before it under the plan.
+    declared_events,
+    // What the coach previously planned forward (so it can stay coherent / reshape, not contradict).
+    coach_prior_plan,
+    // Sessions the athlete ACCEPTED from a coach proposal in chat — FIXED prescriptions: plan around them,
+    // never overwrite them (set anchors_event_ref to their ref on their day, like a declared event).
+    pinned_sessions,
   };
 
   return { today, context };

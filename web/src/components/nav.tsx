@@ -1,7 +1,8 @@
 import Link from "next/link";
 import { SyncRefresh } from "@/components/sync-refresh";
+import { MobileTopBar } from "@/components/mobile-top-bar";
 
-type Tab = "dashboard" | "activites" | "analyse" | "coach" | "profil";
+type Tab = "dashboard" | "calendrier" | "activites" | "analyse" | "coach" | "profil";
 
 const svg = "h-5 w-5";
 const IconDashboard = (
@@ -26,6 +27,12 @@ const IconCoach = (
     <path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z" />
   </svg>
 );
+const IconCalendrier = (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className={svg} aria-hidden>
+    <rect x="3" y="4" width="18" height="18" rx="2" />
+    <path d="M3 10h18" /><path d="M8 2v4" /><path d="M16 2v4" />
+  </svg>
+);
 const IconProfil = (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className={svg} aria-hidden>
     <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2" />
@@ -35,15 +42,17 @@ const IconProfil = (
 
 const TABS: { key: Tab; href: string; label: string; short: string; icon: React.ReactNode }[] = [
   { key: "dashboard", href: "/", label: "Tableau de bord", short: "Accueil", icon: IconDashboard },
+  { key: "calendrier", href: "/calendrier", label: "Calendrier", short: "Agenda", icon: IconCalendrier },
   { key: "activites", href: "/activites", label: "Activités", short: "Activités", icon: IconActivites },
   { key: "analyse", href: "/analyse", label: "Analyse", short: "Analyse", icon: IconAnalyse },
   { key: "coach", href: "/coach", label: "Coach", short: "Coach", icon: IconCoach },
   { key: "profil", href: "/profil", label: "Profil", short: "Profil", icon: IconProfil },
 ];
-// Mobile bottom island: Accueil · Activités · Analyse · Profil (compact icon-over-label). Coach is
-// excluded on purpose — a fixed nav must never sit under the chat input (it's reached from the top-bar
-// icon instead).
-const BOTTOM_TABS = TABS.filter((t) => t.key !== "coach");
+// Mobile bottom island (compact icon-over-label): Accueil · Agenda · Activités · Profil — the daily-driver
+// tabs. Analyse (deep dive) is desktop-only on mobile, reached via contextual links; Coach is excluded so
+// a fixed nav never sits under the chat input. Explicit list (not a filter) keeps it to 4 — no crowding.
+const BOTTOM_KEYS: Tab[] = ["dashboard", "calendrier", "activites", "profil"];
+const BOTTOM_TABS = BOTTOM_KEYS.map((k) => TABS.find((t) => t.key === k)!);
 
 /** The Massif wordmark — lowercase grotesque + a Summit-orange dot (mirrors the brand hero). */
 function Wordmark() {
@@ -98,29 +107,10 @@ export function Nav({ current }: { current: Tab }) {
         </div>
       </nav>
 
-      {/* Mobile : barre haute UNIQUEMENT sur l'accueil (marque + accès coach). Profil & coach n'ont
-          pas de top-bar mobile — ils mènent avec leur propre titre / en-tête. */}
-      {current === "dashboard" && (
-        <div className="mb-4 flex items-center justify-between md:hidden">
-          <Wordmark />
-          <Link
-            href="/coach"
-            aria-label="Discuter avec le coach"
-            className="flex h-10 w-10 items-center justify-center rounded-full transition-transform active:scale-90"
-          >
-            {/* Trait en dégradé bleu→orange, sans fond (discret) */}
-            <svg viewBox="0 0 24 24" fill="none" className="h-7 w-7" aria-hidden>
-              <defs>
-                <linearGradient id="coachStroke" x1="2" y1="2" x2="22" y2="22" gradientUnits="userSpaceOnUse">
-                  <stop offset="0" stopColor="var(--color-alpine-500)" />
-                  <stop offset="1" stopColor="var(--color-summit-500)" />
-                </linearGradient>
-              </defs>
-              <path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z" stroke="url(#coachStroke)" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-          </Link>
-        </div>
-      )}
+      {/* Mobile : barre haute UNIQUEMENT sur l'accueil (marque + accès coach). Suit le scroll : se
+          masque en descendant, réapparaît en semi-transparence dès un petit scroll vers le haut.
+          Profil & coach n'ont pas de top-bar mobile — ils mènent avec leur propre titre / en-tête. */}
+      {current === "dashboard" && <MobileTopBar />}
 
       {/* Mobile : île flottante en bas — 2 onglets labélisés, animés. Masquée sur la page coach
           (jamais de barre fixe sous une fenêtre de discussion + clavier). */}

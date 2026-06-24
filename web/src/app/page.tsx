@@ -8,6 +8,9 @@ import { CoachHero } from "@/components/coach-hero";
 import { assembleVerdict } from "@/lib/day-verdict";
 import { GarminRefresh } from "@/components/garmin-refresh";
 import { SorenessInput } from "@/components/soreness-input";
+import { WeekPlanPills } from "@/components/week-plan-pills";
+import { AddActivityButton } from "@/components/add-activity-button";
+import { getSports } from "@/lib/activities";
 import { todayLocal } from "@/lib/coach-context";
 import { fmt, avgLoadRecent } from "@/lib/format";
 import { STATE } from "@/lib/theme";
@@ -69,7 +72,10 @@ const linkCls =
   "inline-flex shrink-0 items-center gap-1 text-sm font-medium text-stone-500 transition-colors hover:text-alpine-700 dark:text-stone-400 dark:hover:text-alpine-300";
 
 export default async function Dashboard() {
-  const { profile, topGoal, metrics, briefing, activities, allActivities, todayPlan } = await getDashboard();
+  const [{ profile, topGoal, metrics, briefing, activities, allActivities, todayPlan, projection, weekPlan }, sports] = await Promise.all([
+    getDashboard(),
+    getSports(),
+  ]);
   const latest = latestModel(metrics);
   const rec = latestRecovery(metrics);
   const acclim = latestAcclimation(metrics); // last known heat/altitude acclimation (carried forward)
@@ -91,22 +97,37 @@ export default async function Dashboard() {
       <div className="mx-auto w-full max-w-5xl px-4 pt-6 pb-[calc(4rem+env(safe-area-inset-bottom))] sm:px-6 sm:pt-8 md:pb-8">
         <Nav current="dashboard" />
 
-        {/* Objectif principal — récap simple + accès à la personnalisation (remplace le titre de page) */}
-        <section className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-stone-200 bg-white p-4 dark:border-stone-800 dark:bg-stone-900 sm:p-5">
-          <div className="min-w-0">
-            <div className="text-xs font-semibold uppercase tracking-wide text-stone-400">Objectif principal</div>
+        {/* Ton plan d'entraînement — objectif (1 ligne) + 7 jours à venir + actions. La saisie d'une
+            activité prévue passe par une modale (bouton primaire) plutôt qu'un champ toujours ouvert :
+            le formulaire repart vide à chaque ouverture et se ferme à l'enregistrement, ce qui évite de
+            déclarer deux fois le même événement. Fusionne les ex-sections Objectif / Quick-add / plan. */}
+        <section className="mb-6 rounded-2xl border border-stone-200 bg-white p-4 dark:border-stone-800 dark:bg-stone-900 sm:p-5">
+          <h2 className="text-xs font-semibold uppercase tracking-wide text-stone-400">Ton plan d&apos;entraînement</h2>
+
+          {/* 1. Objectif principal — une ligne */}
+          <div className="mt-2">
             {topGoal ? (
-              <div className="mt-1"><GoalBadge goal={topGoal} /></div>
+              <GoalBadge goal={topGoal} />
             ) : (
-              <p className="mt-1 text-sm text-stone-500 dark:text-stone-400">Aucun objectif défini pour l&apos;instant.</p>
+              <p className="text-sm text-stone-500 dark:text-stone-400">Aucun objectif défini pour l&apos;instant.</p>
             )}
           </div>
-          <Link
-            href="/profil"
-            className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-stone-200 px-3 py-1.5 text-sm font-medium text-stone-700 transition-colors hover:border-alpine-300 hover:text-alpine-700 dark:border-stone-700 dark:text-stone-200 dark:hover:border-alpine-700 dark:hover:text-alpine-300"
-          >
-            Personnaliser mes objectifs
-          </Link>
+
+          {/* 2. Pastilles des entraînements & événements à 7 jours */}
+          <div className="mt-3">
+            <WeekPlanPills days={weekPlan} />
+          </div>
+
+          {/* 3. Call to action — consulter les objectifs (secondaire) + ajouter une activité (primaire, modale) */}
+          <div className="mt-4 flex flex-col gap-2 border-t border-stone-100 pt-4 dark:border-stone-800 sm:flex-row sm:items-center sm:justify-end">
+            <Link
+              href="/profil"
+              className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-stone-200 px-4 py-2 text-sm font-medium text-stone-700 transition-colors hover:border-alpine-300 hover:text-alpine-700 dark:border-stone-700 dark:text-stone-200 dark:hover:border-alpine-700 dark:hover:text-alpine-300 sm:w-auto"
+            >
+              Consulter mes objectifs
+            </Link>
+            <AddActivityButton sports={sports} />
+          </div>
         </section>
 
         {/* Le coach prend la parole — verdict du jour en tête, briefing repliable dessous, CTA unique */}
@@ -115,7 +136,7 @@ export default async function Dashboard() {
         {/* Indicateurs clés — CTL/ATL/TSB interactifs (sélection = scrubber) + indicateurs du jour. */}
         {metrics.length > 1 ? (
           <div className="mb-6">
-            <ChartsSection key={`${metrics.length}-${latest?.local_date ?? ""}-${latest?.ctl ?? ""}-${latest?.tsb ?? ""}`} metrics={metrics} activities={allActivities} />
+            <ChartsSection key={`${metrics.length}-${latest?.local_date ?? ""}-${latest?.ctl ?? ""}-${latest?.tsb ?? ""}`} metrics={metrics} activities={allActivities} projection={projection} />
           </div>
         ) : (
           <p className="mb-6 text-sm text-stone-500">Pas encore assez de jours de données pour les indicateurs.</p>

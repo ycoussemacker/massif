@@ -7,7 +7,7 @@
  *  Keep the voice in sync with the persona system (web/src/lib/coach-settings.ts buildPersonaInstructions);
  *  these templates encode the DEFAULT Bouquetin voice. The LLM is used only for the on-demand
  *  "Débriefer" button (commentActivities), never here. */
-import type { DayProgress, DayStatus, SuggestionSize } from "./day-progress";
+import type { DayProgress, DayStatus, SuggestionSize, ChannelProgress } from "./day-progress";
 
 export type VerdictTone = "ready" | "below" | "caution";
 
@@ -20,6 +20,7 @@ export type VerdictVoice = {
   suggestionText: string | null; // `below` only — the concrete "what to add" line
   suggestionSportCode: string | null; // the favourite sport to suggest (for its glyph)
   isRestNote: boolean;          // rest_kept → render as a soft fused note, not a headline
+  channelNote: string | null;   // per-channel precision ("aéro touchée, neuro au-delà") when channel data exists
   // Takes the coach-card headline ONLY once a real session is logged today (actual > 0). Before any
   // activity the morning briefing/plan stays in front — the athlete may sync many times before
   // training, so we don't judge the day prematurely. (Matches the conversation-post rule.)
@@ -126,6 +127,31 @@ const VARIANTS: Record<DayStatus, Variant[]> = {
   ],
 };
 
+/** A concise per-channel clause when the coach gave channel targets — names which system was over/under
+ *  (the two-channel vulgarization: a calm-HR descent can blow the neuromuscular budget while aerobic is
+ *  spot-on). Returns null when channels agree or aren't available, so it only speaks when it adds signal. */
+function channelNote(aer: ChannelProgress | null, neu: ChannelProgress | null): string | null {
+  if (!aer && !neu) return null;
+  const over = (c: ChannelProgress | null) => c?.status === "over";
+  const under = (c: ChannelProgress | null) => c?.status === "under";
+  const inBand = (c: ChannelProgress | null) => c?.status === "in_band";
+  if (over(neu) && !over(aer)) {
+    return inBand(aer)
+      ? "Côté cardio tu es dans la cible, mais le neuromusculaire a chargé au-delà (descente / appuis) — demain, allège les jambes."
+      : "Le neuromusculaire a chargé au-delà de la cible (descente / appuis) — demain, protège les jambes.";
+  }
+  if (over(aer) && !over(neu)) {
+    return "C'est surtout le moteur cardio qui a dépassé la cible — la récup d'un effort aérobie revient vite, garde juste une nuit au calme.";
+  }
+  if (under(neu) && inBand(aer)) {
+    return "Cardio dans la cible, mais peu de charge neuromusculaire — si tu visais du dénivelé / du gainage, il en reste à aller chercher.";
+  }
+  if (under(aer) && inBand(neu)) {
+    return "Le neuromusculaire est là, mais le moteur cardio est resté sous la cible — un peu de fond en plus comblerait l'écart.";
+  }
+  return null;
+}
+
 /** Deterministic, content-stable variant index (no Math.random → no flicker across renders/syncs). */
 function pickIndex(seed: string, n: number): number {
   let h = 0;
@@ -140,15 +166,19 @@ export function buildVerdictVoice(p: DayProgress | null, c: Ctx, seed: string): 
   const meta = META[p.status];
   const variants = VARIANTS[p.status];
   const v = variants[pickIndex(seed, variants.length)];
+  // Per-channel precision is only meaningful when the day was hit/over/under (not a rest verdict).
+  const note = p.status === "rest_kept" || p.status === "rest_broken" ? null : channelNote(p.aerobic, p.neuromuscular);
+  const append = (s: string) => (note ? `${s} ${note}` : s);
   return {
     status: p.status,
     tone: meta.tone,
     pillLabel: meta.label,
-    cardText: v.card(p, c),
-    chatText: v.chat(p, c),
+    cardText: append(v.card(p, c)),
+    chatText: append(v.chat(p, c)),
     suggestionText: v.suggestion ? v.suggestion(p, c) : null,
     suggestionSportCode: p.suggestion?.sportCode ?? null,
     isRestNote: p.status === "rest_kept",
+    channelNote: note,
     showAsHeadline: p.status !== "rest_kept" && p.actual > 0,
   };
 }

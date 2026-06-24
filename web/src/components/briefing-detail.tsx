@@ -1,23 +1,14 @@
 "use client";
 
 import { useState } from "react";
-import { SYSTEM_TAG_FR } from "@/lib/labels";
-
-type WeekDay = { day_offset: number; focus: string; system_tag: string };
 
 /** Collapsible "Afficher plus" under the briefing's one-sentence `why`: reveals the fuller state
- *  assessment (`reasoning`) + the week skeleton. Keeps the card minimal by default — the athlete pulls
- *  the detail only when they want it. (The ⚠️ flag stays always-visible in CoachHero — it's a warning.) */
-export function BriefingDetail({
-  reasoning,
-  weekSkeleton,
-}: {
-  reasoning: string | null;
-  weekSkeleton: WeekDay[] | null;
-}) {
+ *  assessment (`reasoning`). Keeps the card minimal by default — the athlete pulls the detail only when
+ *  they want it. The 7-day plan strip now lives at the top of the dashboard ("Ton plan d'entraînement"),
+ *  so it's no longer duplicated here. (The ⚠️ flag stays always-visible in CoachHero — it's a warning.) */
+export function BriefingDetail({ reasoning }: { reasoning: string | null }) {
   const [open, setOpen] = useState(false);
-  const hasWeek = !!weekSkeleton?.length;
-  if (!reasoning && !hasWeek) return null;
+  if (!reasoning) return null;
 
   return (
     <div className="mt-2">
@@ -43,24 +34,7 @@ export function BriefingDetail({
       </button>
 
       {open && (
-        <div className="mt-2 space-y-3">
-          {reasoning && (
-            <p className="text-sm leading-relaxed text-stone-600 dark:text-stone-300">{reasoning}</p>
-          )}
-          {hasWeek && (
-            <div className="flex flex-wrap gap-1.5">
-              {weekSkeleton!.map((d) => (
-                <span
-                  key={d.day_offset}
-                  title={d.focus}
-                  className="rounded-md border border-stone-200 px-2 py-1 text-xs text-stone-600 dark:border-stone-700 dark:text-stone-300"
-                >
-                  <span className="font-medium">+{d.day_offset} j</span> {SYSTEM_TAG_FR[d.system_tag] ?? d.system_tag}
-                </span>
-              ))}
-            </div>
-          )}
-        </div>
+        <p className="mt-2 text-sm leading-relaxed text-stone-600 dark:text-stone-300">{reasoning}</p>
       )}
     </div>
   );

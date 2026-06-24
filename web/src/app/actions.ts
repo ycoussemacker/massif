@@ -13,7 +13,14 @@ import { syncStrava } from "@/lib/strava-sync";
 import { rollupDailyMetrics } from "@/lib/rollup";
 import { generateBriefing, type BriefingResult } from "@/lib/coach-briefing";
 import { postDayVerdictMessage } from "@/lib/day-verdict";
-import { buildTimeline, oldestContentDate, BATCH_DAYS, type TimelineItem } from "@/lib/chat";
+import { buildTimeline, hasItemBefore, MESSAGE_BATCH, type TimelineItem } from "@/lib/chat";
+import { estimateForDeclared } from "@/lib/estimate-server";
+import type { LoadEstimate } from "@/lib/estimate";
+import {
+  stampProposalMessage, fingerprintOf,
+  type ProposalOperations, type SessionPayload, type EventPayload,
+  type DeletePayload, type ActivityEditPayload,
+} from "@/lib/coach-proposals";
 
 /** Load an OLDER window of the Forme history on demand (dashboard infinite-scroll-back). Returns the
  *  `months` of daily_metrics + activities ending the day BEFORE `beforeDate` (the current oldest day
@@ -38,31 +45,19 @@ export async function loadOlderForme(
   return { metrics: (mm.data ?? []) as DailyMetric[], activities: acts.rows };
 }
 
-/** Load the next OLDER batch of the coach conversation (scroll-to-top in /coach). Steps back from
- *  `beforeDate` (the oldest LOCAL date currently loaded, exclusive) in BATCH_DAYS-day windows, SKIPPING
- *  empty windows, and returns the first window that carries content + the new window start + whether the
- *  start of history is reached (so the client can stop). Never pre-fetched. Mirrors loadOlderForme's
- *  on-demand shape; the timeline build is shared with getConversation via buildTimeline. */
+/** Load the next OLDER page of the coach conversation (scroll-to-top / "load earlier" in /coach).
+ *  `beforeIso` = the timestamp of the oldest item (message OR activity) currently loaded (the cursor).
+ *  Returns the next MESSAGE_BATCH older items + the briefings in that span, the new cursor, and whether the
+ *  start of the conversation is reached (`done` ⇒ butée). Never pre-fetched; shares buildTimeline with
+ *  getConversation so a page here looks exactly like the initial load. */
 export async function loadOlderConversation(
-  beforeDate: string,
-): Promise<{ items: TimelineItem[]; windowStart: string; done: boolean }> {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(beforeDate)) return { items: [], windowStart: beforeDate, done: true };
+  beforeIso: string,
+): Promise<{ items: TimelineItem[]; cursor: string | null; done: boolean }> {
+  if (!beforeIso || Number.isNaN(Date.parse(beforeIso))) return { items: [], cursor: null, done: true };
   const sb = await createServiceClient();
   const today = todayLocal();
-  const oldest = await oldestContentDate(sb);
-  if (!oldest || oldest >= beforeDate) return { items: [], windowStart: beforeDate, done: true };
-
-  let to = dateMinusDays(beforeDate, 1);
-  let from = dateMinusDays(beforeDate, BATCH_DAYS);
-  // Walk back in fixed windows until one has content (or we hit the start of history). The clamp keeps
-  // the final batch from over-reaching past the oldest stored day.
-  while (true) {
-    if (from < oldest) from = oldest;
-    const items = await buildTimeline(sb, today, from, to);
-    if (items.length || from <= oldest) return { items, windowStart: from, done: from <= oldest };
-    to = dateMinusDays(from, 1);
-    from = dateMinusDays(from, BATCH_DAYS);
-  }
+  const page = await buildTimeline(sb, today, beforeIso, MESSAGE_BATCH);
+  return { items: page.items, cursor: page.cursor ?? beforeIso, done: !(await hasItemBefore(sb, page.cursor)) };
 }
 
 /** Log a post-session RPE (1–10) for an activity and recompute its load via session_rpe.
@@ -174,10 +169,13 @@ export async function sendCoachMessage(text: string): Promise<void> {
   const ins = await sb.from("coach_messages").insert({ role: "user", kind: "chat", content });
   if (ins.error) throw new Error(ins.error.message);
 
-  const reply = await generateCoachReply({ sb, history, newUserContent: content });
+  const { text: reply, proposalIds } = await generateCoachReply({ sb, history, newUserContent: content });
 
-  const insC = await sb.from("coach_messages").insert({ role: "coach", kind: "chat", content: reply, model: COACH_MODEL });
+  const insC = await sb.from("coach_messages")
+    .insert({ role: "coach", kind: "chat", content: reply, model: COACH_MODEL }).select("id").single();
   if (insC.error) throw new Error(insC.error.message);
+  // Attach any pending proposals raised this turn to the coach message so the card renders under it.
+  await stampProposalMessage(sb, proposalIds, (insC.data as { id: string }).id);
 
   revalidatePath("/coach");
 }
@@ -248,13 +246,14 @@ export async function commentActivities(localDate: string): Promise<void> {
     .insert({ role: "user", kind: "activity_comment", content: userBubble, activity_ids: activityIds });
   if (ins.error) throw new Error(ins.error.message);
 
-  const reply = await generateCoachReply({ sb, history, newUserContent });
+  const { text: reply, proposalIds } = await generateCoachReply({ sb, history, newUserContent });
 
   const insC = await sb.from("coach_messages").insert({
     role: "coach", kind: "activity_comment", content: reply, model: COACH_MODEL,
     activity_ids: activityIds, briefing_id: briefing?.id ?? null,
-  });
+  }).select("id").single();
   if (insC.error) throw new Error(insC.error.message);
+  await stampProposalMessage(sb, proposalIds, (insC.data as { id: string }).id);
 
   revalidatePath("/coach");
 }
@@ -379,4 +378,328 @@ export async function generateBriefingNow(): Promise<{ pulled: number; briefing:
   revalidatePath("/");
   revalidatePath("/coach");
   return { pulled, briefing };
+}
+
+// ── Declared events (athlete plans an activity this week → the coach plans around it) ────────────
+
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+export type PlannedEventInput = {
+  planned_date: string;
+  sport_id: number;
+  title: string;
+  description?: string | null;
+  is_key?: boolean;
+  target_distance_m?: number | null;
+  target_vertical_m?: number | null;
+  target_duration_s?: number | null;
+  expected_altitude_m?: number | null;
+};
+
+function cleanEventInput(input: PlannedEventInput) {
+  if (!ISO_DATE.test(input.planned_date ?? "")) throw new Error("Date invalide (AAAA-MM-JJ).");
+  if (!Number.isInteger(input.sport_id)) throw new Error("Sport invalide.");
+  const title = (input.title ?? "").trim();
+  if (!title) throw new Error("Donne un titre à l'activité prévue.");
+  const numOrNull = (v: number | null | undefined) =>
+    v == null || !Number.isFinite(v) || v < 0 ? null : Number(v);
+  return {
+    planned_date: input.planned_date,
+    sport_id: input.sport_id,
+    title: title.slice(0, 200),
+    description: (input.description ?? "")?.toString().trim().slice(0, 1000) || null,
+    is_key: !!input.is_key,
+    target_distance_m: numOrNull(input.target_distance_m),
+    target_vertical_m: numOrNull(input.target_vertical_m),
+    target_duration_s: numOrNull(input.target_duration_s),
+    expected_altitude_m: numOrNull(input.expected_altitude_m),
+  };
+}
+
+/** Estimate a declared activity's load from the athlete's similar past efforts (live form preview). */
+export async function estimatePlannedEvent(input: {
+  sport_id: number;
+  title?: string | null;
+  target_distance_m?: number | null;
+  target_vertical_m?: number | null;
+  target_duration_s?: number | null;
+}): Promise<LoadEstimate> {
+  if (!Number.isInteger(input.sport_id)) throw new Error("Sport invalide.");
+  const sb = await createServiceClient();
+  return estimateForDeclared(sb, {
+    sportId: input.sport_id,
+    taxonomyGroup: null,
+    durationS: input.target_duration_s ?? null,
+    distanceM: input.target_distance_m ?? null,
+    verticalGainM: input.target_vertical_m ?? null,
+    name: input.title ?? null,
+  });
+}
+
+/** Create an athlete-declared event (planned_sessions row, modified_by='user', is_event=true). The load
+ *  estimate is computed server-side and persisted as predicted_* so the coach + projection read it. */
+export async function createPlannedEvent(input: PlannedEventInput): Promise<{ id: string; estimate: LoadEstimate }> {
+  const c = cleanEventInput(input);
+  const sb = await createServiceClient();
+  const estimate = await estimateForDeclared(sb, {
+    sportId: c.sport_id,
+    taxonomyGroup: null,
+    durationS: c.target_duration_s,
+    distanceM: c.target_distance_m,
+    verticalGainM: c.target_vertical_m,
+    name: c.title,
+  });
+  const ins = await sb.from("planned_sessions").insert({
+    planned_date: c.planned_date,
+    sport_id: c.sport_id,
+    title: c.title,
+    description: c.description,
+    is_key: c.is_key,
+    is_event: true,
+    target_distance_m: c.target_distance_m,
+    target_vertical_m: c.target_vertical_m,
+    target_duration_s: c.target_duration_s,
+    expected_altitude_m: c.expected_altitude_m,
+    target_load: estimate.total,
+    predicted_aerobic_load: estimate.aerobic,
+    predicted_neuromuscular_load: estimate.neuro,
+    prediction_basis: estimate.basisLabel,
+    status: "planned",
+    modified_by: "user",
+  }).select("id").single();
+  if (ins.error) throw new Error(ins.error.message);
+  revalidatePath("/");
+  revalidatePath("/calendrier");
+  revalidatePath("/coach");
+  return { id: ins.data.id, estimate };
+}
+
+/** Edit an athlete-declared event (re-estimates the load). Scoped to user rows so coach plans aren't hit. */
+export async function updatePlannedEvent(id: string, input: PlannedEventInput): Promise<{ estimate: LoadEstimate }> {
+  if (!id) throw new Error("Événement introuvable.");
+  const c = cleanEventInput(input);
+  const sb = await createServiceClient();
+  const estimate = await estimateForDeclared(sb, {
+    sportId: c.sport_id,
+    taxonomyGroup: null,
+    durationS: c.target_duration_s,
+    distanceM: c.target_distance_m,
+    verticalGainM: c.target_vertical_m,
+    name: c.title,
+  });
+  const upd = await sb.from("planned_sessions").update({
+    planned_date: c.planned_date,
+    sport_id: c.sport_id,
+    title: c.title,
+    description: c.description,
+    is_key: c.is_key,
+    target_distance_m: c.target_distance_m,
+    target_vertical_m: c.target_vertical_m,
+    target_duration_s: c.target_duration_s,
+    expected_altitude_m: c.expected_altitude_m,
+    target_load: estimate.total,
+    predicted_aerobic_load: estimate.aerobic,
+    predicted_neuromuscular_load: estimate.neuro,
+    prediction_basis: estimate.basisLabel,
+    updated_at: new Date().toISOString(),
+  }).eq("id", id).eq("modified_by", "user");
+  if (upd.error) throw new Error(upd.error.message);
+  revalidatePath("/");
+  revalidatePath("/calendrier");
+  revalidatePath("/coach");
+  return { estimate };
+}
+
+/** Delete an athlete-declared event. Scoped to user rows (the coach's own plan is never deletable here). */
+export async function deletePlannedEvent(id: string): Promise<void> {
+  if (!id) throw new Error("Événement introuvable.");
+  const sb = await createServiceClient();
+  const del = await sb.from("planned_sessions").delete().eq("id", id).eq("modified_by", "user");
+  if (del.error) throw new Error(del.error.message);
+  revalidatePath("/");
+  revalidatePath("/calendrier");
+  revalidatePath("/coach");
+}
+
+// ── Coach proposals (the coach proposes a plan/activity change → the athlete validates → we write) ─
+
+export type AcceptResult = {
+  ok: boolean;
+  committedId?: string | null; // a planned_sessions/activity id to open ("Modifier" → /seance/[id])
+  regen?: boolean;             // the client should trigger the background week regen (event/reshape)
+  stale?: boolean;            // the plan changed since the proposal — nothing was written
+  message?: string;
+};
+
+async function resolveSportId(sb: SupabaseClient, code: string | null | undefined): Promise<number | null> {
+  if (!code) return null;
+  const { data } = await sb.from("sports").select("id").eq("code", code).maybeSingle();
+  return data ? (data as { id: number }).id : null;
+}
+
+/** Light cost/abuse guard on accepts (a leaked password could otherwise spam writes). Shared DB state. */
+async function enforceProposalRateLimit(sb: SupabaseClient): Promise<void> {
+  const since1m = new Date(Date.now() - 60_000).toISOString();
+  const burst = await sb.from("coach_proposals").select("id", { count: "exact", head: true })
+    .eq("status", "accepted").gte("updated_at", since1m);
+  if ((burst.count ?? 0) >= 10) throw new Error("Doucement — attends quelques secondes avant de valider une autre proposition.");
+}
+
+/** Accept a pending coach proposal and COMMIT it through the existing write paths. Idempotent (a guarded
+ *  pending→accepted flip), staleness-checked (the target row must be unchanged since the proposal), and it
+ *  NEVER calls Claude (the proposal was already generated). Returns what the card needs (committed id to
+ *  open, whether to trigger the background week regen). The athlete validated it — this is the only writer. */
+export async function acceptCoachProposal(proposalId: string): Promise<AcceptResult> {
+  if (!proposalId) throw new Error("Proposition introuvable.");
+  const sb = await createServiceClient();
+  await enforceProposalRateLimit(sb);
+
+  const { data: prop } = await sb.from("coach_proposals")
+    .select("id,kind,status,operations,summary").eq("id", proposalId).maybeSingle();
+  if (!prop) throw new Error("Proposition introuvable.");
+  if (prop.status !== "pending") return { ok: false, message: "Proposition déjà traitée." };
+
+  const ops = (prop.operations ?? {}) as ProposalOperations;
+
+  // Staleness: the targeted row must be unchanged since the proposal (no regen / logged activity / edit in
+  // between), else we'd double-write or clobber. A row already linked to an activity is never touched.
+  if (ops.target_planned_id) {
+    const { data: cur } = await sb.from("planned_sessions")
+      .select("updated_at,status,linked_activity_id").eq("id", ops.target_planned_id).maybeSingle();
+    if (fingerprintOf(cur as any) !== (ops.expected_fingerprint ?? null) || (cur as any)?.linked_activity_id) {
+      await sb.from("coach_proposals").update({ status: "superseded" }).eq("id", proposalId).eq("status", "pending");
+      return { ok: false, stale: true, message: "Le plan a changé depuis cette proposition — redemande au coach." };
+    }
+  }
+  if (ops.target_activity_id) {
+    const { data: cur } = await sb.from("activities").select("updated_at").eq("id", ops.target_activity_id).maybeSingle();
+    if (fingerprintOf(cur ? { updated_at: (cur as any).updated_at } : null) !== (ops.expected_fingerprint ?? null)) {
+      await sb.from("coach_proposals").update({ status: "superseded" }).eq("id", proposalId).eq("status", "pending");
+      return { ok: false, stale: true, message: "Cette activité a changé depuis la proposition — redemande au coach." };
+    }
+  }
+
+  // Claim atomically (guards a double-tap): only one accept wins the pending→accepted flip.
+  const claim = await sb.from("coach_proposals").update({ status: "accepted" })
+    .eq("id", proposalId).eq("status", "pending").select("id");
+  if (claim.error) throw new Error(claim.error.message);
+  if (!(claim.data?.length)) return { ok: false, message: "Proposition déjà traitée." };
+
+  let committedId: string | null = null;
+  let regen = false;
+  try {
+    if (prop.kind === "session") {
+      committedId = await commitSession(sb, proposalId, ops);
+    } else if (prop.kind === "event") {
+      const p = ops.payload as EventPayload;
+      const sportId = await resolveSportId(sb, p.sport_code);
+      if (!sportId) throw new Error(`Sport « ${p.sport_code} » inconnu.`);
+      const { id } = await createPlannedEvent({
+        planned_date: p.planned_date, sport_id: sportId, title: p.title, description: p.description ?? null,
+        is_key: !!p.is_key, target_distance_m: p.target_distance_m ?? null, target_vertical_m: p.target_vertical_m ?? null,
+        target_duration_s: p.target_duration_s ?? null, expected_altitude_m: p.expected_altitude_m ?? null,
+      });
+      committedId = id;
+      regen = !!ops.regen_week;
+    } else if (prop.kind === "delete") {
+      const id = (ops.payload as DeletePayload).session_id ?? ops.target_planned_id!;
+      const upd = await sb.from("planned_sessions").update({ status: "skipped" }).eq("id", id);
+      if (upd.error) throw new Error(upd.error.message);
+      committedId = id;
+    } else if (prop.kind === "reshape") {
+      regen = true; // no write — the client runs the week regen
+    } else if (prop.kind === "activity_edit") {
+      const p = ops.payload as ActivityEditPayload;
+      if (p.perceived_rpe != null) await setRpe(p.activity_id, p.perceived_rpe);
+      if (p.sport_code) {
+        const sid = await resolveSportId(sb, p.sport_code);
+        if (sid) {
+          const upd = await sb.from("activities").update({ sport_id: sid, needs_review: true }).eq("id", p.activity_id);
+          if (upd.error) throw new Error(upd.error.message);
+        }
+      }
+      committedId = p.activity_id;
+    }
+  } catch (e) {
+    // Roll the claim back so a transient failure stays retryable instead of stuck "accepted".
+    await sb.from("coach_proposals").update({ status: "pending" }).eq("id", proposalId);
+    throw e;
+  }
+
+  await sb.from("coach_proposals").update({ committed_ids: committedId ? [committedId] : [] }).eq("id", proposalId);
+  // Drop a short confirmation into the conversation so the timeline shows the outcome.
+  await sb.from("coach_messages").insert({
+    role: "coach", kind: "chat", content: `✓ Plan mis à jour — ${prop.summary ?? "proposition appliquée"}.`,
+  });
+
+  revalidatePath("/");
+  revalidatePath("/calendrier");
+  revalidatePath("/coach");
+  return { ok: true, committedId, regen };
+}
+
+/** Replace/create a pinned coach prescription (modified_by='user', is_pinned). On a replace the old row is
+ *  deleted (only if not yet linked to an activity) and its order_in_day reused, so the day never duplicates. */
+async function commitSession(sb: SupabaseClient, proposalId: string, ops: ProposalOperations): Promise<string> {
+  const p = ops.payload as SessionPayload;
+  const sportId = await resolveSportId(sb, p.sport_code);
+  if (!sportId) throw new Error(`Sport « ${p.sport_code} » inconnu.`);
+
+  const est = await estimateForDeclared(sb, {
+    sportId, taxonomyGroup: null, durationS: p.target_duration_s ?? null, distanceM: p.target_distance_m ?? null,
+    verticalGainM: p.target_vertical_m ?? null, name: p.title,
+  });
+
+  let orderInDay = 1;
+  if (ops.target_planned_id) {
+    const { data: old } = await sb.from("planned_sessions")
+      .select("order_in_day").eq("id", ops.target_planned_id).maybeSingle();
+    if (old) orderInDay = (old as { order_in_day: number }).order_in_day ?? 1;
+    // Remove the replaced session (scoped: never a row already linked to a logged activity).
+    await sb.from("planned_sessions").delete().eq("id", ops.target_planned_id).is("linked_activity_id", null);
+  } else {
+    const { data: existing } = await sb.from("planned_sessions")
+      .select("order_in_day").eq("planned_date", p.planned_date).neq("status", "skipped");
+    orderInDay = Math.max(0, ...((existing ?? []) as any[]).map((r) => r.order_in_day ?? 1)) + 1;
+  }
+
+  const aer = p.target_aerobic_load ?? est.aerobic;
+  const neu = p.target_neuromuscular_load ?? est.neuro;
+  const ins = await sb.from("planned_sessions").insert({
+    planned_date: p.planned_date,
+    order_in_day: orderInDay,
+    sport_id: sportId,
+    title: p.title,
+    description: p.description ?? null,
+    system_tag: p.system_tag ?? null,
+    intensity_zone: p.intensity_zone ?? null,
+    target_duration_s: p.target_duration_s ?? null,
+    target_distance_m: p.target_distance_m ?? null,
+    target_vertical_m: p.target_vertical_m ?? null,
+    expected_altitude_m: p.expected_altitude_m ?? null,
+    target_load: (aer ?? 0) + (neu ?? 0),
+    target_aerobic_load: aer,
+    target_neuromuscular_load: neu,
+    predicted_aerobic_load: est.aerobic,
+    predicted_neuromuscular_load: est.neuro,
+    prediction_basis: est.basisLabel,
+    is_key: !!p.is_key,
+    is_event: false,
+    is_pinned: true,
+    source: "coach_proposal",
+    proposal_id: proposalId,
+    status: "planned",
+    modified_by: "user",
+    modified_reason: p.rationale ?? null,
+  }).select("id").single();
+  if (ins.error) throw new Error(ins.error.message);
+  return (ins.data as { id: string }).id;
+}
+
+/** Dismiss a pending proposal (the athlete declined). Idempotent. */
+export async function dismissCoachProposal(proposalId: string): Promise<void> {
+  if (!proposalId) return;
+  const sb = await createServiceClient();
+  await sb.from("coach_proposals").update({ status: "dismissed" }).eq("id", proposalId).eq("status", "pending");
+  revalidatePath("/coach");
 }

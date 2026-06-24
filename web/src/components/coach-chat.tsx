@@ -1,10 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, useTransition } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useTransition } from "react";
 import { sendCoachMessage, commentActivities, loadOlderConversation } from "@/app/actions";
 import { READINESS, SYSTEM_TAG_FR, sportName, sportIcon, type Readiness } from "@/lib/labels";
 import { Markdown } from "@/components/markdown";
 import { ActivitySnapshot } from "@/components/activity-snapshot";
+import { CoachProposalCard } from "@/components/coach-proposal-card";
 import type { TimelineItem } from "@/lib/chat";
 
 function dur(s: number | null | undefined): string {
@@ -13,6 +14,27 @@ function dur(s: number | null | undefined): string {
   return m >= 60 ? `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, "0")}` : `${m} min`;
 }
 const r0 = (n: number | null | undefined) => (n == null ? "—" : String(Math.round(n)));
+
+/** Stable de-dupe key per timeline item (message id / briefing instant / activity day). */
+function keyOf(it: TimelineItem): string {
+  return it.kind === "message" ? `m-${it.id}` : it.kind === "briefing" ? `b-${it.at}` : `g-${it.localDate}`;
+}
+
+/** Add an item to the keyed map. For an activity DAY that straddles a page boundary (some of its
+ *  activities in one page, the rest in another), UNION the day's activities instead of dropping a half —
+ *  otherwise paging older would silently lose the activities that fell on the far side of the cursor. */
+function addItem(map: Map<string, TimelineItem>, it: TimelineItem): void {
+  const k = keyOf(it);
+  const prev = map.get(k);
+  if (it.kind === "activity_group" && prev && prev.kind === "activity_group") {
+    const byId = new Map(prev.activities.map((x) => [x.id, x]));
+    for (const x of it.activities) byId.set(x.id, x);
+    const activities = [...byId.values()].sort((p, q) => (p.started_at < q.started_at ? -1 : p.started_at > q.started_at ? 1 : 0));
+    map.set(k, { ...prev, activities, at: activities[activities.length - 1].started_at });
+  } else {
+    map.set(k, it);
+  }
+}
 
 function BriefingBubble({ b }: { b: Extract<TimelineItem, { kind: "briefing" }>["briefing"] }) {
   const r = b.readiness ? READINESS[b.readiness as Readiness] : null;
@@ -40,7 +62,9 @@ function BriefingBubble({ b }: { b: Extract<TimelineItem, { kind: "briefing" }>[
           {b.week_skeleton.map((d) => (
             <span key={d.day_offset} title={d.focus}
               className="rounded-md border border-stone-200 px-2 py-1 text-xs text-stone-600 dark:border-stone-700 dark:text-stone-300">
-              <span className="font-medium">+{d.day_offset} j</span> {SYSTEM_TAG_FR[d.system_tag] ?? d.system_tag}
+              <span className="font-medium">{d.day_offset === 0 ? "Auj." : `+${d.day_offset} j`}</span>{" "}
+              {d.sport_code ? <span aria-hidden>{sportIcon(d.sport_code)} </span> : null}
+              {SYSTEM_TAG_FR[d.system_tag] ?? d.system_tag}
             </span>
           ))}
         </div>
@@ -121,21 +145,17 @@ function MessageBubble({ m }: { m: Extract<TimelineItem, { kind: "message" }> })
 }
 
 export function CoachChat({
-  timeline, initialWindowStart, initialHasMore,
+  timeline, initialCursor, initialHasMore,
 }: {
-  timeline: TimelineItem[];        // the RECENT window (≥ J−2) — refreshed by the server on each send
-  initialWindowStart: string;       // oldest local date loaded by default
-  initialHasMore: boolean;          // is there anything older to fetch?
+  timeline: TimelineItem[];          // the latest page (≤ 10 messages + co-temporal context) — refreshed on send
+  initialCursor: string | null;       // created_at of the oldest message in `timeline` (paging cursor)
+  initialHasMore: boolean;            // is there an older message to page back to?
 }) {
   const [isPending, startTransition] = useTransition();
   const [draft, setDraft] = useState("");
   const [optimistic, setOptimistic] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // Older history is lazy-loaded on scroll-to-top and kept in client state, PREPENDED to the recent
-  // `timeline` prop. The two are disjoint by date, so a server re-render after a send refreshes the
-  // recent part without dropping the older days the athlete already pulled in.
-  const [olderItems, setOlderItems] = useState<TimelineItem[]>([]);
-  const [windowStart, setWindowStart] = useState(initialWindowStart);
+  const [cursor, setCursor] = useState(initialCursor);
   const [hasMore, setHasMore] = useState(initialHasMore);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -144,52 +164,87 @@ export function CoachChat({
   const loadingRef = useRef(false);          // synchronous guard against double-fire from rapid scroll
   const prevScrollHeight = useRef<number | null>(null); // for scroll-position preservation on prepend
   const didInitialScroll = useRef(false);    // arms scroll-to-top loading only after the mount jump
+  const armed = useRef(true);                 // one auto-load per arrival at the top (no fast cascade)
 
-  const thread = olderItems.length ? [...olderItems, ...timeline] : timeline;
+  // We ACCUMULATE every item shown, keyed stably, instead of re-rendering the prop directly: paging older
+  // adds history at the top, while a post-send refresh (the capped "latest 10" slides forward) merges the
+  // new turn in WITHOUT dropping the oldest visible messages that fell out of the latest page.
+  const [merged, setMerged] = useState<Map<string, TimelineItem>>(() => new Map(timeline.map((it) => [keyOf(it), it])));
+  // Merge the latest-page prop whenever it changes (a send/reply refresh) — DURING render, guarded by
+  // reference so it runs exactly once per change. This is React's recommended alternative to a
+  // setState-in-effect ("adjusting state when a prop changes"): no extra paint, no cascade.
+  const [seenTimeline, setSeenTimeline] = useState(timeline);
+  if (timeline !== seenTimeline) {
+    setSeenTimeline(timeline);
+    setMerged((prev) => {
+      const next = new Map(prev);
+      for (const it of timeline) addItem(next, it); // latest page wins (fresh briefings/replies); days union
+      return next;
+    });
+  }
+  const thread = useMemo(
+    () => [...merged.values()].sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0)),
+    [merged],
+  );
 
   // Auto-scroll to the newest message — on mount and on each send/reply. Deliberately keyed only on the
-  // RECENT timeline (+ pending/optimistic), NOT on `olderItems`, so loading older days never yanks the
-  // view back to the bottom. The FIRST positioning is an instant jump: a smooth scroll would animate up
-  // from the top and its early frames (scrollTop ≈ 0) would spuriously trip the scroll-to-top loader.
+  // latest-page prop (+ pending/optimistic), NOT on the merged thread, so paging older messages never
+  // yanks the view back to the bottom. The FIRST positioning is an instant jump: a smooth scroll would
+  // animate up from the top and its early frames (scrollTop ≈ 0) would spuriously trip the top loader.
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: didInitialScroll.current ? "smooth" : "auto" });
     didInitialScroll.current = true;
   }, [timeline.length, isPending, optimistic]);
 
-  // Preserve the viewport when older days are prepended: keep the same content under the user's eyes by
-  // pushing scrollTop down by exactly the height that was just added above. Runs before paint (no flash).
+  // Preserve the viewport when older messages are prepended: keep the same content under the user's eyes
+  // by pushing scrollTop down by the height just added above. Runs before paint (no flash). Gated by
+  // prevScrollHeight, which ONLY loadOlder sets — so an append (send/reply) skips it and scrolls to bottom.
   useLayoutEffect(() => {
     const el = scrollerRef.current;
     if (el && prevScrollHeight.current != null) {
       el.scrollTop += el.scrollHeight - prevScrollHeight.current;
       prevScrollHeight.current = null;
     }
-  }, [olderItems]);
+  }, [thread]);
 
   const loadOlder = useCallback(async () => {
-    if (loadingRef.current || !hasMore) return;
+    if (loadingRef.current || !hasMore || !cursor) return;
     loadingRef.current = true;
     setLoadingOlder(true);
     prevScrollHeight.current = scrollerRef.current?.scrollHeight ?? null;
     try {
-      const res = await loadOlderConversation(windowStart);
-      if (res.items.length) setOlderItems((prev) => [...res.items, ...prev]);
-      else prevScrollHeight.current = null; // nothing prepended → don't shift the view
-      setWindowStart(res.windowStart);
+      const res = await loadOlderConversation(cursor);
+      if (res.items.length) {
+        setMerged((prev) => {
+          const next = new Map(prev);
+          for (const it of res.items) addItem(next, it); // prepend older page; straddling days re-assemble
+          return next;
+        });
+      } else {
+        prevScrollHeight.current = null; // nothing prepended → don't shift the view
+      }
+      setCursor(res.cursor);
       setHasMore(!res.done);
     } catch {
       prevScrollHeight.current = null;
-      setError("Impossible de charger les jours précédents.");
+      setError("Impossible de charger les messages précédents.");
     } finally {
       loadingRef.current = false;
       setLoadingOlder(false);
     }
-  }, [hasMore, windowStart]);
+  }, [hasMore, cursor]);
 
-  // Reaching the top of the thread pulls the next older batch (the "scroll all the way up" gesture).
+  // Reaching the top pulls the next page of 10 — but only ONCE per arrival at the top: `armed` re-arms
+  // only after the user scrolls back down past 200px, so a short batch can't cascade into loading
+  // everything at once (the button stays available to keep paging deliberately).
   function onScroll() {
-    if (!didInitialScroll.current) return; // ignore the mount jump's own scroll event
-    if (scrollerRef.current && scrollerRef.current.scrollTop <= 80) void loadOlder();
+    const el = scrollerRef.current;
+    if (!el || !didInitialScroll.current) return;
+    if (el.scrollTop <= 60) {
+      if (armed.current) { armed.current = false; void loadOlder(); }
+    } else if (el.scrollTop > 200) {
+      armed.current = true;
+    }
   }
 
   function autosize() {
@@ -235,9 +290,9 @@ export function CoachChat({
         onScroll={onScroll}
         className="flex flex-1 flex-col gap-3 overflow-y-auto overscroll-contain px-1 py-4"
       >
-        {/* En haut du fil : charge les jours précédents (scroll-to-top OU clic si le fil est trop court
-            pour défiler). Disparaît une fois le début de la conversation atteint. */}
-        {hasMore && (
+        {/* Haut du fil : charge les 10 messages précédents (scroll-to-top OU clic si le fil est trop
+            court pour défiler). Une fois le tout premier message atteint, on affiche la butée. */}
+        {hasMore ? (
           <div className="flex justify-center pb-1">
             <button
               type="button"
@@ -245,10 +300,12 @@ export function CoachChat({
               disabled={loadingOlder}
               className="rounded-full border border-stone-200 bg-white px-3.5 py-1.5 text-xs font-medium text-stone-500 transition enabled:hover:bg-stone-50 enabled:hover:text-stone-700 disabled:opacity-60 dark:border-stone-800 dark:bg-stone-900 dark:text-stone-400 dark:enabled:hover:bg-stone-800"
             >
-              {loadingOlder ? "Chargement…" : "Charger les jours précédents"}
+              {loadingOlder ? "Chargement…" : "Charger les messages précédents"}
             </button>
           </div>
-        )}
+        ) : thread.length > 0 ? (
+          <p className="pb-1 text-center text-xs text-stone-400 dark:text-stone-500">· Début de la conversation ·</p>
+        ) : null}
         {thread.length === 0 && !hasMore && (
           <p className="my-8 text-center text-sm text-stone-500">
             Pas encore de briefing ni d&apos;activité. Lance le coach, puis reviens discuter ici.
@@ -258,7 +315,12 @@ export function CoachChat({
           if (it.kind === "briefing") return <BriefingBubble key={`b-${it.at}`} b={it.briefing} />;
           if (it.kind === "activity_group")
             return <ActivityGroupCard key={`g-${it.localDate}`} group={it} onComment={handleComment} pending={isPending} />;
-          return <MessageBubble key={`m-${it.id}`} m={it} />;
+          return (
+            <Fragment key={`m-${it.id}`}>
+              <MessageBubble m={it} />
+              {it.proposals?.map((pr) => <CoachProposalCard key={pr.id} p={pr} />)}
+            </Fragment>
+          );
         })}
 
         {/* Échange optimiste pendant la génération */}
