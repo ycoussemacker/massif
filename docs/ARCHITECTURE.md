@@ -99,10 +99,12 @@ method — the first whose inputs are present, always ending in a fallback so no
 points are the **aerobic** channel. The **neuromuscular** channel is then built additively and summed
 (see `load.py`):
 
-- **aerobic-engine sports** (run/bike/hike/swim…): `neuromuscular = impact_frac × aerobic + descent_term`,
-  where `descent_term = (D− / 1000) × DESCENT_LOAD_PER_1000M × mass_factor` — independent of HR, so a big
-  descent registers even when the heart stayed calm. `impact_frac` is the small HRV-blind cost of the
-  locomotion itself (foot-strike, uphill muscular).
+- **aerobic-engine sports** (run/bike/hike/swim/grande voie…): `neuromuscular = impact_frac × aerobic +
+  descent_term`, where `descent_term = (D− / 1000) × DESCENT_LOAD_PER_1000M × mass_factor` — independent of
+  HR, so a big descent registers even when the heart stayed calm. `impact_frac` is the HRV-blind cost of
+  the locomotion itself (foot-strike, uphill muscular; higher for `mountain_technical` = grande voie, whose
+  forearm/core cost is real). A mostly-stopped single-day outing (belays/approach: `moving/elapsed < 0.5`)
+  scores the *duration-driven* methods on moving time, not elapsed — HR methods keep elapsed (see Upgrade 6).
 - **strength / technical sports** (`STRUCTURAL_EFFORT_GROUPS`): no aerobic engine, so the session effort
   (sRPE / grade / tonnage) is split aerobic : neuromuscular by taxonomy (mostly neuromuscular).
 

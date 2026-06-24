@@ -23,7 +23,8 @@ export const SYSTEM_TAG_FR: Record<string, string> = {
 // Nom FR + icône par sport (code). Repli sur le display_name pour les sports auto-créés.
 export const SPORT_FR: Record<string, string> = {
   running: "Course", trail_running: "Trail", hiking: "Rando", alpinism: "Alpinisme",
-  rock_climbing: "Escalade (falaise)", bouldering: "Bloc", indoor_climbing: "Escalade (salle)",
+  rock_climbing: "Escalade (falaise)", grande_voie: "Grande voie", bouldering: "Bloc",
+  indoor_climbing: "Escalade (salle)",
   via_ferrata: "Via ferrata", cycling: "Vélo", gravel_cycling: "Gravel", mountain_biking: "VTT",
   nordic_skiing: "Ski de fond", ski_touring: "Ski de rando", downhill_skiing: "Ski piste",
   snowshoeing: "Raquettes", swimming: "Natation", surfing: "Surf", rowing: "Aviron",
@@ -34,7 +35,7 @@ export const SPORT_FR: Record<string, string> = {
 
 export const SPORT_ICON: Record<string, string> = {
   running: "🏃", trail_running: "⛰️", hiking: "🥾", alpinism: "🧗", rock_climbing: "🧗",
-  bouldering: "🪨", indoor_climbing: "🧗", via_ferrata: "🪜", cycling: "🚴", gravel_cycling: "🚴",
+  grande_voie: "🧗", bouldering: "🪨", indoor_climbing: "🧗", via_ferrata: "🪜", cycling: "🚴", gravel_cycling: "🚴",
   mountain_biking: "🚵", nordic_skiing: "🎿", ski_touring: "🎿", downhill_skiing: "⛷️",
   snowshoeing: "🥾", swimming: "🏊", surfing: "🏄", rowing: "🚣", strength: "🏋️", yoga: "🧘",
   walking: "🚶", elliptical: "🌀", kayaking: "🛶", kitesurf: "🪁", table_tennis: "🏓",
@@ -46,13 +47,14 @@ export const SPORT_ICON: Record<string, string> = {
 export const TAXONOMY_FR: Record<string, string> = {
   paced_endurance: "Endurance",
   mountain_vertical: "Montagne",
+  mountain_technical: "Montagne technique",
   technical_strength: "Grimpe & technique",
   resistance: "Force",
   aquatic: "Eau",
   other: "Autres",
 };
 export const TAXONOMY_ORDER = [
-  "paced_endurance", "mountain_vertical", "technical_strength", "resistance", "aquatic", "other",
+  "paced_endurance", "mountain_vertical", "mountain_technical", "technical_strength", "resistance", "aquatic", "other",
 ] as const;
 
 /** Plain-FR SOURCE of the aerobic channel, derived from load_method_used — i.e. how the cardiac cost

@@ -162,10 +162,13 @@ def fetch_activity_detail(token: str, activity_id: int) -> dict:
 
 
 def _climbing_sport_code(sport_type: str, name: str | None, description: str | None) -> str:
-    """Split bloc / voie en salle / falaise from the Strava title + description (the athlete notes it
-    there). Defaults to indoor route ('voie en salle') when nothing is mentioned; Strava 'Bouldering'
-    stays bloc. Maps to existing sports: bouldering / indoor_climbing / rock_climbing."""
+    """Split grande voie / bloc / voie en salle / falaise from the Strava title + description (the athlete
+    notes it there). 'grande voie' (multi-pitch) is checked first — it contains 'voie' but is its own
+    sport. Defaults to indoor route ('voie en salle') when nothing is mentioned; Strava 'Bouldering' stays
+    bloc. Maps to existing sports: grande_voie / bouldering / indoor_climbing / rock_climbing."""
     text = f"{name or ''} {description or ''}".lower()
+    if any(k in text for k in ("grande voie", "grandes voies", "multipitch", "multi-pitch", "multi pitch")):
+        return "grande_voie"
     if "bloc" in text or "boulder" in text:
         return "bouldering"
     if any(k in text for k in ("falaise", "crag", "extérieur", "exterieur", "outdoor", "dehors", "rocher")):

@@ -221,6 +221,58 @@ def test_normal_activity_unchanged_uses_elapsed_and_effective_days_one():
     assert r.aerobic_load == legacy.aerobic_load      # single-day ignores moving_s, scores on elapsed
 
 
+# ── mostly-stopped single-day correction (alpinism / grande voie logged as a hike) ────────────────
+
+# 8 h elapsed, only 3 h moving (belays / approach / pauses): a single calendar day (no overnight gap).
+STOPPED = {"started_at": "2026-05-22T06:00:00+00:00", "duration_s": 8 * 3600, "moving_s": 3 * 3600}
+ALPINE = {"taxonomy_group": "mountain_vertical",
+          "load_method_ladder": ["vertical_duration", "session_rpe", "duration_fallback"]}
+
+
+def test_mostly_stopped_singleday_scores_duration_methods_on_moving_time():
+    # The fix: the no-HR aerobic estimate scores on MOVING time (3 h), not elapsed (8 h), so the belay
+    # hours don't inflate the load. base = 3 h @ IF 0.55 = 90.75 ; + 800 m ascent = 80 → aerobic 170.75.
+    r = load.compute_load({**STOPPED, "vertical_gain_m": 800}, ALPINE, {})
+    assert r.load_method_used == "vertical_duration"
+    assert r.needs_review is True
+    assert round(r.aerobic_load, 2) == round(3 * 0.55 ** 2 * 100 + 80, 2)
+
+
+def test_mostly_stopped_hrtss_still_uses_elapsed_no_double_correct():
+    # HR/power/pace methods KEEP elapsed: the average HR already reflects the stops, so shortening the
+    # duration too would double-correct. The stopped activity scores like the same one with moving==elapsed.
+    prof = {"resting_hr": 48, "max_hr": 188, "lthr": 178}
+    sport = {"taxonomy_group": "paced_endurance", "load_method_ladder": ["hrtss", "duration_fallback"]}
+    r = load.compute_load({**STOPPED, "avg_hr": 140}, sport, prof)
+    full = load.compute_load({**STOPPED, "moving_s": 8 * 3600, "avg_hr": 140}, sport, prof)
+    assert r.load_method_used == "hrtss"
+    assert round(r.aerobic_load, 2) == round(full.aerobic_load, 2)   # scored on elapsed, not moving
+
+
+def test_user_rpe_clears_the_mostly_stopped_flag():
+    prof = {"max_hr": 188}
+    a = {"duration_s": 8 * 3600, "moving_s": 3 * 3600}
+    assert load.needs_review(a, prof, 0.5, 1) is True                       # flagged by default
+    assert load.needs_review({**a, "rpe_source": "user"}, prof, 0.5, 1) is False   # a user RPE clears it
+    assert load.needs_review({**a, "rpe_source": "estimated"}, prof, 0.5, 1) is True  # only a USER RPE does
+
+
+# ── Grande voie (multi-pitch): the dedicated `mountain_technical` group ────────────────────────────
+
+def test_grande_voie_is_additive_with_higher_impact_not_structural():
+    # mountain_technical is an AEROBIC-ENGINE group (additive), unlike technical_strength (15/85 split):
+    # aerobic stays the full points, and the eccentric descent is still added on the neuromuscular channel.
+    gv = {"taxonomy_group": "mountain_technical",
+          "load_method_ladder": ["vertical_duration", "session_rpe", "duration_fallback"]}
+    # Not mostly stopped (no moving_s) → scored on elapsed 2 h: base 60.5 + 1000 m ascent 100 → aerobic 160.5.
+    r = load.compute_load({"duration_s": 7200, "vertical_gain_m": 1000, "vertical_loss_m": 1000}, gv, {"weight_kg": 64})
+    assert r.load_method_used == "vertical_duration"
+    assert round(r.aerobic_load, 1) == 160.5
+    # neuro = impact 0.40 × aerobic + descent (1000/1000 × 70 × 1.0) = 64.2 + 70 = 134.2.
+    assert round(r.neuromuscular_load, 1) == round(160.5 * 0.40 + 70, 1)
+    assert r.aerobic_load + r.neuromuscular_load == r.training_load
+
+
 # ── heat & altitude (docs/research/heat-altitude.md) ──────────────────────────────────────────────
 
 def test_altitude_power_factor_gates_and_is_bounded():

@@ -130,8 +130,9 @@ huge" confusion). Bands now scale with the athlete's own CTL — **lo −30 % ·
 implausible intensity factor (> 1.5), or a single-day outing scored on elapsed time that was mostly spent
 stopped (`moving/elapsed < 0.5`, ≥ 1 h elapsed — forgotten pause / lift laps / long belays → load
 overstated). Surfaced as a neutral "⚠ à vérifier" chip (deliberately NOT the readiness palette — it's a
-data-quality signal). Scoring is **unchanged** (whether a mostly-stopped outing should switch to moving
-time is the per-sport calibration question below). Mirror `load.py`↔`load.ts`; set on every write path
+data-quality signal). Scoring was unchanged at the time; **Upgrade 6 later switched mostly-stopped
+single-day outings to moving time** for the duration-driven methods (and a user RPE now clears that
+branch). Mirror `load.py`↔`load.ts`; set on every write path
 (ingest, recompute, RPE); migration `…0004`. Flags 12 real activities today (snowboard / surf / alpinism
 stages / grande voie); the HR/IF rules are multi-user prophylaxis (0 hits now). Multi-day expeditions are
 already handled (`effective_days > 1`) so they are not flagged.
@@ -221,13 +222,53 @@ neuromuscular fits (`descent_load_per_1000m`, `neuro_atl_days`) join `calibrate_
 self-cleaned the stale fit and re-scored 395 activities back to the population default (GR20 2368, latest
 CTL 84.8 / TSB −27.2 unchanged). **Tunable.** `MIN_IF_SAMPLES=30`, the p20 easy-end + only-lower guard.
 
+## 2026-06-24 · Upgrade 6 — Mis-categorised mountain days: reclassification + mostly-stopped scoring
+
+**Problem.** Strava offers no "alpinism" / "grande voie" type, so the athlete logs them as **Rando**
+(`hiking`). Scored as a hike on ELAPSED time, the long belays / approach / transitions inflate the aerobic
+load — and trip `needs_review` (Upgrade 3d) without an actionable fix. Root cause: **wrong category**, not
+the model — `alpinism`/`rock_climbing`/`via_ferrata` are `needs_manual_rpe` (meant to be RPE-scored), and
+the elapsed-time hike estimate is the wrong instrument for a stop-heavy technical day.
+
+**A — Mostly-stopped → moving time (narrow scoring change).** `load._scored_duration` now returns MOVING
+time for a single-day outing that was mostly stopped (the same `needs_review` stop-ratio: `moving/elapsed
+< 0.5`, ≥ 1 h), extending the multi-day rule. Applied ONLY to the duration-driven no-HR methods
+(`vertical_duration`, `session_rpe`, `duration_fallback`); `hrtss`/`tss`/`rtss` KEEP elapsed because their
+intensity (HR/power averaged over the elapsed window) already reflects the stops — shortening the duration
+too would double-correct downward. A **user RPE clears the stop-ratio flag** (`needs_review` skips it when
+`rpe_source='user'` — the athlete vouched for the effort). Mirror `load.py`↔`load.ts`.
+
+**B — `grande_voie` sport + the `mountain_technical` group.** A grande voie loads BOTH systems — the
+aerobic engine of a long mountain day (+ approach/D+) AND a technical forearm/core neuromuscular cost. New
+sport `grande_voie` (ladder `vertical_duration → session_rpe → duration_fallback`, no hrtss,
+`needs_manual_rpe`) in a new ADDITIVE taxonomy group `mountain_technical` with `IMPACT_FRAC=0.40` — so it
+keeps the independent eccentric-descent term (unlike `technical_strength` 15/85, which would erase both the
+long aerobic day and the walk-off descent). The CHECK on `sports.taxonomy_group` was widened (migration
+`…0006`).
+
+**C — Detection + validated reclassification (UI).** A conservative keyword detector
+(`web/src/lib/sport-suggest.ts`) proposes a likely re-category on `hiking`/`walking`/`unknown` activities
+(e.g. "grande voie" / "alpi" / "via ferrata" in the title) → surfaced in the now-clickable ⚠ badge
+(`activity-flag.tsx`, replacing the hover-only tooltip; tappable on mobile, to the right of the type). One
+tap reclassifies via `reassignActivitySport`, which **recomputes the load with the new ladder** (single
+owner `applySportReassignment`, also adopted by the accepted-coach-proposal path — fixing a latent
+staleness bug where that path changed the sport without recomputing). Never auto-applied; the athlete
+validates.
+
+**Files.** `ingest/massif_ingest/{load.py, db.py, strava.py}` · mirror `web/src/lib/load.ts` ·
+`web/src/lib/{sport-suggest.ts (new), data.ts, labels.ts, strava-sync.ts}` · `web/src/app/actions.ts` ·
+`web/src/components/{activity-flag.tsx (new), activity-row.tsx}` · `web/src/app/seance/[id]/page.tsx` ·
+migration `…0006_add_grande_voie_sport`. **Verification.** pytest 53 green (new: mostly-stopped→moving,
+hrtss-keeps-elapsed, user-RPE-clears-flag, grande_voie additive split, grande-voie keyword); web + coach
+tsc clean. Reaches history via `--recompute-loads`.
+
 ## Backlog (candidate upgrades, not yet built)
 
 - **Neuromuscular calibration** (the 3c payoff) — once the soreness log has data, fit
   `DESCENT_LOAD_PER_1000M` / `NEURO_ATL_DAYS` so modelled neuromuscular load predicts next-day soreness;
   add the fitters to `calibrate_all()`. Needs ~2-3 weeks of optional soreness entries.
-- **Per-sport "moving vs elapsed" scoring** — the 12 `needs_review` single-day outings (surf / snowboard /
-  alpinism) are scored on elapsed time incl. large stops. Whether to switch them to moving time is
-  sport-dependent (alpine belay time can be effortful) — fold into the 3c calibration rather than a blunt switch.
+- **Per-sport "moving vs elapsed" scoring** — _resolved in Upgrade 6:_ mostly-stopped single-day outings
+  now score the duration-driven methods on moving time (HR methods keep elapsed; a user RPE supersedes).
+  Remaining calibration nuance (how effortful belay time is per sport) folds into the 3c neuromuscular fit.
 - **Per-day-load chart band scaling** — the dashboard TSB *bar chart* still draws fixed −30/0 reference
   lines; only the gauge bands are CTL-relative (3b). Low priority (the chart is a trend view).

@@ -5,6 +5,7 @@ import { todayLocal, daysBetween, dateMinusDays } from "./coach-context";
 import { buildPlanningView, buildPlannedLoads } from "./planning";
 import { projectFromMetrics } from "./project";
 import { weatherAlerts } from "./weather";
+import { suggestSport, type SportSuggestion } from "./sport-suggest";
 
 /** Calendar date `n` months before `iso` (handles month lengths). */
 function monthsAgo(iso: string, n: number): string {
@@ -82,6 +83,9 @@ export type Activity = {
   strava_name: string | null; // Strava activity title (from sport_specific->>strava_name)
   effective_days: number | null; // >1 ⇒ multi-day expedition whose load is spread across this many days
   needs_review: boolean | null;  // load rests on a suspect input (HR>max, implausible IF, mostly-stopped)
+  // Keyword-detected likely mis-categorisation (e.g. a "Rando" that reads as alpinism / grande voie) —
+  // a SUGGESTION the athlete validates, never auto-applied. Null when nothing matches. See sport-suggest.ts.
+  suggestedSport?: SportSuggestion | null;
   // Set only on the per-day PROJECTION of a multi-day activity (see aggregate.groupByDateSpanned): this
   // row's load/duration fields then carry just that day's 1/total share; spanInfo records which day.
   spanInfo?: { index: number; total: number; fullLoad: number | null } | null;
@@ -99,12 +103,15 @@ export const ACTIVITY_COLS =
 export function enrichActivities(rows: any[], sportById: Map<number, any>): Activity[] {
   return rows.map((a: any) => {
     const s = sportById.get(a.sport_id);
+    const code = s?.code ?? null;
     return {
       ...a,
       sport: s?.display_name ?? s?.code ?? "—",
-      sport_code: s?.code ?? null,
+      sport_code: code,
       taxonomy_group: s?.taxonomy_group ?? null,
       needs_manual_rpe: !!s?.needs_manual_rpe,
+      // Title-based suggestion (cheap; the séance page refines it with the description). See sport-suggest.ts.
+      suggestedSport: suggestSport(code, a.strava_name),
     } as Activity;
   });
 }

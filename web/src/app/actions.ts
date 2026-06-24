@@ -5,7 +5,10 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { createServiceClient } from "@/lib/supabase/server";
 import { listActivities } from "@/lib/activities";
 import type { DailyMetric, Activity } from "@/lib/data";
-import { sessionRpeLoad, activeDuration, activitySpanDays, needsReview } from "@/lib/load";
+import {
+  sessionRpeLoad, scoredDuration, activitySpanDays, needsReview, computeLoad,
+  type LoadActivity, type LoadSport, type LoadProfile,
+} from "@/lib/load";
 import { generateCoachReply, COACH_MODEL, type ChatTurn } from "@/lib/coach-chat";
 import { todayLocal, whenLabelFr, dateMinusDays } from "@/lib/coach-context";
 import { sanitizeCoachSettings, type CoachSettings } from "@/lib/coach-settings";
@@ -78,10 +81,10 @@ export async function setRpe(activityId: string, rpe: number): Promise<void> {
   // weight feeds the carried-mass factor; max_hr feeds the outlier guard (mirror of load.py).
   const { data: profile } = await sb.from("athlete_profile").select("weight_kg,max_hr").limit(1).single();
 
-  // Score on ACTIVE time + flag multi-day, exactly like compute_load — so a multi-day manual-RPE
-  // outing (elapsed counts the nights) gets the moving-based load and is spread by the rollup, not a
-  // spike that waits for the nightly cron to correct it.
-  const activeS = activeDuration({ started_at: act.started_at, duration_s: act.duration_s, moving_s: act.moving_s });
+  // Score on the SCORED duration + flag multi-day, exactly like compute_load — moving time for a
+  // multi-day outing (elapsed counts the nights) OR a mostly-stopped single-day one (belays/pauses);
+  // else elapsed. So the load is right immediately, not after the nightly cron corrects it.
+  const activeS = scoredDuration({ started_at: act.started_at, duration_s: act.duration_s, moving_s: act.moving_s });
   const effectiveDays = activitySpanDays(act.started_at, act.duration_s, act.moving_s);
   const load = sessionRpeLoad(activeS, rpe, sport?.taxonomy_group ?? null, {
     verticalLossM: act.vertical_loss_m,
@@ -89,8 +92,9 @@ export async function setRpe(activityId: string, rpe: number): Promise<void> {
     weightKg: profile?.weight_kg,
   });
 
+  // rpe_source 'user' clears the mostly-stopped flag (the athlete vouched for the effort) — mirror load.py.
   const review = needsReview(
-    { started_at: act.started_at, duration_s: act.duration_s, moving_s: act.moving_s, avg_hr: act.avg_hr },
+    { started_at: act.started_at, duration_s: act.duration_s, moving_s: act.moving_s, avg_hr: act.avg_hr, rpe_source: "user" },
     { max_hr: profile?.max_hr },
     load.intensity_factor,
     effectiveDays,
@@ -537,6 +541,65 @@ async function resolveSportId(sb: SupabaseClient, code: string | null | undefine
   return data ? (data as { id: number }).id : null;
 }
 
+/** Reassign an activity's sport AND recompute its load with the new sport's method ladder, so the numbers
+ *  reflect the new category immediately (an alpinism/grande-voie day logged as a hike was scored on elapsed
+ *  time → its aerobic load was inflated; the new ladder + the mostly-stopped moving-time correction fix it).
+ *  The single owner of this write — used by the athlete-initiated reassignment and the accepted coach
+ *  proposal alike. Mirrors the Python recompute (load.py is the source of truth on the next sync). */
+async function applySportReassignment(sb: SupabaseClient, activityId: string, sportCode: string): Promise<void> {
+  const sportId = await resolveSportId(sb, sportCode);
+  if (!sportId) throw new Error(`Sport « ${sportCode} » inconnu.`);
+  const { data: sport } = await sb.from("sports")
+    .select("taxonomy_group,load_method_ladder").eq("id", sportId).single();
+  if (!sport) throw new Error(`Sport « ${sportCode} » inconnu.`);
+
+  const { data: act, error } = await sb.from("activities")
+    .select("started_at,duration_s,moving_s,avg_hr,np_power_w,avg_power_w,avg_pace_s_per_km," +
+            "vertical_gain_m,vertical_loss_m,carried_load_kg,avg_altitude_m,perceived_rpe,rpe_source")
+    .eq("id", activityId).single();
+  if (error || !act) throw new Error("Activité introuvable");
+
+  const { data: profile } = await sb.from("athlete_profile")
+    .select("ftp_watts,resting_hr,max_hr,lthr,threshold_pace_s_per_km,weight_kg").limit(1).single();
+
+  const load = computeLoad(act as LoadActivity, sport as LoadSport, (profile ?? {}) as LoadProfile);
+  const { error: upErr } = await sb.from("activities").update({
+    sport_id: sportId,
+    aerobic_load: load.aerobic_load,
+    neuromuscular_load: load.neuromuscular_load,
+    load_method_used: load.load_method_used,
+    intensity_factor: load.intensity_factor,
+    effective_days: load.effective_days,
+    needs_review: load.needs_review,
+  }).eq("id", activityId);
+  if (upErr) throw new Error(upErr.message);
+}
+
+/** All sports (code + FR-friendly display + taxonomy) for the activity reclassification picker, ordered by
+ *  family then name so the picker can group them. Read-only; safe to call from the client island. */
+export async function listSportsForReassign(): Promise<
+  { code: string; display_name: string; taxonomy_group: string | null }[]
+> {
+  const sb = await createServiceClient();
+  const { data } = await sb.from("sports")
+    .select("code,display_name,taxonomy_group").order("taxonomy_group").order("display_name");
+  return (data ?? []) as { code: string; display_name: string; taxonomy_group: string | null }[];
+}
+
+/** Athlete-initiated reclassification of a logged activity's sport (the ⚠️ flag panel / séance page).
+ *  Recomputes the load and refreshes every surface that shows it. daily_metrics (CTL/ATL) refresh on the
+ *  next rollup/nightly run, like the RPE path. */
+export async function reassignActivitySport(activityId: string, sportCode: string): Promise<void> {
+  if (!activityId || !sportCode) throw new Error("Activité ou sport manquant.");
+  const sb = await createServiceClient();
+  await applySportReassignment(sb, activityId, sportCode);
+  revalidatePath("/");
+  revalidatePath("/activites");
+  revalidatePath(`/seance/${activityId}`);
+  revalidatePath("/coach");
+  revalidatePath("/calendrier");
+}
+
 /** Light cost/abuse guard on accepts (a leaked password could otherwise spam writes). Shared DB state. */
 async function enforceProposalRateLimit(sb: SupabaseClient): Promise<void> {
   const since1m = new Date(Date.now() - 60_000).toISOString();
@@ -610,14 +673,10 @@ export async function acceptCoachProposal(proposalId: string): Promise<AcceptRes
       regen = true; // no write — the client runs the week regen
     } else if (prop.kind === "activity_edit") {
       const p = ops.payload as ActivityEditPayload;
+      // Reassign the sport first (recomputes the load with the new ladder), THEN apply any RPE so it
+      // scores against the new sport's taxonomy — not the old one left stale.
+      if (p.sport_code) await applySportReassignment(sb, p.activity_id, p.sport_code);
       if (p.perceived_rpe != null) await setRpe(p.activity_id, p.perceived_rpe);
-      if (p.sport_code) {
-        const sid = await resolveSportId(sb, p.sport_code);
-        if (sid) {
-          const upd = await sb.from("activities").update({ sport_id: sid, needs_review: true }).eq("id", p.activity_id);
-          if (upd.error) throw new Error(upd.error.message);
-        }
-      }
       committedId = p.activity_id;
     }
   } catch (e) {

@@ -7,6 +7,7 @@ import { sportName, sportIcon, aerobicSourceFr, neuroSourceFr } from "@/lib/labe
 import { fmt, dur, loadVsAvgColor } from "@/lib/format";
 import { VIZ } from "@/lib/theme";
 import { RpeControl } from "./rpe";
+import { ActivityFlag } from "./activity-flag";
 import { StravaLink } from "./brand";
 
 /** One-line activity recap for the day-detail panel: sport glyph + Strava title + aéro/neuro impacts,
@@ -50,11 +51,16 @@ export function ActivityCard({ a, avgLoad }: { a: Activity; avgLoad?: number | n
   return (
     <div className="rounded-xl border border-stone-200 p-3 dark:border-stone-800">
       <div className="flex items-start justify-between gap-2">
-        <Link href={`/seance/${a.id}`} className="group min-w-0 font-medium transition-colors hover:text-alpine-700 dark:hover:text-alpine-300">
-          <span className="mr-1.5" aria-hidden>{sportIcon(a.sport_code)}</span>
-          {sportName(a.sport_code, a.sport)}
+        <div className="flex min-w-0 flex-col">
+          <div className="flex flex-wrap items-center gap-2">
+            <Link href={`/seance/${a.id}`} className="group font-medium transition-colors hover:text-alpine-700 dark:hover:text-alpine-300">
+              <span className="mr-1.5" aria-hidden>{sportIcon(a.sport_code)}</span>
+              {sportName(a.sport_code, a.sport)}
+            </Link>
+            <ActivityFlag a={a} />
+          </div>
           <StravaName a={a} />
-        </Link>
+        </div>
         <ActivityDate a={a} className="shrink-0 text-xs text-stone-400" />
       </div>
       {a.spanInfo && (
@@ -75,14 +81,6 @@ export function ActivityCard({ a, avgLoad }: { a: Activity; avgLoad?: number | n
         <span>⏱ {dur(a.duration_s)}</span>
         <span>D+ {a.vertical_gain_m != null ? Math.round(a.vertical_gain_m) : "—"} / D− {a.vertical_loss_m != null ? Math.round(a.vertical_loss_m) : "—"}</span>
         {a.avg_hr != null && <span>FC {a.avg_hr}</span>}
-        {a.needs_review && (
-          <span
-            title="Charge possiblement sur-estimée : longtemps à l'arrêt, ou capteur FC/intensité douteux. Affine avec un RPE."
-            className="rounded bg-stone-100 px-1.5 py-0.5 text-stone-500 dark:bg-stone-800 dark:text-stone-400"
-          >
-            ⚠ à vérifier
-          </span>
-        )}
         {a.needs_manual_rpe && <RpeControl activityId={a.id} value={a.perceived_rpe} />}
         <StravaLink source={a.source} sourceActivityId={a.source_activity_id} className="ml-auto" />
       </div>
@@ -116,18 +114,13 @@ export function ActivityRow({ a, avgLoad }: { a: Activity; avgLoad?: number | nu
     <tr className="border-b border-stone-100 last:border-0 dark:border-stone-800">
       <td className="py-2 pr-3 align-top"><ActivityDate a={a} className="text-stone-500" /></td>
       <td className="py-2 pr-3">
-        <Link href={`/seance/${a.id}`} className="whitespace-nowrap font-medium transition-colors hover:text-alpine-700 dark:hover:text-alpine-300">
-          <span className="mr-1.5" aria-hidden>{sportIcon(a.sport_code)}</span>
-          {sportName(a.sport_code, a.sport)}
-          {a.needs_review && (
-            <span
-              title="Charge possiblement sur-estimée : longtemps à l'arrêt, ou capteur FC/intensité douteux. Affine avec un RPE."
-              className="ml-1.5 text-stone-400 dark:text-stone-500"
-            >
-              ⚠
-            </span>
-          )}
-        </Link>
+        <div className="flex items-center gap-2">
+          <Link href={`/seance/${a.id}`} className="whitespace-nowrap font-medium transition-colors hover:text-alpine-700 dark:hover:text-alpine-300">
+            <span className="mr-1.5" aria-hidden>{sportIcon(a.sport_code)}</span>
+            {sportName(a.sport_code, a.sport)}
+          </Link>
+          <ActivityFlag a={a} />
+        </div>
         <StravaName a={a} className="max-w-[16rem]" />
       </td>
       <td className="py-2 pr-3 text-right align-top font-medium tabular-nums" style={accent ? { color: accent } : undefined}>

@@ -19,6 +19,8 @@ const CHANNEL_SPLIT: Record<string, [number, number]> = {
 export const IMPACT_FRAC: Record<string, number> = {
   paced_endurance: 0.15,
   mountain_vertical: 0.2,
+  mountain_technical: 0.4, // multi-pitch / grande voie — long mountain day (aerobic + D±) AND technical
+  //                          forearm/core cost → higher impact on top of the additive descent. Mirror load.py.
   aquatic: 0.1,
   other: 0.25,
 };
@@ -121,6 +123,7 @@ export type LoadActivity = {
   carried_load_kg?: number | null;
   avg_altitude_m?: number | null; // drives the tss/rtss altitude correction (never hrtss)
   perceived_rpe?: number | null;
+  rpe_source?: string | null; // 'user' clears the mostly-stopped flag (see needsReview)
 };
 export type LoadProfile = {
   ftp_watts?: number | null;
@@ -194,15 +197,35 @@ export function activeDuration(a: LoadActivity): number {
   return dur;
 }
 
-// Outlier guard — mirror of load.py. Flags (never caps) a load that rests on a suspect input.
+// Outlier guard + mostly-stopped correction — mirror of load.py. A mostly-stopped single-day outing
+// (long belays/approach/pauses) genuinely over-counts effort on elapsed time, so the DURATION-DRIVEN
+// methods score it on MOVING time (scoredDuration); HR/power/pace methods keep elapsed (their intensity
+// already reflects the stops → no double-correct). We still FLAG it; a user RPE then clears the flag.
 export const REVIEW_IF_CEILING = 1.5;
 export const REVIEW_STOP_RATIO = 0.5;
 export const REVIEW_MIN_ELAPSED_S = 3600;
 
+/** A single-day outing (≥ REVIEW_MIN_ELAPSED_S elapsed) mostly spent stopped (moving/elapsed <
+ *  REVIEW_STOP_RATIO). Multi-day expeditions (effectiveDays>1) are handled separately. Mirror of load.py. */
+export function mostlyStopped(a: LoadActivity, effectiveDays: number): boolean {
+  const dur = a.duration_s || 0;
+  const mov = a.moving_s;
+  return effectiveDays === 1 && dur >= REVIEW_MIN_ELAPSED_S && !!mov && mov / dur < REVIEW_STOP_RATIO;
+}
+
+/** Effort seconds for the duration-driven methods (vertical_duration / session_rpe / duration_fallback):
+ *  MOVING time for a multi-day expedition OR a single-day mostly-stopped outing, else elapsed. Mirror of
+ *  load.py _scored_duration. The HR/power/pace methods keep activeDuration (see the comment above). */
+export function scoredDuration(a: LoadActivity): number {
+  const dur = a.duration_s || 0;
+  const effDays = activitySpanDays(a.started_at, dur, a.moving_s);
+  if (effDays > 1 || mostlyStopped(a, effDays)) return a.moving_s || dur;
+  return dur;
+}
+
 /** True when the computed load rests on a suspect input: an HR glitch (avg_hr above the athlete's max),
- *  an implausible intensity factor, or a single-day outing scored on elapsed time that was mostly spent
- *  stopped. Multi-day expeditions (effectiveDays>1) are handled by the spread, so not flagged here.
- *  Mirror of load.py needs_review — keep in sync. */
+ *  an implausible intensity factor, or a mostly-stopped single-day outing. A user-entered RPE clears the
+ *  stop-ratio flag (the athlete vouched for the effort). Mirror of load.py needs_review — keep in sync. */
 export function needsReview(
   a: LoadActivity,
   p: LoadProfile,
@@ -211,9 +234,7 @@ export function needsReview(
 ): boolean {
   if (a.avg_hr && p.max_hr && a.avg_hr > p.max_hr) return true;
   if (intensityFactor && intensityFactor > REVIEW_IF_CEILING) return true;
-  const dur = a.duration_s || 0;
-  const mov = a.moving_s;
-  if (effectiveDays === 1 && dur >= REVIEW_MIN_ELAPSED_S && mov && mov / dur < REVIEW_STOP_RATIO) return true;
+  if (a.rpe_source !== "user" && mostlyStopped(a, effectiveDays)) return true;
   return false;
 }
 
@@ -270,7 +291,7 @@ const METHODS: Record<string, (a: LoadActivity, p: LoadProfile, c: Coeffs) => Me
   },
   vertical_duration(a, p, c) {
     if (!a.duration_s) return null;
-    const base = tssFromIf(activeDuration(a), c.defaultIf);
+    const base = tssFromIf(scoredDuration(a), c.defaultIf);
     const ascent = ((a.vertical_gain_m || 0) / 1000) * c.ascentPer1000m * massFactor(a, p);
     return [base + ascent, c.defaultIf];
   },
@@ -279,11 +300,11 @@ const METHODS: Record<string, (a: LoadActivity, p: LoadProfile, c: Coeffs) => Me
   session_rpe(a) {
     if (!a.perceived_rpe) return null;
     const intensity = a.perceived_rpe / 10;
-    return [tssFromIf(activeDuration(a), intensity), intensity];
+    return [tssFromIf(scoredDuration(a), intensity), intensity];
   },
   duration_fallback(a, p, c) {
     if (!a.duration_s) return null;
-    return [tssFromIf(activeDuration(a), c.defaultIf), c.defaultIf];
+    return [tssFromIf(scoredDuration(a), c.defaultIf), c.defaultIf];
   },
 };
 

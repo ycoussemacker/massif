@@ -179,7 +179,7 @@ def fetch_activities_for_recompute() -> list[dict]:
         .table("activities")
         .select("id,sport_id,local_date,started_at,duration_s,moving_s,avg_hr,np_power_w,avg_power_w,"
                 "avg_pace_s_per_km,vertical_gain_m,vertical_loss_m,carried_load_kg,perceived_rpe,"
-                "avg_altitude_m")
+                "rpe_source,avg_altitude_m")
         .execute()
         .data
     )

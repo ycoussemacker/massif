@@ -56,6 +56,9 @@ CHANNEL_SPLIT: dict[str, tuple[float, float]] = {
 IMPACT_FRAC: dict[str, float] = {
     "paced_endurance":   0.15,
     "mountain_vertical": 0.20,
+    "mountain_technical": 0.40,  # multi-pitch / grande voie: a long mountain day (aerobic base + D±) AND
+    #                              real technical/forearm/core neuromuscular cost → a higher impact fraction
+    #                              on top of the additive descent term. Population start; calibrate.
     "aquatic":           0.10,
     "other":             0.25,
 }
@@ -168,29 +171,53 @@ def _active_duration(a: dict) -> int:
     return dur
 
 
-# ── Outlier guard (data hygiene, multi-user-ready) ──────────────────────────────────────────────
-# Flag — never silently cap — activities whose load rests on suspect inputs, so they can be reviewed
-# (e.g. an RPE entered to refine) rather than skewing the model. Capping is deliberately NOT done: a
-# heuristic can't tell a real hard mountain day from a glitch, and suppressing genuine load is worse
-# than flagging. The scoring of flagged activities is unchanged (whether a mostly-stopped single-day
-# outing should switch to moving time is a per-sport calibration question — see docs/MODEL_UPGRADES.md).
+# ── Outlier guard + mostly-stopped correction (data hygiene, multi-user-ready) ──────────────────
+# Flag — never silently cap — activities whose load rests on a SUSPECT input (an HR glitch, an
+# implausible intensity): a heuristic can't tell a real hard mountain day from a glitch, and
+# suppressing genuine load is worse than flagging.
+# Mostly-stopped single-day outings (long belays/approach/pauses — typically alpinism / grande voie
+# logged as a hike) are different: their elapsed time genuinely over-counts effort, so the
+# duration-driven methods score them on MOVING time (see _scored_duration). We still FLAG them so the
+# athlete can confirm with an RPE; a user-entered RPE then supersedes the concern (the session is
+# scored at the declared effort) → the flag clears. The HR/power/pace methods keep elapsed: their
+# intensity already reflects the stops (low HR while belaying), so shortening duration too would
+# double-correct. See docs/MODEL_UPGRADES.md.
 REVIEW_IF_CEILING = 1.5      # an intensity factor this high implies bad inputs, not a real effort
-REVIEW_STOP_RATIO = 0.5      # single-day moving/elapsed below this = mostly stopped → load likely overstated
+REVIEW_STOP_RATIO = 0.5      # single-day moving/elapsed below this = mostly stopped → score on moving time
 REVIEW_MIN_ELAPSED_S = 3600  # only consider the stop ratio once the outing is long enough to matter
+
+
+def _mostly_stopped(a: dict, effective_days: int) -> bool:
+    """A single-day outing (≥ REVIEW_MIN_ELAPSED_S elapsed) that was mostly spent stopped
+    (moving/elapsed < REVIEW_STOP_RATIO): belays / approach / lift laps / forgotten pauses inflate its
+    elapsed time. Multi-day expeditions (effective_days>1) are handled separately (already on moving)."""
+    dur, mov = a.get("duration_s") or 0, a.get("moving_s")
+    return bool(effective_days == 1 and dur >= REVIEW_MIN_ELAPSED_S and mov and mov / dur < REVIEW_STOP_RATIO)
+
+
+def _scored_duration(a: dict) -> int:
+    """Effort seconds for the DURATION-DRIVEN methods (vertical_duration / session_rpe /
+    duration_fallback): MOVING time when a multi-day expedition (elapsed counts the nights) OR a
+    single-day outing that was mostly spent stopped (belays/approach inflate elapsed), else elapsed.
+    The HR/power/pace methods keep _active_duration (see the guard comment above)."""
+    dur = a.get("duration_s") or 0
+    eff_days = activity_span_days(a.get("started_at"), dur, a.get("moving_s"))
+    if eff_days > 1 or _mostly_stopped(a, eff_days):
+        return a.get("moving_s") or dur
+    return dur
 
 
 def needs_review(a: dict, profile: dict, intensity_factor: float | None, effective_days: int) -> bool:
     """True when the computed load rests on a suspect input: an HR sensor glitch (avg_hr above the
-    athlete's max), an implausible intensity factor, or a single-day outing scored on elapsed time that
-    was mostly spent stopped (forgotten pause / lift laps / long belays). Multi-day expeditions are
-    already handled (effective_days>1) so they are not flagged here."""
+    athlete's max), an implausible intensity factor, or a mostly-stopped single-day outing (long
+    belays/pauses). A user-entered RPE clears the stop-ratio flag — the athlete vouched for the effort,
+    and the session is then scored at that RPE rather than on elapsed time."""
     avg_hr, max_hr = a.get("avg_hr"), profile.get("max_hr")
     if avg_hr and max_hr and avg_hr > max_hr:
         return True
     if intensity_factor and intensity_factor > REVIEW_IF_CEILING:
         return True
-    dur, mov = a.get("duration_s") or 0, a.get("moving_s")
-    if effective_days == 1 and dur >= REVIEW_MIN_ELAPSED_S and mov and mov / dur < REVIEW_STOP_RATIO:
+    if a.get("rpe_source") != "user" and _mostly_stopped(a, effective_days):
         return True
     return False
 
@@ -292,7 +319,7 @@ def _method_vertical_duration(a: dict, p: dict, c: dict) -> tuple[float, float] 
     if not a.get("duration_s"):
         return None
     vgain = a.get("vertical_gain_m") or 0.0
-    base = _tss_from_if(_active_duration(a), c["default_if"])
+    base = _tss_from_if(_scored_duration(a), c["default_if"])
     ascent_points = (vgain / 1000.0) * c["ascent_per_1000m"] * _mass_factor(a, p)
     return base + ascent_points, c["default_if"]
 
@@ -302,7 +329,7 @@ def _method_session_rpe(a: dict, p: dict, c: dict) -> tuple[float, float] | None
     if not rpe:
         return None
     intensity = rpe / 10.0
-    return _tss_from_if(_active_duration(a), intensity), intensity
+    return _tss_from_if(_scored_duration(a), intensity), intensity
 
 
 def _method_grade_volume(a: dict, p: dict, c: dict) -> tuple[float, float] | None:
@@ -320,7 +347,7 @@ def _method_tonnage_rpe(a: dict, p: dict, c: dict) -> tuple[float, float] | None
 def _method_duration_fallback(a: dict, p: dict, c: dict) -> tuple[float, float] | None:
     if not a.get("duration_s"):
         return None
-    return _tss_from_if(_active_duration(a), c["default_if"]), c["default_if"]
+    return _tss_from_if(_scored_duration(a), c["default_if"]), c["default_if"]
 
 
 _METHODS = {

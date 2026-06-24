@@ -72,6 +72,9 @@ def test_climbing_discipline_from_text():
     assert f("RockClimbing", "Grimpe", None) == "indoor_climbing"          # nothing said -> voie salle
     assert f("Bouldering", "", None) == "bouldering"                       # Strava bloc stays bloc
     assert f("RockClimbing", "Session", "grosse journée en falaise") == "rock_climbing"  # from description
+    # 'grande voie' (multi-pitch) is its own sport and wins over the generic 'voie' → indoor rule.
+    assert f("RockClimbing", "Grande voie à Presles", None) == "grande_voie"
+    assert f("RockClimbing", "Multi-pitch", None) == "grande_voie"
 
 
 def test_user_rpe_drives_session_rpe():

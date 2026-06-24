@@ -156,6 +156,9 @@ function altitudeStats(
 /** Mirror of strava._climbing_sport_code. */
 function climbingSportCode(sportType: string, name: string | null, description: string | null): string {
   const text = `${name ?? ""} ${description ?? ""}`.toLowerCase();
+  // 'grande voie' (multi-pitch) first — it contains 'voie' but is its own sport (mirror strava.py).
+  if (["grande voie", "grandes voies", "multipitch", "multi-pitch", "multi pitch"].some((k) => text.includes(k)))
+    return "grande_voie";
   if (text.includes("bloc") || text.includes("boulder")) return "bouldering";
   if (["falaise", "crag", "extérieur", "exterieur", "outdoor", "dehors", "rocher"].some((k) => text.includes(k)))
     return "rock_climbing";

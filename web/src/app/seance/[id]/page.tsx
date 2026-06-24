@@ -7,6 +7,7 @@ import { weatherIcon, weatherLabel, weatherTempBadge } from "@/lib/weather";
 import { VIZ } from "@/lib/theme";
 import { StravaLink } from "@/components/brand";
 import { BackButton } from "@/components/back-button";
+import { ActivityFlag } from "@/components/activity-flag";
 import { EventEdit } from "@/components/event-edit";
 import { getSports } from "@/lib/activities";
 import { daysBetween, todayLocal } from "@/lib/coach-context";
@@ -163,6 +164,10 @@ function RealisedColumn({ v }: { v: SessionView }) {
       <Row label="D+ / D−" value={`${a.vertical_gain_m != null ? Math.round(a.vertical_gain_m) : "—"} / ${a.vertical_loss_m != null ? Math.round(a.vertical_loss_m) : "—"}`} />
       {a.avg_hr != null && <Row label="FC moyenne" value={`${a.avg_hr} bpm`} />}
       {a.perceived_rpe != null && <Row label="RPE" value={`${a.perceived_rpe} (${a.rpe_source})`} />}
+      <div className="mt-2 flex items-center justify-between gap-2 border-t border-stone-100 pt-2 dark:border-stone-800">
+        <span className="text-xs text-stone-500 dark:text-stone-400">Catégorie</span>
+        <ActivityFlag a={a} alwaysOffer />
+      </div>
       <div className="mt-2 flex items-center justify-between">
         <span className="text-[11px] text-stone-400">méthode {a.load_method_used ?? "—"}</span>
         <StravaLink source={a.source} sourceActivityId={a.source_activity_id} />
