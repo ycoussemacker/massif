@@ -299,15 +299,15 @@ def _build_activity_row(
         if time_high is not None:
             row["time_high_altitude_s"] = time_high
 
-    # Descent-familiarity (repeated-bout): the ratio for this date, if the series cleared the min-sample
-    # gate (else None → factor 1.0). Built from all stored D- by sync(); recompute_activity_loads is the
-    # source of truth and re-derives it identically across full history.
-    if fam_ratios is not None:
-        row["descent_familiarity"] = fam_ratios.get(local_date)
+    # Descent-familiarity (repeated-bout): the ratio for this date (None below the gate). It is passed to
+    # compute_load but NOT written on `row` — it's an in-memory factor, NOT a DB column (the factor is baked
+    # into neuromuscular_load), so persisting it would 422 the upsert. recompute_activity_loads re-derives
+    # it across full history (the source of truth).
+    fam = fam_ratios.get(local_date) if fam_ratios is not None else None
 
     # Differential RPE sub-scores (Phase 2) re-applied from the DB so a re-sync preserves the athlete's
     # perception-derived channel split (compute_load reads them when session_rpe wins). Strava never
-    # supplies these; they only exist if the athlete entered them in the web app.
+    # supplies these; they only exist if the athlete entered them in the web app. (These ARE real columns.)
     if differential_rpe:
         for k in ("rpe_cardio", "rpe_legs", "rpe_grip"):
             if differential_rpe.get(k) is not None:
@@ -315,7 +315,7 @@ def _build_activity_row(
 
     # Resolve thresholds as-of this activity's date (rec 2): empty history → the base profile unchanged.
     eff_profile = load.resolve_profile(profile, threshold_history, local_date)
-    result = load.compute_load(row, sport, eff_profile, params)
+    result = load.compute_load({**row, "descent_familiarity": fam}, sport, eff_profile, params)
     row["aerobic_load"] = result.aerobic_load
     row["neuromuscular_load"] = result.neuromuscular_load
     row["load_method_used"] = result.load_method_used

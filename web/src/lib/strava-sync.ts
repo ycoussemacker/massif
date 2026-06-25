@@ -292,11 +292,13 @@ export async function syncStrava(sb: SupabaseClient, afterDays = 21): Promise<St
       if (altStats.timeHighS != null) row.time_high_altitude_s = altStats.timeHighS;
     }
 
-    // Descent-familiarity ratio for this date (null when the series didn't clear the min-sample gate).
-    row.descent_familiarity = famRatios[row.local_date as string] ?? null;
+    // Descent-familiarity ratio for this date — passed to computeLoad but NOT written on `row`: it's an
+    // in-memory factor, NOT a DB column (baked into neuromuscular_load), so persisting it would 422 the upsert.
+    const fam = famRatios[row.local_date as string] ?? null;
 
     // Differential RPE sub-scores (Phase 2), re-applied from the DB so a re-sync preserves the athlete's
     // perception-derived channel split (computeLoad reads them when the user RPE wins → session_rpe).
+    // (These ARE real columns — migration …0005.)
     const diff = userDiff.get(String(act.id));
     if (diff) {
       row.rpe_cardio = diff.rpe_cardio;
@@ -306,7 +308,7 @@ export async function syncStrava(sb: SupabaseClient, afterDays = 21): Promise<St
 
     // Resolve thresholds as-of this activity's date (rec 2); empty history → base profile unchanged.
     const effProfile = resolveProfile(profile, thresholdHistory, row.local_date as string);
-    const r = computeLoad(row, sport, effProfile, loadParams);
+    const r = computeLoad({ ...row, descent_familiarity: fam }, sport, effProfile, loadParams);
     row.aerobic_load = r.aerobic_load;
     row.neuromuscular_load = r.neuromuscular_load;
     row.load_method_used = r.load_method_used;
