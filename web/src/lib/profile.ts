@@ -3,6 +3,7 @@
  *  this module is server-only because it imports the Supabase server client (next/headers). */
 import { createServiceClient } from "./supabase/server";
 import { sportName } from "./labels";
+import { loadCoachSettings } from "./coach-settings";
 import type { Goal, SportOption, ProfilePageData, AthleteProfile } from "./profile-types";
 
 // Re-export types only (erased at compile — safe). Import the pure VALUE helpers (ageFrom, freshness,
@@ -12,7 +13,7 @@ export type { AthleteProfile, Goal, SportOption, ConnectionStatus, ProfilePageDa
 /** One round-trip-batched read for the whole /profil page (mirrors getDashboard in lib/data.ts). */
 export async function getProfilePageData(): Promise<ProfilePageData> {
   const sb = await createServiceClient();
-  const [pm, gm, sm, stravaActM, stravaTokM, garminRecM] = await Promise.all([
+  const [pm, gm, sm, stravaActM, stravaTokM, garminRecM, coachSettings] = await Promise.all([
     sb.from("athlete_profile").select("*").limit(1).maybeSingle(),
     sb.from("goals")
       .select("id,sport_id,title,kind,priority_rank,target_date,target_horizon,target_detail,notes,status")
@@ -25,6 +26,7 @@ export async function getProfilePageData(): Promise<ProfilePageData> {
     sb.from("daily_metrics")
       .select("local_date,hrv_overnight_ms,sleep_score,training_readiness,resting_hr")
       .order("local_date", { ascending: false }).limit(60),
+    loadCoachSettings(sb), // select * → migration-safe (briefing_mode defaults to 'free' if column absent)
   ]);
 
   const sports: SportOption[] = (sm.data ?? []).map((s: any) => ({
@@ -67,5 +69,6 @@ export async function getProfilePageData(): Promise<ProfilePageData> {
       },
       garmin: { lastRecovery },
     },
+    briefingMode: coachSettings.briefing_mode,
   };
 }

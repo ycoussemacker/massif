@@ -273,6 +273,18 @@ export async function saveCoachSettings(input: CoachSettings): Promise<void> {
   revalidatePath("/");
 }
 
+/** Set ONLY the briefing mode (free = algorithmique 0 token / ai = re-voicé par un petit appel LLM).
+ *  Column-scoped upsert so it never resets the persona/voice settings (unlike saveCoachSettings, which
+ *  writes the whole object). Surfaced on /profil. */
+export async function setBriefingMode(mode: "free" | "ai"): Promise<void> {
+  const m = mode === "ai" ? "ai" : "free";
+  const sb = await createServiceClient();
+  const { error } = await sb.from("coach_settings").upsert({ id: 1, briefing_mode: m, updated_at: new Date().toISOString() });
+  if (error) throw new Error(error.message);
+  revalidatePath("/profil");
+  revalidatePath("/");
+}
+
 // ── On-demand sync (pull-to-refresh / "Synchroniser" button) ────────────────────────────────────
 
 /** Pull the athlete's recent Strava activities + recompute the fitness model, entirely in TS

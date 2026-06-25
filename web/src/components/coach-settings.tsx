@@ -139,36 +139,6 @@ export function CoachSettingsModal({ initial }: { initial: CoachSettings }) {
                 <p className="mt-0.5 text-sm text-stone-500 dark:text-stone-400">{selected.tagline}</p>
               </div>
 
-              {/* ── Génération du briefing : gratuit (algorithmique) ou IA (voix du coach) ── */}
-              <div>
-                <div className="mb-1.5 text-sm font-medium">Génération du briefing</div>
-                <div className="flex flex-wrap gap-1.5">
-                  {([
-                    { v: "free" as const, label: "Gratuit" },
-                    { v: "ai" as const, label: "IA" },
-                  ]).map(({ v, label }) => (
-                    <button
-                      key={v}
-                      type="button"
-                      aria-pressed={s.briefing_mode === v}
-                      onClick={() => set("briefing_mode", v)}
-                      className={`min-h-9 rounded-full px-3 py-1.5 text-sm transition ${
-                        s.briefing_mode === v
-                          ? "bg-alpine-600 font-medium text-white"
-                          : "border border-stone-300 text-stone-600 hover:bg-stone-100 active:bg-stone-200 dark:border-stone-700 dark:text-stone-300 dark:hover:bg-stone-800"
-                      }`}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-                <p className="mt-1.5 text-xs text-stone-500 dark:text-stone-400">
-                  {s.briefing_mode === "ai"
-                    ? "Le plan reste calculé automatiquement ; un petit appel IA réécrit la séance du jour et le résumé dans la voix de ton coach (consomme des tokens)."
-                    : "Briefing 100 % automatique, gratuit et instantané. Le chat reste disponible quand tu veux échanger avec ton coach."}
-                </p>
-              </div>
-
               {/* ── Genre (personas humanoïdes) ── */}
               {selected.gendered && (
                 <div>

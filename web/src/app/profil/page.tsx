@@ -3,6 +3,7 @@ import { Nav } from "@/components/nav";
 import { ProfileForm } from "@/components/profile-form";
 import { GoalsEditor } from "@/components/goals-editor";
 import { HrZonesPanel } from "@/components/hr-zones";
+import { BriefingModeSetting } from "@/components/briefing-mode-setting";
 import { Connections } from "@/components/connections";
 
 export const dynamic = "force-dynamic"; // toujours refléter les dernières modifs / le dernier sync
@@ -12,7 +13,7 @@ export default async function ProfilPage({
 }: {
   searchParams: Promise<{ strava?: string }>;
 }) {
-  const [{ profile, goals, sports, connections }, sp] = await Promise.all([
+  const [{ profile, goals, sports, connections, briefingMode }, sp] = await Promise.all([
     getProfilePageData(),
     searchParams,
   ]);
@@ -33,6 +34,7 @@ export default async function ProfilPage({
 
         <div className="space-y-6">
           <GoalsEditor goals={goals} sports={sports} />
+          <BriefingModeSetting initial={briefingMode} />
           <ProfileForm profile={profile} />
           <HrZonesPanel zones={profile?.hr_zones ?? null} />
           <Connections status={connections} justConnected={sp?.strava === "ok"} />

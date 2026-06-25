@@ -65,6 +65,7 @@ export type ProfilePageData = {
   goals: Goal[];                   // ALL goals, ordered active-first then priority_rank
   sports: SportOption[];           // for the goal sport dropdown
   connections: ConnectionStatus;
+  briefingMode: "free" | "ai";     // how the daily briefing is generated (algorithmic / AI-revoiced)
 };
 
 /** Compact goal for page headers (dashboard + coach). */
