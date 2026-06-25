@@ -3,6 +3,7 @@
  *  same as load.ts ↔ load.py). Keep the shape in sync so the chat reasons like the briefing run. */
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { buildPlanningView, favouriteSports, athleteConstraints } from "./planning";
+import { computeSessionBaselines } from "./session-baselines";
 
 export const ATHLETE_TZ = process.env.ATHLETE_TZ ?? "Europe/Paris";
 
@@ -165,7 +166,7 @@ export async function assembleCoachContext(sb: SupabaseClient): Promise<{ today:
   const today = todayLocal();
   const since14 = dateMinusDays(today, 14);
 
-  const [pm, mm, am, sm, plm, gm, npm, wm] = await Promise.all([
+  const [pm, mm, am, sm, plm, gm, npm, wm, bm] = await Promise.all([
     sb.from("athlete_profile").select("*").limit(1).maybeSingle(),
     sb.from("daily_metrics").select("*").order("local_date", { ascending: false }).limit(21),
     sb.from("activities")
@@ -181,6 +182,10 @@ export async function assembleCoachContext(sb: SupabaseClient): Promise<{ today:
     sb.from("athlete_load_params").select("value").eq("param", "neuro_atl_days").maybeSingle(),
     sb.from("daily_weather").select("local_date,temp_min_c,temp_max_c,feels_max_c,precip_mm,wind_kmh")
       .gte("local_date", today).order("local_date", { ascending: true }),
+    // ~90 d of realised loads → the athlete's PERSONAL per-session-type baselines (replaces the
+    // hard-coded coach target loads; falls back to them when a bucket is thin). See session-baselines.ts.
+    sb.from("activities").select("training_load,aerobic_load,neuromuscular_load,intensity_factor")
+      .gte("local_date", dateMinusDays(today, 90)).order("local_date", { ascending: false }).limit(400),
   ]);
 
   const profile: any = pm.data ?? {};
@@ -234,6 +239,9 @@ export async function assembleCoachContext(sb: SupabaseClient): Promise<{ today:
     },
     // The athlete's REAL HR zones (bpm) — translate an aerobic target into a concrete band the watch shows.
     hr_zones: hrZones(profile),
+    // Personalised per-session-type target loads, derived from ~90 d of the athlete's own efforts (the
+    // briefing uses these over the hard-coded BASE_LOAD when a bucket has enough samples).
+    session_baselines: computeSessionBaselines((bm.data ?? []) as any[]),
     fitness_model_latest: latest && {
       date: latest.local_date, ctl: latest.ctl, atl: latest.atl, tsb: latest.tsb,
       ctl_aerobic: latest.ctl_aerobic, atl_aerobic: latest.atl_aerobic, tsb_aerobic: latest.tsb_aerobic,

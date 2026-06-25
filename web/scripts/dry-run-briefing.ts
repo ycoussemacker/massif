@@ -41,6 +41,8 @@ async function main() {
   }
   const sb = createClient(URL, KEY, { auth: { persistSession: false } });
   const { today, context } = await assembleCoachContext(sb as any);
+  console.log("Charges cibles PERSONNALISÉES (médiane de ton historique 90j) :", JSON.stringify((context as any).session_baselines));
+  console.log("  (défauts si historique mince — easy 42 · seuil 72 · neuro 62 · structurel 68 · récup 22)");
   const clone = () => JSON.parse(JSON.stringify(context));
 
   // 1) État réel (référence).

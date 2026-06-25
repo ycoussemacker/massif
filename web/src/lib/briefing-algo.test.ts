@@ -113,10 +113,13 @@ test("taper: a primary GOAL within 14 d lightens the week (events don't, goals d
   if (easyBase && easyNear) assert.ok(easyNear.target_load < easyBase.target_load, "taper lowers easy-day load");
 });
 
-test("targetLoadFor: calibrated to real values (seuil ~72, not CTL-ballooned)", () => {
-  assert.equal(targetLoadFor("hard_aerobic"), 72);
+test("targetLoadFor: default when no history, personalised baseline when present", () => {
+  assert.equal(targetLoadFor("hard_aerobic"), 72);                                   // no ctx → default
   assert.equal(targetLoadFor("easy"), 42);
   assert.equal(targetLoadFor("rest"), 0);
+  assert.equal(targetLoadFor("hard_aerobic", { session_baselines: {} }), 72);        // empty bucket → default
+  assert.equal(targetLoadFor("hard_aerobic", { session_baselines: { hard_aerobic: 88 } }), 88); // personalised wins
+  assert.equal(targetLoadFor("rest", { session_baselines: { rest: 99 } } as any), 0); // rest is always 0
 });
 
 test("target loads: rest is 0, others positive and ordered", () => {

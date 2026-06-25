@@ -151,10 +151,13 @@ const altHard = (lastSys: "aerobic" | "neuro" | null): SystemTag =>
   lastSys === "aerobic" ? "hard_neuromuscular" : "hard_aerobic";
 
 // ── Per-day target load + channel split ─────────────────────────────────────────────────────────
-/** Target load for a coach-prescribed day — the calibrated base, NOT scaled by CTL (taper is applied
- *  separately in buildWeekPlan). `_ctx` kept for signature stability. */
-export function targetLoadFor(tag: SystemTag, _ctx?: any): number {
-  return BASE_LOAD[tag];
+/** Target load for a coach-prescribed day. PERSONALISED: the athlete's own per-session-type baseline
+ *  (ctx.session_baselines, derived from ~90 d of their efforts) when it exists, else the population
+ *  default BASE_LOAD. Not scaled by CTL (taper is applied separately in buildWeekPlan). */
+export function targetLoadFor(tag: SystemTag, ctx?: any): number {
+  if (tag === "rest") return 0;
+  const personal = ctx?.session_baselines?.[tag];
+  return typeof personal === "number" && personal > 0 ? personal : BASE_LOAD[tag];
 }
 function durationFor(tag: SystemTag): number {
   return BASE_MIN[tag];
@@ -258,7 +261,7 @@ export function buildWeekPlan(ctx: any, readiness: Readiness, anchors: Map<numbe
 
     days.push({
       day_offset: off, sport_code: fav, system_tag: tag, focus: focusFor(tag, null),
-      target_load: round(targetLoadFor(tag) * loadMul), is_key: false, anchors_event_ref: null,
+      target_load: round(targetLoadFor(tag, ctx) * loadMul), is_key: false, anchors_event_ref: null,
     });
 
     if (isHard(tag)) { sinceHard = 0; lastSys = systemFamily(tag); hardCount++; }
