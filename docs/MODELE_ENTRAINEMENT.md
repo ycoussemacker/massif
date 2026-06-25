@@ -245,43 +245,56 @@ physiologique, lui, ne dépend pas de l'IA.
 
 C'est la section la plus importante : voici nos **valeurs de départ** et nos **partis pris**, à
 challenger. Toutes sont ajustables, et destinées à être personnalisées à partir des données de l'athlète.
+Chaque point porte un numéro stable (**Q1 … Q14**) pour qu'on puisse y revenir un par un. Deux d'entre eux
+font l'objet d'une **recherche en cours** (🔬 Q2 et Q5).
 
-**Calcul de charge**
-1. **1 h au seuil = 100 points**, charge ∝ durée × intensité². L'ancrage et l'usage du carré te
-   semblent-ils justes pour un public montagne (longues sorties à intensité basse) ?
-2. **Descente : ~70 pts neuromusculaires / 1000 m D−.** C'est notre coefficient le plus sensible.
-   Plausible ? Faut-il qu'il dépende de la pente, du terrain, du niveau d'entraînement excentrique ?
-3. **Dénivelé positif → coût aérobie additionnel (~100 / 1000 m D+)** au-delà de la FC. Pertinent ?
-4. **FC = temps écoulé** (pas mouvement) car la FC moyenne est déjà diluée par les pauses (§2.2). D'accord
-   avec ce raisonnement, ou préfèrerais-tu une autre approche pour les très longues journées avec arrêts ?
-5. **Sports techniques (alpi/grande voie/escalade) scorés au RPE** faute de FC fiable. Une meilleure
-   approche ?
+### Calcul de charge
+- **Q1 — Ancrage de la charge.** 1 h pile au seuil = 100 points ; la charge ∝ durée × intensité² (le carré
+  pénalise le faible, valorise le dur). Cet ancrage et l'exposant 2 te semblent-ils justes pour un public
+  montagne (longues sorties à intensité basse) ?
+- **Q2 — 🔬 Descente (coût neuromusculaire).** ~70 points neuromusculaires / 1000 m de D−, valeur **fixe**
+  aujourd'hui. C'est notre coefficient le plus sensible. **Hypothèse à étudier** : ce coût — *et sa vitesse
+  de récupération* — serait **entraînable**. Un athlète habitué aux descentes subirait moins de dommages
+  excentriques et récupérerait plus vite qu'un débutant, pour le même D− (effet « repeated-bout » /
+  adaptation à l'excentrique). Faut-il faire dépendre le coefficient **et** la constante de récupération
+  neuro (cf. Q6) du **niveau / du volume récent de descente** de l'athlète ? *(recherche en cours)*
+- **Q3 — Dénivelé positif.** Un coût aérobie additionnel (~100 / 1000 m de D+) au-delà de ce que la FC
+  capte. Pertinent, ou la FC suffit-elle déjà à le refléter ?
+- **Q4 — FC sur le temps écoulé (pas le mouvement).** Parce que la FC moyenne est déjà « diluée » par les
+  pauses (§2.2), on garde le temps total pour les méthodes pilotées par la FC. D'accord avec ce
+  raisonnement, ou une autre approche pour les très longues journées avec beaucoup d'arrêts ?
+- **Q5 — 🔬 Effort perçu (RPE).** Les sports techniques (alpi, grande voie, escalade) sont scorés au RPE
+  faute de FC fiable. **Quelle échelle, à quel moment, et avec quelle formulation** poser la question pour
+  obtenir un RPE valide et comparable d'une discipline à l'autre ? *(recherche en cours)*
 
-**Forme & fatigue**
-6. **Constantes de temps : Fitness 42 j, Fatigue aérobie 7 j, Fatigue neuromusculaire 14 j.** Le 14 j pour
-   le neuromusculaire (vs 7 j cardio) capture-t-il bien la traîne des courbatures/tendons ? Trop court ?
-7. **ACWR > ~1,5 = zone à risque.** Seuil adapté à un athlète montagne très variable d'un jour à l'autre ?
+### Forme & fatigue
+- **Q6 — Constantes de temps.** Fitness 42 j ; Fatigue aérobie 7 j ; **Fatigue neuromusculaire 14 j**. Le
+  14 j (vs 7 j côté cardio) capture-t-il bien la traîne des courbatures / tendons ? Trop court, trop long ?
+  *(lié à Q2 : cette durée est peut-être, elle aussi, fonction du niveau)*
+- **Q7 — Seuil de risque.** ACWR > ~1,5 = zone à risque. Adapté à un athlète montagne très variable d'un
+  jour à l'autre ?
 
-**Décision du jour & semaine**
-8. **Readiness orange** déclenchée par une readiness Garmin « moyenne », une dette neuromusculaire, un
-   ACWR élevé, ou l'absence de données. Les bons signaux ? Les bons seuils ?
-9. **80/20 facile/dur**, **jamais 2 jours durs même système d'affilée**. Trop rigide / trop souple pour la
-   montagne (où un « jour facile » est souvent une rando de 3–4 h) ?
-10. **Affûtage : 1–2 semaines (objectif primaire) / ~1 semaine (secondaires)**, baisse de volume à
-    intensité maintenue. Durées et méthode validées pour des objectifs type ultra-trail / course alpi ?
-11. **Événements ≠ objectifs** : on planifie autour des événements mais on n'allège que pour les
-    objectifs. Distinction pertinente côté coaching ?
+### Décision du jour & semaine
+- **Q8 — Disponibilité (vert/orange/rouge).** Le orange est déclenché par une readiness Garmin « moyenne »,
+  une dette neuromusculaire, un ACWR élevé ou l'absence de données. Les bons signaux ? Les bons seuils ?
+- **Q9 — Structure de semaine.** ~80/20 facile/dur, et jamais 2 jours durs sur le même système d'affilée.
+  Trop rigide / trop souple pour la montagne (où un « jour facile » est souvent une rando de 3–4 h) ?
+- **Q10 — Affûtage.** 1–2 semaines (objectif primaire) / ~1 semaine (secondaires), baisse de volume à
+  intensité maintenue. Durées et méthode validées pour des objectifs type ultra-trail / course d'alpi ?
+- **Q11 — Événements ≠ objectifs.** On planifie *autour* des événements mais on n'allège (affûtage) que
+  pour les objectifs. Distinction pertinente côté coaching ?
 
-**Estimation & ratios**
-12. **Ratios temps de mouvement par sport** (alpi 0,55 · grande voie 0,35 · rando 0,82 · trail 0,92 ·
-    course 0,95…) comme valeurs de départ avant d'avoir l'historique de l'athlète. Réalistes ?
-13. **Personnalisation des cibles** par la **médiane** des vraies séances (et pas la moyenne) — bon choix
-    pour résister à une journée hors-norme ?
+### Estimation & personnalisation
+- **Q12 — Ratios « temps de mouvement » par sport** (alpi 0,55 · grande voie 0,35 · rando 0,82 · trail
+  0,92 · course 0,95…), valeurs de départ avant d'avoir l'historique de l'athlète. Réalistes ?
+- **Q13 — Cibles par la médiane.** On personnalise les charges cibles par la **médiane** des vraies séances
+  (pas la moyenne) pour résister à une journée hors-norme. Bon choix ?
 
-**Question ouverte de fond**
-14. La logique *durée × intensité²* donne des charges **élevées** pour les très longues sorties (5–7 h),
-    même faciles. Est-ce le bon reflet de la **stress d'entraînement** réel, ou faut-il introduire des
-    **rendements décroissants** au-delà d'un certain temps pour ces journées d'endurance fondamentale ?
+### Question ouverte de fond
+- **Q14 — Rendements décroissants ?** La logique *durée × intensité²* donne des charges **élevées** pour
+  les très longues sorties (5–7 h), même faciles. Est-ce le bon reflet du **stress d'entraînement** réel,
+  ou faut-il introduire des **rendements décroissants** au-delà d'un certain temps pour ces journées
+  d'endurance fondamentale ?
 
 ---
 
