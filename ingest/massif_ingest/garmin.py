@@ -17,7 +17,7 @@ import json
 import os
 from datetime import date, timedelta
 
-from . import db
+from . import db, zones
 from .config import Settings
 
 # Garmin HRV status strings -> daily_metrics.hrv_status CHECK values.
@@ -99,6 +99,37 @@ def fetch_day(client, date_str: str) -> dict:
         # a load input — see docs/research/heat-altitude.md). One more endpoint; _safe isolates failures.
         "maxmet": _safe(client, "get_max_metrics", date_str),
     }
+
+
+def fetch_hr_zones(client):
+    """Best-effort pull of the athlete's configured HR training zones from Garmin (athlete-level, not
+    per-day). Tries the library method if this garminconnect version exposes one, else the raw
+    biometric-service endpoint via connectapi. Returns the raw payload (list/dict) or None — the API is
+    undocumented + device-variable, so the payload is parsed defensively in zones.normalize_garmin_zones."""
+    raw = _safe(client, "get_heart_rate_zones")  # newer python-garminconnect may expose this
+    if raw:
+        return raw
+    fn = getattr(client, "connectapi", None)  # raw-endpoint escape hatch (garth-backed)
+    if fn is None:
+        return None
+    try:
+        return fn("/biometric-service/heartRateZones")
+    except Exception:
+        return None
+
+
+def sync_hr_zones(client) -> bool:
+    """Fetch + store the athlete's real HR zones from Garmin (once per run). Best-effort: an unreadable
+    or absent payload leaves athlete_profile.hr_zones for sync.py's computed fallback. Returns True iff
+    Garmin zones were written. Never raises (callers wrap, but isolate here too)."""
+    try:
+        blob = zones.normalize_garmin_zones(fetch_hr_zones(client))
+    except Exception:
+        blob = None
+    if not blob:
+        return False
+    db.upsert_hr_zones(blob)
+    return True
 
 
 def sleep_ready(client, date_str: str | None = None) -> bool:
@@ -252,6 +283,13 @@ def sync(days: int = 7) -> int:
     hydrate_token(s)        # cloud: rebuild the token file from Supabase before login
     client = login(s)
     persist_token(s)        # capture any refresh-rotation back to Supabase for the next run
+    # Athlete-level HR training zones — pull the watch's REAL zones so the coach's "Z2" matches it.
+    # Best-effort + isolated: a failure here must not abort the recovery pull below.
+    try:
+        if sync_hr_zones(client):
+            print("garmin: hr zones updated")
+    except Exception as e:
+        print(f"garmin: hr zones skipped ({type(e).__name__}: {e})")
     today = date.today()
     count = 0
     for i in range(days):

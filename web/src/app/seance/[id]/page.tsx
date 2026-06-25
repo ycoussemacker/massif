@@ -110,7 +110,18 @@ function PlannedColumn({ v }: { v: SessionView }) {
       {p && (
         <>
           {p.systemTag && <Row label="Type d'effort" value={SYSTEM_TAG_FR[p.systemTag] ?? p.systemTag} />}
-          {p.intensityZone && <Row label="Intensité" value={p.intensityZone} />}
+          {(p.intensityZone || (p.targetHrLow != null && p.targetHrHigh != null)) && (
+            <Row label="Intensité" value={
+              <>
+                {p.intensityZone}
+                {p.targetHrLow != null && p.targetHrHigh != null && (
+                  <span className={p.intensityZone ? "ml-1 text-stone-500 dark:text-stone-400" : ""}>
+                    {p.intensityZone ? "· " : ""}{p.targetHrLow}–{p.targetHrHigh} bpm
+                  </span>
+                )}
+              </>
+            } />
+          )}
           {p.targetLoad != null && <Row label="Charge cible" value={`${fmt(p.targetLoad, 0)} pts`} />}
           {(p.targetAerobic != null || p.targetNeuro != null) && (
             <Row label="Canaux cibles" value={<Channels aero={p.targetAerobic} neuro={p.targetNeuro} />} />

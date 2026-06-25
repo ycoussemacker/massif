@@ -2,6 +2,7 @@ import { getProfilePageData } from "@/lib/profile";
 import { Nav } from "@/components/nav";
 import { ProfileForm } from "@/components/profile-form";
 import { GoalsEditor } from "@/components/goals-editor";
+import { HrZonesPanel } from "@/components/hr-zones";
 import { Connections } from "@/components/connections";
 import { NotificationOptIn } from "@/components/notification-opt-in";
 
@@ -34,6 +35,7 @@ export default async function ProfilPage({
         <div className="space-y-6">
           <GoalsEditor goals={goals} sports={sports} />
           <ProfileForm profile={profile} />
+          <HrZonesPanel zones={profile?.hr_zones ?? null} />
           <Connections status={connections} justConnected={sp?.strava === "ok"} />
           <NotificationOptIn />
         </div>

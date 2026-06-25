@@ -41,6 +41,18 @@ export function whenLabelFr(localDate: string, today: string): string {
   return `du ${d}`;
 }
 
+/** The athlete's REAL heart-rate training zones (bpm) — so the coach prescribes a "Z2" that matches the
+ *  watch. `source` is 'garmin' (the watch's own config) or 'computed' (a %HRR fallback from thresholds).
+ *  Null when none are set yet. Mirror of coach/src/context.ts hrZones. */
+function hrZones(profile: any): Record<string, unknown> | null {
+  const z = profile?.hr_zones;
+  if (!z || !Array.isArray(z.zones) || z.zones.length === 0) return null;
+  return {
+    source: z.source ?? null,
+    zones: z.zones.map((zz: any) => ({ zone: zz.name, low_bpm: zz.low_bpm, high_bpm: zz.high_bpm })),
+  };
+}
+
 /** Garmin recovery metrics we surface, with FR labels (used to name what's missing). */
 const RECOVERY_METRICS: [string, string][] = [
   ["sleep_score", "sommeil"],
@@ -220,6 +232,8 @@ export async function assembleCoachContext(sb: SupabaseClient): Promise<{ today:
     thresholds: {
       max_hr: profile.max_hr, resting_hr: profile.resting_hr, lthr: profile.lthr, weight_kg: profile.weight_kg,
     },
+    // The athlete's REAL HR zones (bpm) — translate an aerobic target into a concrete band the watch shows.
+    hr_zones: hrZones(profile),
     fitness_model_latest: latest && {
       date: latest.local_date, ctl: latest.ctl, atl: latest.atl, tsb: latest.tsb,
       ctl_aerobic: latest.ctl_aerobic, atl_aerobic: latest.atl_aerobic, tsb_aerobic: latest.tsb_aerobic,

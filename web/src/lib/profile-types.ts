@@ -14,11 +14,22 @@ export type AthleteProfile = {
   resting_hr: number | null;
   lthr: number | null;
   hrv_baseline_ms: number | null;
+  hr_zones: HrZones;               // the athlete's real HR training zones (bpm) — Garmin's, or computed
   // training preferences (jsonb)
   weekly_structure: Record<string, unknown> | null;
   constraints: Record<string, unknown> | null;
   timezone: string | null;
 };
+
+/** One HR training zone (bpm band) + the whole set as stored in athlete_profile.hr_zones. `source`:
+ *  'garmin' = read from the watch (matches it exactly); 'computed' = %HRR/%maxHR fallback from thresholds. */
+export type HrZone = { n: number; name: string; low_bpm: number; high_bpm: number };
+export type HrZones = {
+  source: "garmin" | "computed" | string | null;
+  model: string | null;
+  updated_at: string | null;
+  zones: HrZone[];
+} | null;
 
 export type Goal = {
   id: string;

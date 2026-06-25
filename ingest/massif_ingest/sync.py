@@ -15,7 +15,7 @@ import argparse
 import math
 from datetime import date, timedelta
 
-from . import db, load
+from . import db, load, zones
 
 
 # The neuromuscular channel's ACUTE (fatigue) load decays on a SLOWER time constant than the aerobic
@@ -64,6 +64,22 @@ def recompute_activity_loads() -> int:
         })
         updated += 1
     return updated
+
+
+def ensure_hr_zones() -> str | None:
+    """Guarantee athlete_profile.hr_zones is populated: if Garmin didn't supply the athlete's real zones
+    (garmin.sync_hr_zones), compute a %HRR fallback from their thresholds so the coach always has a bpm
+    definition for "Z2". No-op when zones already exist (Garmin's, or a prior fallback). Returns a short
+    status string for logging, or None when nothing was written."""
+    profile = db.load_athlete_profile()
+    existing = profile.get("hr_zones")
+    if isinstance(existing, dict) and existing.get("zones"):
+        return None  # already have zones (Garmin wins, or a prior fallback) — leave them untouched
+    blob = zones.compute_default_hr_zones(profile)
+    if not blob:
+        return None  # no max_hr to anchor on — nothing to compute
+    db.upsert_hr_zones(blob)
+    return f"computed fallback ({blob['model']})"
 
 
 def rollup_daily_metrics(ctl_days: int = 42, atl_days: int = 7) -> int:
@@ -204,6 +220,15 @@ def main() -> None:
             print(f"garmin: {n} days")
         except Exception as e:
             print(f"garmin: skipped ({type(e).__name__}: {e})")
+
+        # Ensure the athlete has HR zones for the coach (Garmin's real ones if just pulled, else a computed
+        # %HRR fallback). Cheap, no provider call; a failure must not abort the rollup.
+        try:
+            status = ensure_hr_zones()
+            if status:
+                print(f"hr zones: {status}")
+        except Exception as e:
+            print(f"hr zones: skipped ({type(e).__name__}: {e})")
 
         # Weather forecast (Open-Meteo) for the athlete's location — the UPCOMING heat the coach reads
         # acclimation against. Independent of the providers; a failure must not abort the rollup.

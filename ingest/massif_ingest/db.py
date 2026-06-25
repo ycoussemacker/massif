@@ -33,6 +33,18 @@ def load_athlete_profile() -> dict:
     return rows[0] if rows else {}
 
 
+def upsert_hr_zones(zones: dict) -> None:
+    """Write the athlete's HR training zones (bpm) onto the single athlete_profile row. Column-scoped to
+    hr_zones (+ updated_at) so it never touches thresholds/prefs. Targets the existing row by id; if the
+    profile row doesn't exist yet, inserts one carrying just the zones."""
+    sb = client()
+    existing = sb.table("athlete_profile").select("id").limit(1).execute().data
+    if existing:
+        sb.table("athlete_profile").update({"hr_zones": zones}).eq("id", existing[0]["id"]).execute()
+    else:
+        sb.table("athlete_profile").insert({"hr_zones": zones}).execute()
+
+
 def load_load_params() -> dict:
     """athlete_load_params as {param: value} for load.compute_load / the rollup. Empty when nothing has
     been calibrated yet → the model uses its population defaults (no behaviour change)."""

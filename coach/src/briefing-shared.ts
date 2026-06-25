@@ -105,6 +105,15 @@ canal, au-dessus de \`*_max\` il l'a SUR-fait. Choisis des bornes qu'un écart R
 déclenche — elles serviront de verdict après l'activité. Le \`day_offset\` d'une séance détaillée doit
 correspondre à un jour de week_plan. Les autres jours ne portent qu'une charge cible rapide, sans bornes.
 
+ZONES FC — RAISONNE D'ABORD EN CHARGE, PUIS TRADUIS EN ZONE : décide TOUJOURS l'effort par les CANAUX
+(charge aérobie + neuromusculaire) AVANT de parler de zone. Pour une séance à dominante AÉROBIE, traduis
+ensuite la cible en une zone FC concrète : renseigne \`intensity_zone\` (« Z2 ») ET ses bornes en bpm
+\`target_hr_low\`/\`target_hr_high\` LUES DANS \`hr_zones\` (les zones RÉELLES de l'athlète, configurées sur
+sa montre) — ainsi la consigne correspond EXACTEMENT à ce qu'affiche sa montre pendant la séance. N'INVENTE
+JAMAIS de bpm : reprends les bornes de la zone choisie telles quelles dans \`hr_zones\`. Si \`hr_zones\` est
+absent du contexte, donne la zone sans bpm (laisse target_hr_low/high à null). Pour une séance NON pilotée
+par la FC (force, grimpe, gros effort neuromusculaire), laisse target_hr_low/high à null.
+
 CONTRAINTES & MÉMOIRE : \`athlete_constraints\` porte les limites de l'athlète — jours sans séance dure
 (\`no_hard_days\`), volume hebdo max (\`max_weekly_hours\`) — et des notes libres (\`notes\` : blessures
 passées, points faibles). Respecte les jours sans hard. Quand une note décrit une blessure/faiblesse,
@@ -174,6 +183,8 @@ export const COACH_BRIEFING_SCHEMA = {
           title: { type: "string" },
           description: { type: "string" },
           intensity_zone: { type: "string", description: "FR, ex. « Z2 »" },
+          target_hr_low: { type: ["integer", "null"], description: "bpm — borne BASSE de la zone FC visée, LUE dans hr_zones (null si non piloté par la FC ou hr_zones absent)" },
+          target_hr_high: { type: ["integer", "null"], description: "bpm — borne HAUTE de la zone FC visée, LUE dans hr_zones (null si non piloté par la FC ou hr_zones absent)" },
           target_duration_min: { type: "integer" },
           target_aerobic_load: { type: "number" },
           target_aerobic_min: { type: "number", description: "sous ce seuil = sous-fait (canal aérobie)" },
@@ -182,7 +193,8 @@ export const COACH_BRIEFING_SCHEMA = {
           target_neuromuscular_min: { type: "number" },
           target_neuromuscular_max: { type: "number" },
         },
-        required: ["day_offset", "title", "description", "intensity_zone", "target_duration_min",
+        required: ["day_offset", "title", "description", "intensity_zone", "target_hr_low", "target_hr_high",
+          "target_duration_min",
           "target_aerobic_load", "target_aerobic_min", "target_aerobic_max",
           "target_neuromuscular_load", "target_neuromuscular_min", "target_neuromuscular_max"],
       },
@@ -264,6 +276,8 @@ export function buildForwardPlanRows(
       target_neuromuscular_max: det?.target_neuromuscular_max ?? null,
       target_duration_s: det ? Math.round((det.target_duration_min || 0) * 60) : null,
       intensity_zone: det?.intensity_zone ?? null,
+      target_hr_low: det?.target_hr_low ?? null,
+      target_hr_high: det?.target_hr_high ?? null,
       system_tag: systemTag,
       is_key: !!d.is_key,
       week_index: 0,

@@ -23,6 +23,8 @@ export type PlannedMeta = {
   sportName: string | null;
   systemTag: string | null;
   intensityZone: string | null;
+  targetHrLow: number | null;   // bpm band to hold (from the athlete's real HR zones) — matches the watch
+  targetHrHigh: number | null;
   isEvent: boolean;
   isPinned: boolean;
   isKey: boolean;
@@ -83,6 +85,7 @@ function toPlannedMeta(p: any, sportCode: string | null, sportName: string | nul
   return {
     id: p.id, title: p.title, description: p.description ?? null, sportId: p.sport_id ?? null, sportCode, sportName,
     systemTag: p.system_tag ?? null, intensityZone: p.intensity_zone ?? null,
+    targetHrLow: p.target_hr_low ?? null, targetHrHigh: p.target_hr_high ?? null,
     isEvent: !!p.is_event, isPinned: !!p.is_pinned, isKey: !!p.is_key, status: p.status ?? null,
     targetLoad: p.target_load ?? null,
     targetAerobic: p.target_aerobic_load ?? null, targetNeuro: p.target_neuromuscular_load ?? null,
