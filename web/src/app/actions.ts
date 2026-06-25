@@ -544,7 +544,11 @@ export async function createPlannedEvent(input: PlannedEventInput): Promise<{ id
     target_vertical_m: c.target_vertical_m,
     target_duration_s: c.target_duration_s,
     expected_altitude_m: c.expected_altitude_m,
-    target_load: estimate.total,
+    // Store the channels as the cible too (total = aéro + neuro), so the séance card is consistent and
+    // matches the per-channel estimate — same convention as a chat-pinned session (commitSession).
+    target_aerobic_load: estimate.aerobic,
+    target_neuromuscular_load: estimate.neuro,
+    target_load: estimate.aerobic + estimate.neuro,
     predicted_aerobic_load: estimate.aerobic,
     predicted_neuromuscular_load: estimate.neuro,
     prediction_basis: estimate.basisLabel,
@@ -581,7 +585,12 @@ export async function updatePlannedEvent(id: string, input: PlannedEventInput): 
     target_vertical_m: c.target_vertical_m,
     target_duration_s: c.target_duration_s,
     expected_altitude_m: c.expected_altitude_m,
-    target_load: estimate.total,
+    // Recompute the two CHANNELS and derive the total from them (total = aéro + neuro), so the séance
+    // card stays internally consistent after an edit (was: only target_load updated → stale channels).
+    // Mirrors commitSession's pattern.
+    target_aerobic_load: estimate.aerobic,
+    target_neuromuscular_load: estimate.neuro,
+    target_load: estimate.aerobic + estimate.neuro,
     predicted_aerobic_load: estimate.aerobic,
     predicted_neuromuscular_load: estimate.neuro,
     prediction_basis: estimate.basisLabel,

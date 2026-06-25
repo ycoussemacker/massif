@@ -36,8 +36,8 @@ async function main() {
   const profile = resolveProfile((prof ?? {}) as LoadProfile, (thr ?? []) as ThresholdRow[], today);
 
   const { data: events } = await sb.from("planned_sessions")
-    .select("id,title,sport_id,target_distance_m,target_vertical_m,target_duration_s,predicted_aerobic_load,predicted_neuromuscular_load")
-    .eq("is_event", true).eq("status", "planned").gte("planned_date", today);
+    .select("id,title,sport_id,target_distance_m,target_vertical_m,target_duration_s,target_load,target_aerobic_load,target_neuromuscular_load,predicted_aerobic_load,predicted_neuromuscular_load")
+    .eq("modified_by", "user").eq("status", "planned").gte("planned_date", today); // athlete-owned (events + pinned)
 
   for (const e of events ?? []) {
     const sp = byId.get(e.sport_id); const tax = sp?.taxonomy_group ?? null;
@@ -59,15 +59,28 @@ async function main() {
     const sport = { taxonomy_group: tax, load_method_ladder: sp?.load_method_ladder ?? null };
     const est = estimateActivityLoad(adj, { candidates: candidates as any, hist: candidates as any, sport, profile, params });
 
-    const old = Math.round((e.predicted_aerobic_load ?? 0) + (e.predicted_neuromuscular_load ?? 0));
-    console.log(`\n• ${e.title} (${sp?.code}, ratio mvt ${frac.toFixed(2)})`);
-    console.log(`  ${(e.target_duration_s / 3600).toFixed(1)}h déclarées → ${(e.target_duration_s * frac / 3600).toFixed(1)}h mvt`);
-    console.log(`  ${old} pts (stocké)  →  ${Math.round(est.total)} pts [aéro ${Math.round(est.aerobic)} / neuro ${Math.round(est.neuro)}] · ${est.basisLabel}`);
-    if (WRITE) {
+    // Is the STORED row internally inconsistent (total ≠ aéro + neuro)? Only those get rewritten — we
+    // don't disturb sessions that are already coherent.
+    const storedTotal = e.target_load ?? 0;
+    const storedChannels = (e.target_aerobic_load ?? 0) + (e.target_neuromuscular_load ?? 0);
+    const storedPredicted = (e.predicted_aerobic_load ?? 0) + (e.predicted_neuromuscular_load ?? 0);
+    // What the total SHOULD equal: the channel targets if set (pinned), else the predicted total (event).
+    const ref = e.target_aerobic_load != null ? storedChannels : storedPredicted;
+    const inconsistent = Math.abs(storedTotal - ref) > 2;
+    const hMvt = e.target_duration_s ? (e.target_duration_s * frac / 3600).toFixed(1) + "h mvt" : "—";
+    console.log(`\n• ${e.title} (${sp?.code}, ratio mvt ${frac.toFixed(2)}) ${inconsistent ? "⚠ incohérent" : "✓ cohérent"}`);
+    console.log(`  stocké : total ${Math.round(storedTotal)} pts vs canaux ${Math.round(storedChannels)} (aéro ${Math.round(e.target_aerobic_load ?? 0)} / neuro ${Math.round(e.target_neuromuscular_load ?? 0)}) → mvt ${hMvt}`);
+    console.log(`  ré-estimé : ${Math.round(est.aerobic + est.neuro)} pts [aéro ${Math.round(est.aerobic)} / neuro ${Math.round(est.neuro)}] · ${est.basisLabel}`);
+    if (WRITE && inconsistent) {
       const { error } = await sb.from("planned_sessions")
-        .update({ predicted_aerobic_load: est.aerobic, predicted_neuromuscular_load: est.neuro, prediction_basis: est.basisLabel })
-        .eq("id", e.id);
-      console.log(error ? `  ✗ écriture: ${error.message}` : `  ✓ écrit en base`);
+        .update({
+          target_aerobic_load: est.aerobic, target_neuromuscular_load: est.neuro,
+          target_load: est.aerobic + est.neuro,
+          predicted_aerobic_load: est.aerobic, predicted_neuromuscular_load: est.neuro,
+          prediction_basis: est.basisLabel,
+        })
+        .eq("id", e.id).eq("modified_by", "user");
+      console.log(error ? `  ✗ écriture: ${error.message}` : `  ✓ corrigé (canaux + total alignés)`);
     }
   }
   console.log(WRITE ? "\n(écrit)\n" : "\n(lecture seule — relance avec --write pour persister)\n");

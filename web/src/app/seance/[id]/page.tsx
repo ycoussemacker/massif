@@ -138,13 +138,8 @@ function PlannedColumn({ v }: { v: SessionView }) {
           )}
         </>
       )}
-      {v.estimate && (
-        <>
-          <Row label="Charge estimée" value={`~${fmt(v.estimate.total, 0)} pts`} />
-          <Row label="Canaux estimés" value={<Channels aero={v.estimate.aerobic} neuro={v.estimate.neuro} />} />
-          {v.estimate.basis && <p className="mt-1 text-[11px] text-stone-400">{v.estimate.basis}</p>}
-        </>
-      )}
+      {/* The charge/canaux above ARE the estimate for an event — show only its provenance, not the numbers twice. */}
+      {v.estimate?.basis && <p className="mt-1 text-[11px] text-stone-400">Estimé · {v.estimate.basis}</p>}
       {v.forecast && (
         <div className="mt-2 border-t border-stone-100 pt-2 dark:border-stone-800">
           <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-stone-400">Forme projetée la veille</div>
