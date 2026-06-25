@@ -8,6 +8,7 @@
 import type { DescentTraining } from "@/lib/descent-training";
 import { ScrollRight } from "./scroll-right";
 import { VIZ, MUTED } from "@/lib/theme";
+import { mondayTickIndices, axisDateLabel } from "@/lib/chart-axis";
 
 const PX_PER_DAY = 16; // same cadence as the dashboard charts → ~2 months fill a typical card width
 const fmtM = (m: number) => `${new Intl.NumberFormat("fr-FR").format(Math.round(m))} m`;
@@ -55,15 +56,15 @@ export function DescentTrainingCard({ data }: { data: DescentTraining }) {
   const H = 150, padT = 12, padB = 22;
   const yTop = padT, yBot = H - padB;
   const W = Math.round(points.length * PX_PER_DAY);
-  const maxM = Math.max(medianM, ...points.map((p) => p.m)) * 1.1 || 1;
+  const rawMax = Math.max(medianM, ...points.map((p) => p.m), 1);
+  const maxM = Math.max(1000, Math.ceil(rawMax / 1000) * 1000); // nice round y-scale top (also the axis label)
   const X = (i: number) => (i + 0.5) * PX_PER_DAY;
   const Y = (m: number) => yBot - (m / maxM) * (yBot - yTop);
   const line = points.map((p, i) => `${i === 0 ? "M" : "L"}${X(i).toFixed(1)},${Y(p.m).toFixed(1)}`).join(" ");
   const area = `M${X(0).toFixed(1)},${yBot} ${points.map((p, i) => `L${X(i).toFixed(1)},${Y(p.m).toFixed(1)}`).join(" ")} L${X(points.length - 1).toFixed(1)},${yBot} Z`;
   const yMedian = Y(medianM);
-  // Ticks at month boundaries (month changes vs the previous day).
-  const ticks = points.flatMap((p, i) =>
-    i > 0 && p.date.slice(5, 7) !== points[i - 1].date.slice(5, 7) ? [{ i, date: p.date }] : []);
+  // Weekly x-axis: a date every 7 days, on Mondays (shared with the other time-series charts).
+  const ticks = mondayTickIndices(points.map((p) => p.date)).map((i) => ({ i, date: points[i].date }));
   const adapted = state === "adapted"; // colour the current value only when the state agrees (≥1.15× median)
   const st = STATE_TEXT[state];
 
@@ -74,27 +75,36 @@ export function DescentTrainingCard({ data }: { data: DescentTraining }) {
         bien exposé&nbsp;; en dessous = reprise. Fais défiler vers la gauche pour l&apos;historique.
       </p>
 
-      <ScrollRight className="overflow-x-auto">
-        <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} role="img"
-          aria-label="Dénivelé négatif cumulé sur 28 jours glissants, historique complet">
-          {/* median reference line (full width) */}
-          <line x1={0} x2={W} y1={yMedian} y2={yMedian} stroke={MUTED} strokeWidth={1}
-            strokeDasharray="4 3" opacity={0.7} />
-          {/* area + line (Summit = neuromuscular / descent) */}
-          <path d={area} fill={VIZ.neuro} opacity={0.14} />
-          <path d={line} fill="none" stroke={VIZ.neuro} strokeWidth={1.75}
-            strokeLinejoin="round" strokeLinecap="round" />
-          {/* current point (far right — visible on open) */}
-          <circle cx={X(points.length - 1)} cy={Y(points[points.length - 1].m)} r={2.6} fill={VIZ.neuro} />
-          {/* month-boundary ticks */}
-          {ticks.map((t) => (
-            <g key={t.i}>
-              <line x1={X(t.i)} x2={X(t.i)} y1={yBot} y2={yBot + 3} stroke={MUTED} strokeWidth={1} opacity={0.5} />
-              <text x={X(t.i)} y={H - 6} textAnchor="middle" fontSize={9} fill={MUTED}>{monthLabel(t.date)}</text>
-            </g>
-          ))}
-        </svg>
-      </ScrollRight>
+      <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-1.5">
+        {/* fixed y-axis (always visible while scrolling): max (top) · médiane (true height) · 0 (m, D−) */}
+        <div className="relative w-10 shrink-0 text-right text-[10px] tabular-nums text-stone-400" style={{ height: H }} aria-hidden>
+          <span className="absolute right-0 -translate-y-1/2" style={{ top: yTop }}>{Math.round(maxM)}</span>
+          <span className="absolute right-0 -translate-y-1/2" style={{ top: yMedian }}>{Math.round(medianM)}</span>
+          <span className="absolute right-0 -translate-y-1/2" style={{ top: yBot }}>0</span>
+        </div>
+        <ScrollRight className="overflow-x-auto">
+          <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} role="img"
+            aria-label="Dénivelé négatif cumulé sur 28 jours glissants, historique complet">
+            {/* median reference line (full width) */}
+            <line x1={0} x2={W} y1={yMedian} y2={yMedian} stroke={MUTED} strokeWidth={1}
+              strokeDasharray="4 3" opacity={0.7} />
+            {/* area + line (Summit = neuromuscular / descent) */}
+            <path d={area} fill={VIZ.neuro} opacity={0.14} />
+            <path d={line} fill="none" stroke={VIZ.neuro} strokeWidth={1.75}
+              strokeLinejoin="round" strokeLinecap="round" />
+            {/* current point (far right — visible on open) */}
+            <circle cx={X(points.length - 1)} cy={Y(points[points.length - 1].m)} r={2.6} fill={VIZ.neuro} />
+            {/* weekly (Monday) date ticks */}
+            {ticks.map((t) => (
+              <g key={t.i}>
+                <line x1={X(t.i)} x2={X(t.i)} y1={yBot} y2={yBot + 3} stroke={MUTED} strokeWidth={1} opacity={0.5} />
+                <text x={X(t.i)} y={H - 6} textAnchor="middle" fontSize={9} fill={MUTED}>{axisDateLabel(t.date)}</text>
+              </g>
+            ))}
+          </svg>
+        </ScrollRight>
+      </div>
+      <div className="pl-[46px] text-[10px] text-stone-400">m de D− · 28 j glissants</div>
 
       <div className="mt-2 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
         <span className="text-xs text-stone-500 dark:text-stone-400">

@@ -16,6 +16,7 @@ import { DayDetailPanel, type PlannedDetail } from "./day-detail-panel";
 import { sportIcon } from "@/lib/labels";
 import { Gauge, ArcGauge, type Zone } from "./charts";
 import { SparklineTile } from "./sparkline";
+import { mondayTickIndices, axisDateLabel } from "@/lib/chart-axis";
 import { groupByDateSpanned, rollingMonotony } from "@/lib/aggregate";
 import { fmt } from "@/lib/format";
 import { VIZ, STATE, AXIS, MUTED } from "@/lib/theme";
@@ -33,8 +34,6 @@ const plotWidth = (n: number) => n * PX_PER_DAY;
 // room past the marker for the sport glyph. canvas x continues the real index axis: cxAt(i)=(i+.5)·PX_PER_DAY.
 const MARKER_PAD_DAYS = 1.5;
 const cxAt = (vi: number) => (vi + 0.5) * PX_PER_DAY;
-const MONTHS_FR = ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc."];
-const monthLabel = (iso: string) => MONTHS_FR[Number(iso.slice(5, 7)) - 1] + (iso.slice(5, 7) === "01" ? ` ${iso.slice(2, 4)}` : "");
 const shortDate = (iso: string) => new Date(iso + "T00:00:00").toLocaleDateString("fr-FR", { day: "numeric", month: "short" });
 
 // ── help popovers ────────────────────────────────────────────────────────────────────────────────
@@ -238,7 +237,8 @@ function InteractiveChart({
   }, [selected]);
 
   const ax = axis(vis);
-  const monthTicks = dates.flatMap((d, i) => (d.slice(8, 10) === "01" ? [{ i, x: leftOf(i), label: monthLabel(d) }] : []));
+  // Weekly x-axis: one date every 7 days, on Mondays (shared across all time-series charts).
+  const weekTicks = mondayTickIndices(dates).map((i) => ({ i, x: centerOf(i), label: axisDateLabel(dates[i]) }));
 
   return (
     <div className="min-w-0">
@@ -250,7 +250,7 @@ function InteractiveChart({
       </div>
       <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-1.5">
         <div className="flex w-7 flex-col justify-between py-0.5 text-right text-[10px] tabular-nums text-stone-400" style={{ height }}>
-          <span>{Math.round(ax.max)}</span><span>{Math.round(ax.min)}</span>
+          <span>{Math.round(ax.max)}</span><span>{Math.round((ax.min + ax.max) / 2)}</span><span>{Math.round(ax.min)}</span>
         </div>
         <div className="relative">
           {loadingOlder && (
@@ -286,8 +286,8 @@ function InteractiveChart({
                 </g>
               </svg>
               <div className="relative h-3.5" style={{ width: canvasW }}>
-                {monthTicks.map((t) => (
-                  <span key={t.i} className="absolute top-0 whitespace-nowrap text-[10px] tabular-nums text-stone-400" style={{ left: t.x }}>{t.label}</span>
+                {weekTicks.map((t) => (
+                  <span key={t.i} className="absolute top-0 -translate-x-1/2 whitespace-nowrap text-[10px] tabular-nums text-stone-400" style={{ left: t.x }}>{t.label}</span>
                 ))}
               </div>
             </div>

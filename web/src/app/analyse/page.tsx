@@ -134,7 +134,12 @@ function CumulativeOverlay({ a, b }: { a: number[]; b: number[] }) {
               <polyline points={pts(a)} fill="none" stroke={PERIOD.a} strokeWidth={2} strokeDasharray="5 3" strokeLinejoin="round" strokeLinecap="round" />
               <polyline points={pts(b)} fill="none" stroke={PERIOD.b} strokeWidth={2.5} strokeLinejoin="round" strokeLinecap="round" />
             </svg>
-            <div className="text-center text-[10px] text-stone-400" style={{ width: w }}>jour 1 → jour {maxLen} de la période</div>
+            {/* offset-aligned (not calendar) → a tick every 7 days of the period: j1, j8, j15… */}
+            <div className="relative h-3.5 text-[10px] tabular-nums text-stone-400" style={{ width: w }}>
+              {Array.from({ length: Math.ceil(maxLen / 7) }, (_, k) => 1 + k * 7).filter((d) => d <= maxLen).map((d) => (
+                <span key={d} className={`absolute top-0 whitespace-nowrap ${d === 1 ? "" : "-translate-x-1/2"}`} style={{ left: ((d - 1) / Math.max(1, maxLen - 1)) * w }}>j{d}</span>
+              ))}
+            </div>
           </div>
         </div>
       </div>

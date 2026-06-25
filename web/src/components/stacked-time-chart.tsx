@@ -2,6 +2,8 @@
  *  match the dashboard. Server-compatible. Used on /analyse for per-channel and per-sport load over a
  *  period. Each segment's colour is passed in — channels use the physiology hues; sports the SERIES
  *  palette. */
+import { mondayTickIndices, axisDateLabel } from "@/lib/chart-axis";
+
 export type StackSeg = { key: string; color: string; label: string; glyph?: string };
 
 const H = 140;
@@ -59,8 +61,12 @@ export function StackedTimeChart({ label, dates, segments, data, unit }: {
                 );
               })}
             </svg>
-            <div className="flex justify-between text-[10px] text-stone-400" style={{ width: w }}>
-              <span>{dates[0]?.slice(5) ?? ""}</span><span>{dates.at(-1)?.slice(5) ?? ""}</span>
+            <div className="relative h-3.5 text-[10px] tabular-nums text-stone-400" style={{ width: w }}>
+              {mondayTickIndices(dates).map((i) => (
+                <span key={i} className="absolute top-0 -translate-x-1/2 whitespace-nowrap" style={{ left: ((i + 0.5) / n) * w }}>
+                  {axisDateLabel(dates[i])}
+                </span>
+              ))}
             </div>
           </div>
         </div>
