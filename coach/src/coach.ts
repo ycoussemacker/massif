@@ -39,14 +39,20 @@ async function main() {
 
   console.log(`Massif coach — ${today} — model ${COACH_MODEL}`);
   const client = new Anthropic();
-  const resp = await client.messages.create({
+  // STREAM then await the final message. Two reasons, coupled: adaptive thinking can burn ~14k tokens on a
+  // heavy week, and at max_tokens 16000 the JSON output block got truncated to nothing ("No text block in
+  // coach response"); raising the ceiling fixes that, but a ceiling > ~21k trips the SDK's 10-minute
+  // non-streaming guard — so we stream (the SDK-recommended path) and read finalMessage(). max_tokens is a
+  // ceiling only; adaptive thinking still uses just what it needs, so this doesn't raise cost.
+  // Mirror in coach-briefing.ts.
+  const resp = await client.messages.stream({
     model: COACH_MODEL,
-    max_tokens: 16000,
+    max_tokens: 32000,
     thinking: { type: "adaptive" },
     output_config: { format: { type: "json_schema", schema: BRIEFING_SCHEMA } },
     system,
     messages: [{ role: "user", content: userPrompt }],
-  } as any);
+  } as any).finalMessage();
 
   if ((resp as any).stop_reason === "refusal") {
     throw new Error("Coach request was refused by safety classifiers.");
