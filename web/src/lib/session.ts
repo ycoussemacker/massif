@@ -9,7 +9,7 @@ import { isoMinusDays, avgLoadRecent } from "./format";
 import { assembleVerdict, channelTargets, type PlannedRow } from "./day-verdict";
 import type { DayProgress } from "./day-progress";
 import type { VerdictVoice } from "./coach-voice";
-import { estimateForDeclared } from "./estimate-server";
+import { estimateForDeclared, estimatedMovingFraction } from "./estimate-server";
 import { projectFromMetrics, type SeedMetric } from "./project";
 import { buildPlannedLoads } from "./planning";
 import { parseEventText } from "./event-parse";
@@ -37,6 +37,7 @@ export type PlannedMeta = {
   targetNeuroMin: number | null;
   targetNeuroMax: number | null;
   targetDurationS: number | null;
+  targetMovingS: number | null; // estimated MOVING time for a declared event (total × same-sport ratio)
   targetDistanceM: number | null;
   targetVerticalM: number | null;
   expectedAltitudeM: number | null;
@@ -91,10 +92,23 @@ function toPlannedMeta(p: any, sportCode: string | null, sportName: string | nul
     targetAerobic: p.target_aerobic_load ?? null, targetNeuro: p.target_neuromuscular_load ?? null,
     targetAerobicMin: p.target_aerobic_min ?? null, targetAerobicMax: p.target_aerobic_max ?? null,
     targetNeuroMin: p.target_neuromuscular_min ?? null, targetNeuroMax: p.target_neuromuscular_max ?? null,
-    targetDurationS: p.target_duration_s ?? null, targetDistanceM: p.target_distance_m ?? null,
+    targetDurationS: p.target_duration_s ?? null, targetMovingS: null, // filled async for declared events
+    targetDistanceM: p.target_distance_m ?? null,
     targetVerticalM: p.target_vertical_m ?? null,
     expectedAltitudeM: p.expected_altitude_m ?? null,
   };
+}
+
+/** For a declared EVENT, the athlete gives the TOTAL duration; estimate the MOVING time (the value the
+ *  load estimate is built on) so the séance detail can show both. Same-sport moving ratio. */
+async function withMovingEstimate(sb: any, planned: PlannedMeta): Promise<PlannedMeta> {
+  if (!planned.isEvent || planned.sportId == null || planned.targetDurationS == null) return planned;
+  try {
+    const frac = await estimatedMovingFraction(sb, planned.sportId);
+    return { ...planned, targetMovingS: Math.round(planned.targetDurationS * frac) };
+  } catch {
+    return planned; // best-effort — the detail just omits the estimated moving time
+  }
 }
 
 /** Project CTL/ATL/TSB the day BEFORE `eventDate` under the current plan. null if out of seed/horizon. */
@@ -165,7 +179,7 @@ export async function getSession(id: string): Promise<SessionView> {
   if (planRow) {
     const day = planRow.planned_date;
     const sp = planRow.sport_id != null ? sportById.get(planRow.sport_id) : null;
-    const planned = toPlannedMeta(planRow, sp?.code ?? null, sp?.display_name ?? null);
+    const planned = await withMovingEstimate(sb, toPlannedMeta(planRow, sp?.code ?? null, sp?.display_name ?? null));
     // Realised: the linked activity, else (for a past/today day) the day's logged activities.
     let activity: Activity | null = null;
     if (planRow.linked_activity_id) {

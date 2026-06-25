@@ -45,6 +45,19 @@ function movingFraction(exactRows: Activity[], sportCode: string | null, taxonom
       ?? 0.85;
 }
 
+/** The moving/elapsed ratio used to turn a declared TOTAL duration into estimated MOVING time, for one
+ *  sport — same-sport history (≥3 sorties) else the per-sport default. Exposed so the séance detail can
+ *  SHOW the estimated moving time of a declared event (the value the load estimate is built on). */
+export async function estimatedMovingFraction(sb: SupabaseClient, sportId: number): Promise<number> {
+  const today = todayLocal();
+  const from = dateMinusDays(today, NEIGHBOUR_WINDOW_DAYS);
+  const [{ data: sp }, exact] = await Promise.all([
+    sb.from("sports").select("code,taxonomy_group").eq("id", sportId).maybeSingle(),
+    listActivities({ sportIds: [sportId], from, order: "load_desc", limit: NEIGHBOUR_LIMIT }),
+  ]);
+  return movingFraction(exact.rows, (sp as any)?.code ?? null, (sp as any)?.taxonomy_group ?? null);
+}
+
 /** Estimate a declared activity's load from the athlete's history. `sb` is the service-role client. */
 export async function estimateForDeclared(sb: SupabaseClient, declared: DeclaredActivity): Promise<LoadEstimate> {
   const today = todayLocal();

@@ -133,6 +133,9 @@ function PlannedColumn({ v }: { v: SessionView }) {
             <Row label="Bornes neuro" value={`${fmt(p.targetNeuroMin, 0)}–${fmt(p.targetNeuroMax, 0)}`} />
           )}
           {p.targetDurationS != null && <Row label="Durée cible" value={dur(p.targetDurationS)} />}
+          {p.targetMovingS != null && p.targetMovingS < (p.targetDurationS ?? 0) && (
+            <Row label="Mouvement estimé" value={<>{dur(p.targetMovingS)} <span className="text-stone-400">(base du calcul)</span></>} />
+          )}
         </>
       )}
       {v.estimate && (
@@ -171,6 +174,9 @@ function RealisedColumn({ v }: { v: SessionView }) {
       <Row label="Charge" value={`${fmt(a.training_load, 0)} pts`} />
       <Row label="Canaux" value={<Channels aero={a.aerobic_load} neuro={a.neuromuscular_load} />} />
       <Row label="Durée" value={dur(a.duration_s)} />
+      {a.moving_s != null && a.duration_s != null && a.moving_s < a.duration_s && (
+        <Row label="Temps de mouvement" value={dur(a.moving_s)} />
+      )}
       {a.distance_m != null && <Row label="Distance" value={`${(a.distance_m / 1000).toFixed(1)} km`} />}
       <Row label="D+ / D−" value={`${a.vertical_gain_m != null ? Math.round(a.vertical_gain_m) : "—"} / ${a.vertical_loss_m != null ? Math.round(a.vertical_loss_m) : "—"}`} />
       {a.avg_hr != null && <Row label="FC moyenne" value={`${a.avg_hr} bpm`} />}
