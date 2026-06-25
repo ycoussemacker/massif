@@ -18,10 +18,10 @@ export function AddActivityButton({ sports }: { sports: SportOption[] }) {
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg bg-alpine-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-alpine-700 sm:w-auto"
+        className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg bg-gradient-to-r from-summit-500 to-alpine-600 px-4 py-2 text-sm font-semibold text-white transition hover:from-summit-600 hover:to-alpine-700 sm:w-auto"
       >
         <span aria-hidden className="text-base leading-none">+</span>
-        Ajouter une activité
+        Planifie une activité
       </button>
 
       {open && (
@@ -34,10 +34,10 @@ export function AddActivityButton({ sports }: { sports: SportOption[] }) {
             onClick={(e) => e.stopPropagation()}
             role="dialog"
             aria-modal="true"
-            aria-label="Ajouter une activité prévue"
+            aria-label="Planifier une activité"
           >
             <div className="mb-3 flex items-center justify-between">
-              <h3 className="text-sm font-semibold text-stone-900 dark:text-stone-50">Ajouter une activité prévue</h3>
+              <h3 className="text-sm font-semibold text-stone-900 dark:text-stone-50">Planifie une activité</h3>
               <button
                 type="button"
                 onClick={() => setOpen(false)}

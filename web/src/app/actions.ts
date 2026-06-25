@@ -318,39 +318,105 @@ export async function latestDailyUpdate(): Promise<string | null> {
   return (data as { updated_at?: string } | null)?.updated_at ?? null;
 }
 
-/** Reload Garmin recovery on demand. Garmin has no JS API (Python-only, MFA-gated), so we can't pull
- *  it from Vercel like Strava — instead we fire the cloud `garmin-refresh.yml` workflow via the GitHub
- *  API and let the client poll `latestDailyUpdate()` for the write. Skips dispatch if a run is already
- *  queued/in-progress (belt-and-braces with the workflow's concurrency group) so rapid taps don't pile
- *  up runs or re-hit Garmin (it 429s on repeated logins). Returns the current watermark to poll against.
- *  Needs GITHUB_DISPATCH_TOKEN (a PAT with actions:write on the repo) in the Vercel env. */
-export async function refreshGarmin(): Promise<{ status: "dispatched" | "running"; since: string | null }> {
-  const token = process.env.GITHUB_DISPATCH_TOKEN;
-  if (!token) throw new Error("Rechargement Garmin indisponible (GITHUB_DISPATCH_TOKEN non configuré).");
-  const repo = githubRepo();
-
-  // Already queued/in-progress? Don't stack another run.
-  const runsRes = await fetch(
-    `${GITHUB_API}/repos/${repo}/actions/workflows/${GARMIN_WORKFLOW}/runs?per_page=5`,
-    { headers: githubHeaders(token), cache: "no-store" },
-  );
-  const since = await latestDailyUpdate();
-  if (runsRes.ok) {
-    const runs = (await runsRes.json())?.workflow_runs ?? [];
-    if (runs.some((r: { status?: string }) => r.status === "queued" || r.status === "in_progress")) {
-      return { status: "running", since };
-    }
+/** Current state of the Garmin-refresh workflow from the GitHub API: is one queued/in-progress, and when
+ *  was the most recent run created (for the auto-refresh throttle). Best-effort — any API hiccup reads as
+ *  "not running, never run" so a transient GitHub blip never blocks a manual refresh. */
+async function garminWorkflowState(token: string): Promise<{ running: boolean; lastRunAt: string | null }> {
+  try {
+    const res = await fetch(
+      `${GITHUB_API}/repos/${githubRepo()}/actions/workflows/${GARMIN_WORKFLOW}/runs?per_page=10`,
+      { headers: githubHeaders(token), cache: "no-store" },
+    );
+    if (!res.ok) return { running: false, lastRunAt: null };
+    const runs = (await res.json())?.workflow_runs ?? [];
+    const running = runs.some((r: { status?: string }) => r.status === "queued" || r.status === "in_progress");
+    const lastRunAt = runs.length ? (runs[0]?.created_at ?? null) : null; // runs come newest-first
+    return { running, lastRunAt };
+  } catch {
+    return { running: false, lastRunAt: null };
   }
+}
 
+/** Fire the cloud `garmin-refresh.yml` workflow (workflow_dispatch). Throws on a non-OK GitHub response. */
+async function dispatchGarminWorkflow(token: string): Promise<void> {
   const res = await fetch(
-    `${GITHUB_API}/repos/${repo}/actions/workflows/${GARMIN_WORKFLOW}/dispatches`,
+    `${GITHUB_API}/repos/${githubRepo()}/actions/workflows/${GARMIN_WORKFLOW}/dispatches`,
     { method: "POST", headers: githubHeaders(token), body: JSON.stringify({ ref: "main" }), cache: "no-store" },
   );
   if (!res.ok) {
     const detail = await res.text().catch(() => "");
     throw new Error(`Échec du déclenchement de la synchro Garmin (${res.status}). ${detail.slice(0, 200)}`);
   }
+}
+
+/** Reload Garmin recovery on demand (the manual "Recharger" button). Garmin has no JS API (Python-only,
+ *  MFA-gated), so we can't pull it from Vercel like Strava — instead we fire the cloud `garmin-refresh.yml`
+ *  workflow via the GitHub API and let the client poll `latestDailyUpdate()` for the write. Skips dispatch
+ *  if a run is already queued/in-progress (belt-and-braces with the workflow's concurrency group) so rapid
+ *  taps don't pile up runs or re-hit Garmin (it 429s on repeated logins). Returns the current watermark to
+ *  poll against. Needs GITHUB_DISPATCH_TOKEN (a PAT with actions:write on the repo) in the Vercel env. */
+export async function refreshGarmin(): Promise<{ status: "dispatched" | "running"; since: string | null }> {
+  const token = process.env.GITHUB_DISPATCH_TOKEN;
+  if (!token) throw new Error("Rechargement Garmin indisponible (GITHUB_DISPATCH_TOKEN non configuré).");
+  const since = await latestDailyUpdate();
+  const { running } = await garminWorkflowState(token);
+  if (running) return { status: "running", since };
+  await dispatchGarminWorkflow(token);
   return { status: "dispatched", since };
+}
+
+// Recovery columns that mark a daily_metrics row as carrying real Garmin recovery (vs a load-only row).
+const GARMIN_RECOVERY_OR =
+  "sleep_score.not.is.null,hrv_overnight_ms.not.is.null,training_readiness.not.is.null," +
+  "resting_hr.not.is.null,body_battery_high.not.is.null";
+
+/** Is Garmin recovery up to date — i.e. do we already hold THIS MORNING's row? Recovery (sleep/HRV/
+ *  readiness/RHR) is a once-a-day morning metric finalized after wake, so "a row for today exists" is the
+ *  meaningful freshness signal (re-pulling a present day returns the same numbers + risks a Garmin 429). */
+export async function garminFreshness(): Promise<{ today: string; latestRecoveryDate: string | null; fresh: boolean }> {
+  const sb = await createServiceClient();
+  const today = todayLocal();
+  const { data } = await sb
+    .from("daily_metrics").select("local_date").or(GARMIN_RECOVERY_OR)
+    .order("local_date", { ascending: false }).limit(1).maybeSingle();
+  const latestRecoveryDate = (data as { local_date?: string } | null)?.local_date ?? null;
+  return { today, latestRecoveryDate, fresh: latestRecoveryDate === today };
+}
+
+export type GarminEnsure = {
+  status: "fresh" | "dispatched" | "running" | "recent" | "unavailable";
+  since: string | null; // daily_metrics write watermark at dispatch — the client polls past it
+  fresh: boolean;       // today's recovery already in the DB
+};
+
+// Auto-refresh throttle: when today's recovery is still missing, retry the cloud pull at most this often.
+// Garmin 429s on rapid logins and recovery is morning-finalized, so a tight loop buys nothing.
+const GARMIN_AUTO_THROTTLE_MS = 2 * 60 * 60 * 1000; // 2 h
+
+/** Ensure Garmin recovery reflects this morning, kicking the cloud pull if not. Used by the on-open
+ *  auto-refresh (force=false → respects the 2 h throttle) and the briefing regen (force=true → the
+ *  athlete explicitly asked, so bypass the throttle; still never stacks on an in-flight run). Never
+ *  throws — a missing token or a GitHub hiccup degrades to a status the caller can ignore and proceed
+ *  on stale data, so it can't block the dashboard or the brief. */
+export async function ensureGarminFresh(force = false): Promise<GarminEnsure> {
+  const { fresh } = await garminFreshness();
+  const since = await latestDailyUpdate();
+  if (fresh) return { status: "fresh", since, fresh: true };
+
+  const token = process.env.GITHUB_DISPATCH_TOKEN;
+  if (!token) return { status: "unavailable", since, fresh: false };
+
+  const { running, lastRunAt } = await garminWorkflowState(token);
+  if (running) return { status: "running", since, fresh: false };
+  if (!force && lastRunAt && Date.now() - Date.parse(lastRunAt) < GARMIN_AUTO_THROTTLE_MS) {
+    return { status: "recent", since, fresh: false };
+  }
+  try {
+    await dispatchGarminWorkflow(token);
+  } catch {
+    return { status: "unavailable", since, fresh: false };
+  }
+  return { status: "dispatched", since, fresh: false };
 }
 
 /** Cost/abuse guard on the on-demand briefing (an Anthropic call behind only the shared password).

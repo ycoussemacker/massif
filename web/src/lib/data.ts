@@ -346,20 +346,26 @@ export async function getDashboard(): Promise<Dashboard> {
   // 7-day plan strip (today..+6): seed with the coach's week_skeleton focus, then OVERLAY declared
   // events (authoritative + fresh) so a just-added event appears at once. Keyed by day_offset.
   const briefing = (bm.data as Briefing) ?? null;
+  // week_skeleton day_offsets are RELATIVE TO THE BRIEFING'S GENERATION DAY (briefing_date), not today.
+  // A briefing carried over from a previous day (cron/regen didn't run yet) would otherwise render one
+  // day late — e.g. its "+6j event anchor" drawn as a phantom pill a day past the real event. Re-anchor
+  // each offset onto today (skelShift < 0 when the briefing is stale); fresh briefings → shift 0 (no-op).
+  const skelShift = briefing ? daysBetween(today, briefing.briefing_date) : 0;
   const weekMap = new Map<number, WeekPlanDay>();
   for (const d of briefing?.week_skeleton ?? []) {
-    if (d.day_offset < 0 || d.day_offset > 6) continue;
+    const off = d.day_offset + skelShift;
+    if (off < 0 || off > 6) continue;
     const isEvent = !!d.anchors_event_ref;
-    weekMap.set(d.day_offset, {
-      dayOffset: d.day_offset,
-      date: dateMinusDays(today, -d.day_offset),
+    weekMap.set(off, {
+      dayOffset: off,
+      date: dateMinusDays(today, -off),
       sportCode: d.sport_code ?? null,
       systemTag: d.system_tag ?? null,
       isEvent,
       isKey: !!d.is_key,
       title: null,
       // Event day → its event ref; coach day → the materialized coach session for that day (if any).
-      sessionId: isEvent ? (d.anchors_event_ref ?? null) : (coachIdByOffset.get(d.day_offset) ?? null),
+      sessionId: isEvent ? (d.anchors_event_ref ?? null) : (coachIdByOffset.get(off) ?? null),
       weatherAlerts: [],
     });
   }

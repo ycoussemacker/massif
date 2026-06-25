@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { RegenProvider } from "@/components/regen-provider";
+import { GarminAutoRefresh } from "@/components/garmin-auto-refresh";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -51,6 +52,8 @@ export default function RootLayout({
     >
       <body className="min-h-full flex flex-col">
         <RegenProvider>{children}</RegenProvider>
+        {/* Pull Garmin recovery on app open if this morning's isn't in yet (background, no UI). */}
+        <GarminAutoRefresh />
       </body>
     </html>
   );

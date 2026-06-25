@@ -2,6 +2,7 @@ import Link from "next/link";
 import { CoachAvatar } from "./coach-avatar";
 import { BriefingMenu } from "./briefing-menu";
 import { BriefingBody, BriefingRegenProvider } from "./briefing-regen";
+import { StaleBriefingNotice } from "./stale-briefing-notice";
 import { BriefingDetail } from "./briefing-detail";
 import { BriefingCollapsible } from "./briefing-collapsible";
 import { CoachCta } from "./coach-cta";
@@ -35,16 +36,19 @@ const VERDICT_READINESS: Partial<Record<DayStatus, Readiness>> = {
   reached: "green", above: "amber", rest_broken: "amber",
 };
 
+/** A YYYY-MM-DD in the athlete's words, relative to today: "aujourd'hui" / "hier" / "12 juin". */
+function dayLabel(iso: string, today: string): string {
+  return iso === today ? "aujourd'hui"
+    : iso === dateMinusDays(today, 1) ? "hier"
+    : new Intl.DateTimeFormat("fr-FR", { day: "numeric", month: "short", timeZone: "UTC" })
+        .format(new Date(iso + "T00:00:00Z"));
+}
+
 /** When the briefing was actually generated (created_at), in the athlete's timezone:
  *  "aujourd'hui à 07:12" / "hier à 18:30" / "12 juin à 07:12". Falls back to the day alone
  *  (from briefing_date) if the timestamp is missing. */
 function genWhen(briefing: Briefing, today: string): string {
-  const dayLabel = (iso: string) =>
-    iso === today ? "aujourd'hui"
-    : iso === dateMinusDays(today, 1) ? "hier"
-    : new Intl.DateTimeFormat("fr-FR", { day: "numeric", month: "short", timeZone: "UTC" })
-        .format(new Date(iso + "T00:00:00Z"));
-  if (!briefing.created_at) return dayLabel(briefing.briefing_date);
+  if (!briefing.created_at) return dayLabel(briefing.briefing_date, today);
   const d = new Date(briefing.created_at);
   const dateStr = new Intl.DateTimeFormat("en-CA", {
     timeZone: ATHLETE_TZ, year: "numeric", month: "2-digit", day: "2-digit",
@@ -52,7 +56,7 @@ function genWhen(briefing: Briefing, today: string): string {
   const time = new Intl.DateTimeFormat("fr-FR", {
     timeZone: ATHLETE_TZ, hour: "2-digit", minute: "2-digit",
   }).format(d);
-  return `${dayLabel(dateStr)} à ${time}`;
+  return `${dayLabel(dateStr, today)} à ${time}`;
 }
 
 /** The morning briefing's narrative, rendered FLAT (no nested toggle) for use inside the "Voir le plan
@@ -161,6 +165,10 @@ export async function CoachHero({
           </div>
         </div>
 
+        {/* Briefing périmé (la régénération/cron du jour n'a pas tourné) → on met en avant le bouton
+            "Régénérer" plutôt que de laisser le ⋮ discret porter une action devenue nécessaire. */}
+        {stale && briefing && <StaleBriefingNotice dayLabel={dayLabel(briefing.briefing_date, today)} />}
+
         {/* Message du jour — pleine largeur sous l'en-tête */}
         <div className="mt-4">
           {/* Snapshot de la conversation : l'activité du jour, telle qu'elle apparaît dans le chat
@@ -203,7 +211,9 @@ export async function CoachHero({
                 <>
                   {briefing.today_session && (
                     <p className="text-lg font-semibold text-stone-900 dark:text-stone-50">
-                      Aujourd&apos;hui → {briefing.today_session}
+                      {/* Quand le briefing est périmé, sa "séance du jour" est en fait celle de sa
+                          journée de génération — ne pas la présenter comme celle d'aujourd'hui. */}
+                      {stale ? "Séance prévue" : "Aujourd'hui"} → {briefing.today_session}
                     </p>
                   )}
                   {briefing.why && (
