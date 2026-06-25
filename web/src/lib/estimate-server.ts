@@ -2,6 +2,7 @@
  *  resolves the load profile (same pattern as strava-sync.ts), then calls the pure dispatcher. Kept apart
  *  from estimate.ts so the pure core stays client-safe / unit-testable (no Supabase imports). */
 import type { SupabaseClient } from "@supabase/supabase-js";
+import type { Activity } from "./data";
 import { listActivities } from "./activities";
 import { spreadActivities } from "./aggregate";
 import { resolveProfile, type LoadProfile, type LoadParams, type LoadSport, type ThresholdRow } from "./load";
@@ -10,6 +11,29 @@ import { todayLocal, dateMinusDays } from "./coach-context";
 
 const NEIGHBOUR_WINDOW_DAYS = 540; // ~18 months — bounds the read well under the PostgREST 1000-row cap
 const NEIGHBOUR_LIMIT = 300; // load-ordered so big efforts (the relevant neighbours) aren't truncated
+
+// A declared event's duration is the TOTAL/elapsed time the athlete plans for (breaks, summit, belays
+// included), but the estimator matches it against past sorties' MOVING time (estimate.ts featureOf). So
+// convert the declared elapsed → estimated moving via the athlete's OWN moving/elapsed ratio for that
+// sport (data-driven, multi-user-ready), falling back to a per-taxonomy standard when history is thin.
+const MOVING_FRACTION_DEFAULT: Record<string, number> = {
+  mountain_vertical: 0.78, // alpinism / hiking — lots of stopped time (belays, summit, route-finding)
+  paced_endurance: 0.95,   // running — few stops
+  technical_strength: 0.9,
+};
+const median = (xs: number[]): number => {
+  if (!xs.length) return 0;
+  const s = [...xs].sort((a, b) => a - b);
+  const m = Math.floor(s.length / 2);
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+};
+function movingFraction(candidates: Activity[], taxonomy: string | null): number {
+  const ratios = candidates
+    .map((c) => (c.moving_s && c.duration_s && c.duration_s > 0 ? c.moving_s / c.duration_s : null))
+    .filter((r): r is number => r != null && r > 0.3 && r <= 1);
+  if (ratios.length >= 3) return Math.max(0.6, Math.min(1, median(ratios)));
+  return (taxonomy ? MOVING_FRACTION_DEFAULT[taxonomy] : undefined) ?? 0.85;
+}
 
 /** Estimate a declared activity's load from the athlete's history. `sb` is the service-role client. */
 export async function estimateForDeclared(sb: SupabaseClient, declared: DeclaredActivity): Promise<LoadEstimate> {
@@ -52,5 +76,11 @@ export async function estimateForDeclared(sb: SupabaseClient, declared: Declared
     candidates = spreadActivities(wide.rows);
   }
 
-  return estimateActivityLoad(declared, { candidates, hist: candidates, sport, profile, params });
+  // Convert the declared TOTAL duration → estimated MOVING duration before matching (so a declared 7h
+  // doesn't over-match past 7h-moving monsters). Only the duration is adjusted; distance/vertical stand.
+  const declForEstimate: DeclaredActivity = declared.durationS != null
+    ? { ...declared, durationS: Math.round(declared.durationS * movingFraction(candidates, sport.taxonomy_group)) }
+    : declared;
+
+  return estimateActivityLoad(declForEstimate, { candidates, hist: candidates, sport, profile, params });
 }

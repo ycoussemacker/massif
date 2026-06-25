@@ -162,7 +162,7 @@ export function estimateFromNeighbours(
     basis: "similar",
     nSamples: scored.length,
     confidence: round(confidence),
-    basisLabel: `moy. de ${scored.length} sortie${scored.length > 1 ? "s" : ""} similaire${scored.length > 1 ? "s" : ""}`,
+    basisLabel: `médiane de ${scored.length} sortie${scored.length > 1 ? "s" : ""} similaire${scored.length > 1 ? "s" : ""}`,
   };
 }
 
