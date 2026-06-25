@@ -131,6 +131,26 @@ def load_user_rpes(source: str) -> dict[str, int]:
             for r in rows if r.get("source_activity_id") and r.get("perceived_rpe") is not None}
 
 
+def load_user_differential_rpes(source: str) -> dict[str, dict]:
+    """{source_activity_id: {rpe_cardio, rpe_legs, rpe_grip}} for user-RPE activities that carry differential
+    sub-scores, so re-syncs preserve them (the perception-derived channel split is re-applied — Phase 2)."""
+    rows = (
+        client()
+        .table("activities")
+        .select("source_activity_id,rpe_cardio,rpe_legs,rpe_grip")
+        .eq("source", source)
+        .eq("rpe_source", "user")
+        .execute()
+        .data
+    )
+    out: dict[str, dict] = {}
+    for r in rows:
+        sid = r.get("source_activity_id")
+        if sid and any(r.get(k) is not None for k in ("rpe_cardio", "rpe_legs", "rpe_grip")):
+            out[sid] = {k: r.get(k) for k in ("rpe_cardio", "rpe_legs", "rpe_grip")}
+    return out
+
+
 def slugify_sport(raw_type: str) -> str:
     """Provider sport string -> a sports.code slug. 'Surfing'->'surfing', 'GravelRide'->'gravel_ride'."""
     s = re.sub(r"(?<!^)(?=[A-Z])", "_", raw_type)   # split camel/Pascal case
@@ -191,7 +211,7 @@ def fetch_activities_for_recompute() -> list[dict]:
         .table("activities")
         .select("id,sport_id,local_date,started_at,duration_s,moving_s,avg_hr,np_power_w,avg_power_w,"
                 "avg_pace_s_per_km,vertical_gain_m,vertical_loss_m,carried_load_kg,perceived_rpe,"
-                "rpe_source,avg_altitude_m")
+                "rpe_source,avg_altitude_m,rpe_cardio,rpe_legs,rpe_grip")
         .execute()
         .data
     )

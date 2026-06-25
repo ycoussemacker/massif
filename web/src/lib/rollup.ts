@@ -7,6 +7,7 @@
  *
  *  Builds a CONTIGUOUS daily spine (zero-load rest days included) so the EWMAs have no gaps. */
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { descentFamiliarityRatios, descentRecoveryFactor, ewmaVariableTau } from "./load";
 
 const CTL_DAYS = 42;
 const ATL_DAYS = 7;
@@ -99,7 +100,14 @@ export async function rollupDailyMetrics(sb: SupabaseClient): Promise<number> {
   const ctlA = ewmaSeries(aerobic, CTL_DAYS);
   const atlA = ewmaSeries(aerobic, ATL_DAYS);
   const ctlN = ewmaSeries(neuro, CTL_DAYS);
-  const atlN = ewmaSeries(neuro, neuroAtlDays); // slower acute τ — structural fatigue lingers (personalizable)
+  // Phase 2 (descent trainability): the neuro acute τ is NON-STATIONARY — descent familiarity (same proxy
+  // as the cost factor) shortens it when adapted, lengthens it when de-adapted. Built from the daily D-
+  // spine (rest days included); inert (base τ) when history is below the gate. Mirror of sync.py.
+  const dailyDescent: Record<string, number> = {};
+  for (const d of spine) dailyDescent[d] = days.get(d)?.vdn ?? 0;
+  const fam = descentFamiliarityRatios(dailyDescent);
+  const neuroTau = spine.map((d) => neuroAtlDays * descentRecoveryFactor(fam[d]));
+  const atlN = ewmaVariableTau(neuro, neuroTau); // slower acute τ, exposure-modulated — structural fatigue lingers
 
   const rows = spine.map((d, i) => {
     const b = days.get(d);

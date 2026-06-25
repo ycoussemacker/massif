@@ -227,6 +227,8 @@ def _build_activity_row(
     user_rpe: int | None = None, descent_m: float | None = None, params: dict | None = None,
     threshold_history: list[dict] | None = None,
     alt_stats: tuple[float | None, float | None, int | None] | None = None,
+    fam_ratios: dict[str, float] | None = None,
+    differential_rpe: dict | None = None,
 ) -> tuple[dict, dict]:
     """Pure (no I/O): turn a Strava summary activity into an `activities` row + its sport row.
 
@@ -297,6 +299,20 @@ def _build_activity_row(
         if time_high is not None:
             row["time_high_altitude_s"] = time_high
 
+    # Descent-familiarity (repeated-bout): the ratio for this date, if the series cleared the min-sample
+    # gate (else None → factor 1.0). Built from all stored D- by sync(); recompute_activity_loads is the
+    # source of truth and re-derives it identically across full history.
+    if fam_ratios is not None:
+        row["descent_familiarity"] = fam_ratios.get(local_date)
+
+    # Differential RPE sub-scores (Phase 2) re-applied from the DB so a re-sync preserves the athlete's
+    # perception-derived channel split (compute_load reads them when session_rpe wins). Strava never
+    # supplies these; they only exist if the athlete entered them in the web app.
+    if differential_rpe:
+        for k in ("rpe_cardio", "rpe_legs", "rpe_grip"):
+            if differential_rpe.get(k) is not None:
+                row[k] = differential_rpe[k]
+
     # Resolve thresholds as-of this activity's date (rec 2): empty history → the base profile unchanged.
     eff_profile = load.resolve_profile(profile, threshold_history, local_date)
     result = load.compute_load(row, sport, eff_profile, params)
@@ -335,6 +351,16 @@ def sync(after_days: int = 30, stream_days: int | None = None) -> int:
     params = db.load_load_params()  # personalized load coefficients (empty → population defaults)
     threshold_history = db.load_threshold_history()  # effective-dated thresholds (empty → base profile)
     user_rpes = db.load_user_rpes("strava")  # re-apply RPEs the user logged in the web app
+    user_diff_rpes = db.load_user_differential_rpes("strava")  # + their differential sub-scores (Phase 2)
+
+    # Descent-familiarity ratios from the stored daily D- series (sum of vertical_loss_m per local_date).
+    # The recent pull stamps each row from this; --recompute-loads later re-derives it across all history
+    # (the source of truth). NB: relies on the <1000-activity PostgREST page; paginate if it ever grows.
+    desc_rows = db.client().table("activities").select("local_date,vertical_loss_m").execute().data
+    daily_descent: dict[str, float] = {}
+    for dr in desc_rows:
+        daily_descent[dr["local_date"]] = daily_descent.get(dr["local_date"], 0.0) + float(dr.get("vertical_loss_m") or 0.0)
+    fam_ratios = load.descent_familiarity_ratios(daily_descent)
 
     count = 0
     for act in summaries:
@@ -371,6 +397,7 @@ def sync(after_days: int = 30, stream_days: int | None = None) -> int:
         row, sport = _build_activity_row(
             act, sport_map, profile, tz=s.timezone, user_rpe=user_rpes.get(str(act["id"])),
             descent_m=descent_m, params=params, threshold_history=threshold_history, alt_stats=alt_stats,
+            fam_ratios=fam_ratios, differential_rpe=user_diff_rpes.get(str(act["id"])),
         )
         row["has_streams"] = bool(streams)
 

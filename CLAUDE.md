@@ -305,3 +305,43 @@ The coach BRIEFING mirror (coach/↔web/) is retired — briefing logic lives on
 read-only `ask` CLI. Migrations: `…0002` (briefing_mode) + `…0003` (drop push_subscriptions, keeps the Garmin
 token in `…0006`). Unused secrets: `VAPID_*` everywhere + `ANTHROPIC_API_KEY`/`COACH_MODEL` in GitHub Actions
 (Vercel still needs them for ai-mode + chat). web build + tsc green, coach tsc clean, 11 engine + 59 ingest tests.
+
+**DESCENT TRAINABILITY (Upgrade 7) + RPE CR10 — shipped 2026-06-25** (research + sources:
+`docs/research/descent-neuromuscular-rpe.md`; coach-facing `docs/MODELE_ENTRAINEMENT.md` §2.3/§11 Q2+Q5;
+log `docs/MODEL_UPGRADES.md`). The eccentric-descent cost is **trainable** (repeated-bout effect), so:
+(1) `DESCENT_LOAD_PER_1000M 70 → **55**` (the TRAINED-descender value, ≈0.78× the naive 70 per the
+downhill-running lit.) — a standing −5.6 % neuromuscular discount; (2) a **dynamic repeated-bout factor**
+(`descent_factor`/`descent_familiarity_ratios` in load.py ↔ load.ts, bounded ±25 %, saturating, anchored at
+the athlete's MEDIAN trailing-28d D−) climbs the cost back toward ~70 after a layoff and dips in a heavy
+block. A real-data **dry-run** (`ingest/scripts/dry_run_descent.py`) showed the dynamic factor is **net ≈ 0**
+for this athlete (his big descents fall at de-adapted season-starts → correctly penalised) — it's a per-day
+RISK-TIMING signal, while the −20-30 % trained discount is ABSOLUTE → lives in the base. **Reliability ALERT**:
+the factor is **gated** to ≥ `MIN_SAMPLES=12` descent-active dates (else inert, no false precision);
+`descent_model_confidence` (off/low/ok) is surfaced in the coach context. Wired in ALL scoring paths for
+parity (sync.recompute, strava.sync, strava-sync.ts, setRpe); re-scored 399 activities via `--recompute-loads`.
+**No migration** (factor baked into `neuromuscular_load`). **Phase 2 also shipped**: the neuromuscular acute
+τ is now **non-stationary** (`descent_recovery_factor` + `ewma_variable_tau` ↔ TS; rollup `sync.py` ↔
+`rollup.ts`) — adapted → shorter τ (~11.5 d, faster recovery), de-adapted → longer (~16.5 d); neuro CTL keeps
+42 d, so it moves `tsb_neuromuscular` (the readiness lever). Re-rolled (no migration); `tsb_neuro` −4.76→−4.54.
+Also shipped: **RPE Phase 1** — the picker is the validated **Foster CR10** (anchors + global-session
+wording + 20-30 min nudge) and stamps `rpe_recorded_at` (migration `…0004`).
+
+**RPE PHASE 2 — user-RPE-wins-ladder fix + differential RPE (Upgrade 8, shipped 2026-06-25).** Two coupled
+moves (research/sources `docs/research/descent-neuromuscular-rpe.md` part B; coach-facing §2.2/§11 Q5; log
+`MODEL_UPGRADES.md` Upgrade 8). (1) **Bug fix:** a USER-entered RPE now WINS the ladder — for
+alpinism/via_ferrata/grande_voie `vertical_duration` was winning `compute_load` and **ignoring the athlete's
+RPE** on recompute/sync (a grande_voie rated 10 scored 38; an alpi rated 3 scored 182). Now when
+`rpe_source=='user'` + `perceived_rpe` + `session_rpe` in ladder, session_rpe moves to the front
+(`load.py` ↔ `load.ts`). (2) **Differential RPE:** optional CR10 sub-scores `rpe_cardio` (→ aérobie),
+`rpe_legs`/`rpe_grip` (→ neuro); when **≥2** present the aero/neuro SPLIT is perception-derived
+(`_differential_split`/`differentialSplit`: `neuro_rpe=min(10,√(legs²+grip²))`, `aero_frac=cardio²/(cardio²+neuro_rpe²)`)
+instead of fixed `CHANNEL_SPLIT`/`IMPACT_FRAC`; the **objective descent term stays a FLOOR** for
+aerobic-engine sports (a same-session RPE under-reports delayed DOMS), and the split needs a cardio score on
+aerobic-engine sports (else a blank cardio would zero the engine). Global `perceived_rpe` stays the magnitude.
+**Inert by default** (existing rows have NULL sub-scores → byte-identical). Wired across all 5 scoring paths
+(`fetch_activities_for_recompute`, `load_user_differential_rpes`, `strava.sync`, `strava-sync.ts`, `setRpe`) +
+coach context (`rpe_diff`); UI = `rpe.tsx` "préciser par système" panel (cardio=Alpine, legs/grip=Summit).
+Migration `…0005_rpe_differential_channels` adds the 3 nullable `smallint 0..10` columns. ⚠️ **The 3 columns
+are SELECTed unconditionally — push `…0004` + `…0005` (`supabase db push`) BEFORE this code runs/deploys**
+(else PostgREST 42703 breaks recompute/sync/coach-context), then apply the ladder-fix re-score with
+`--recompute-loads`. Adversarial multi-agent verify clean; pytest 71 green; web tsc clean.

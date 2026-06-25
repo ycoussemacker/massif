@@ -38,7 +38,7 @@ calibration gaps to revisit with real data:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 # Sports with no real aerobic engine: the session effort (sRPE / grade / tonnage) is itself mostly
 # muscular, so it is split aerobic : neuromuscular by taxonomy (must sum to 1.0) rather than treated
@@ -66,11 +66,137 @@ IMPACT_FRAC: dict[str, float] = {
 # Default intensity factor when nothing better is known (used by duration_fallback / sRPE base).
 DEFAULT_IF = 0.55  # ~ easy aerobic effort
 # Eccentric structural cost per 1000 m of DESCENT (D-), scaled by carried mass — the neuromuscular
-# stressor wearables can't see. Population start; calibrate from the athlete's RPE/soreness history.
-DESCENT_LOAD_PER_1000M = 70.0
+# stressor wearables can't see. This is the cost for a regularly-exposed (TRAINED) descender: the
+# downhill-running literature puts the trained eccentric-damage response at ~0.70-0.78× the naive one
+# (force loss ≈ -16% trained vs -24% naive — Giandolini review, docs/research/descent-neuromuscular-rpe.md),
+# so we anchor the base at the trained value (≈0.78 × the original naive 70 ≈ 55) and let descent_factor
+# climb back toward the naive ~70 when the athlete is currently DE-adapted. Reversible; the soreness fit
+# (Upgrade 5 backlog) refines it from real next-day soreness later.
+DESCENT_LOAD_PER_1000M = 55.0
 # Aerobic cost per 1000 m of ASCENT (D+) credited ONLY when there is no usable HR (the no-HR mountain
 # estimate). With HR present, hrtss already captures the climb, so this is not added (no double count).
 ASCENT_AEROBIC_PER_1000M = 100.0
+
+# ── Descent trainability — repeated-bout effect (docs/research/descent-neuromuscular-rpe.md, part A) ──
+# The eccentric cost of a descent is TRAINABLE: an athlete recently exposed to descents takes ~20-30%
+# less damage for the same D- (repeated-bout effect) and recovers faster, so a strictly FIXED
+# DESCENT_LOAD_PER_1000M over-counts a descent for a well-exposed athlete. We modulate it by a FAMILIARITY
+# proxy = the athlete's trailing D- relative to their OWN typical trailing D-, with a BOUNDED, SATURATING
+# law (the literature recommends f bounded ≈0.7-1.3, with diminishing returns). The factor is 1.0 when
+# recent exposure == the athlete's typical (or unknown) → INERT until a caller stamps `descent_familiarity`
+# on the activity. Phase 1 = coefficient only; the recovery-τ modulation (Q6/NEURO_ATL_DAYS) is a later upgrade.
+DESCENT_FAMILIARITY_WINDOW_D = 28   # trailing window (days) for the cumulative-D- exposure proxy (lit.: 2-6 wk)
+DESCENT_FAMILIARITY_SWING = 0.25    # max ±swing → factor ∈ [1-SWING, 1+SWING] = [0.75, 1.25]
+DESCENT_FAMILIARITY_ANCHOR_PCT = 50  # percentile of trailing-D- (over descent-active dates) that maps to
+#   factor 1.0 — the athlete's TYPICAL exposure, where the (trained-anchored) base coefficient applies.
+#   The factor then climbs toward the NAIVE cost (~base × 1.25 ≈ 70) after a layoff and dips below in a
+#   heavy block. (The trained↔naive STANDING level lives in the base coefficient — the factor is the
+#   DYNAMIC, net-~0 risk-timing modulator around it; see the dry-run analysis in MODEL_UPGRADES.md.)
+DESCENT_FAMILIARITY_MIN_SAMPLES = 12  # need ≥ this many descent-active dates before the factor is trusted;
+#   below it the model has too little history to judge familiarity → stay inert (factor 1.0), no false
+#   precision. The "imprecise/unreliable" guard — surfaced to the coach via the descent-model confidence.
+
+
+def descent_factor(familiarity_ratio: float | None) -> float:
+    """Repeated-bout multiplier on the descent coefficient, bounded to [1-SWING, 1+SWING] and saturating.
+    `familiarity_ratio` = trailing-WINDOW D- as-of the activity / the NAIVE reference exposure (the
+    ANCHOR_PCT percentile of the athlete's trailing D-). ratio 1.0 = naive → factor 1.0 (full base cost);
+    ratio > 1 (more exposed than the naive reference) → adapted → factor < 1 (less damage); ratio < 1 →
+    factor > 1. The (r-1)/(r+1) shape is bounded by construction and flattens (diminishing returns).
+    Returns 1.0 when the ratio is missing/zero — inert until the context is wired in."""
+    if not familiarity_ratio or familiarity_ratio <= 0:
+        return 1.0
+    return 1.0 - DESCENT_FAMILIARITY_SWING * (familiarity_ratio - 1.0) / (familiarity_ratio + 1.0)
+
+
+# Phase 2 — descent trainability also speeds RECOVERY (the repeated-bout effect shortens the time the
+# eccentric/structural fatigue lingers): trained ≈ 72 h vs naive ≥ 96 h (≈ -25-33%). We modulate the
+# neuromuscular ACUTE τ (NEURO_ATL_DAYS) by the SAME familiarity ratio as the cost — adapted (ratio > 1)
+# → shorter τ (fatigue clears faster); de-adapted → longer. Bounded & saturating, like descent_factor, but
+# a gentler swing (recovery moves less than damage). Applied in the rollup as a NON-STATIONARY neuro-ATL
+# EWMA. The neuro CHRONIC (CTL, 42 d) is untouched, so this shifts tsb_neuromuscular (the readiness lever).
+DESCENT_RECOVERY_SWING = 0.18  # τ_neuro swing → factor ∈ [0.82, 1.18] → τ ≈ 11.5-16.5 d at base 14 (≈ -30%/+18%)
+
+
+def descent_recovery_factor(familiarity_ratio: float | None) -> float:
+    """Multiplier on the neuromuscular acute τ from descent familiarity (repeated-bout → faster recovery).
+    ratio > 1 (more exposed than typical) → adapted → factor < 1 (shorter τ, fatigue clears faster);
+    ratio < 1 → factor > 1 (longer τ). Bounded [1-RECOVERY_SWING, 1+RECOVERY_SWING], saturating. 1.0 when
+    the ratio is missing/zero (history below the gate, or no recent descent) → the base τ unchanged (inert)."""
+    if not familiarity_ratio or familiarity_ratio <= 0:
+        return 1.0
+    return 1.0 - DESCENT_RECOVERY_SWING * (familiarity_ratio - 1.0) / (familiarity_ratio + 1.0)
+
+
+def ewma_variable_tau(values: list[float], tau_days: list[float]) -> list[float]:
+    """Banister-style EWMA with a PER-STEP time constant (non-stationary): alpha_t = 1 - e^(-1/tau_t).
+    Used for the neuromuscular acute load when its recovery τ varies day-to-day with descent familiarity
+    (Phase 2). With a constant tau list it reduces exactly to the fixed-τ EWMA (sync._ewma_series)."""
+    import math
+    out: list[float] = []
+    prev = 0.0
+    for v, tau in zip(values, tau_days):
+        alpha = 1.0 - math.exp(-1.0 / tau) if tau and tau > 0 else 1.0
+        prev = prev + alpha * (v - prev)
+        out.append(prev)
+    return out
+
+
+def _percentile(sorted_vals: list[float], pct: float) -> float:
+    """Linear-interpolated percentile of an already-sorted list (pct in 0-100)."""
+    if not sorted_vals:
+        return 0.0
+    if len(sorted_vals) == 1:
+        return sorted_vals[0]
+    rank = (pct / 100.0) * (len(sorted_vals) - 1)
+    lo = int(rank)
+    if lo + 1 >= len(sorted_vals):
+        return sorted_vals[-1]
+    return sorted_vals[lo] + (rank - lo) * (sorted_vals[lo + 1] - sorted_vals[lo])
+
+
+def descent_familiarity_ratios(
+    daily_descent: dict[str, float], anchor_pct: float = DESCENT_FAMILIARITY_ANCHOR_PCT
+) -> dict[str, float]:
+    """Map {local_date(ISO): D- metres that day} → {local_date: familiarity RATIO}. A date's ratio is its
+    trailing DESCENT_FAMILIARITY_WINDOW_D-day D- sum (the days BEFORE it — prior exposure, NOT the day
+    itself, so a descent can't pre-adapt the body to itself) divided by the NAIVE reference exposure: the
+    `anchor_pct` percentile of trailing D- over descent-active dates. Anchoring at a LOW percentile (not the
+    median) means a regularly-exposed athlete sits above it and earns a standing repeated-bout discount,
+    self-normalising per athlete (multi-user-ready). Returns {} when there's no usable descent history."""
+    parsed = sorted((date.fromisoformat(d), m) for d, m in daily_descent.items())
+    if not parsed:
+        return {}
+    window, one_day = timedelta(days=DESCENT_FAMILIARITY_WINDOW_D), timedelta(days=1)
+    trailing: dict[str, float] = {}
+    active: list[float] = []
+    for d, m in parsed:
+        s = sum(mm for pd, mm in parsed if d - window <= pd <= d - one_day)
+        trailing[d.isoformat()] = s
+        if m > 0:
+            active.append(s)
+    if len(active) < DESCENT_FAMILIARITY_MIN_SAMPLES:
+        return {}  # too little descent history to judge familiarity → stay inert (no false precision)
+    active.sort()
+    baseline = _percentile(active, anchor_pct)
+    if baseline <= 0:
+        return {}
+    return {iso: s / baseline for iso, s in trailing.items()}
+
+
+def descent_model_confidence(daily_descent: dict[str, float]) -> dict:
+    """Reliability of the descent-trainability adjustment for THIS athlete, surfaced as an ALERT when low.
+    `applied` is False below DESCENT_FAMILIARITY_MIN_SAMPLES descent-active dates (factor stays 1.0);
+    `confidence` is 'low' until there are ~2× the minimum (the band where the percentile baseline is still
+    noisy), else 'ok'. Lets the coach say 'descent cost adjusted to your recent exposure (estimate still
+    firming up)' instead of presenting a shaky number as fact."""
+    n = sum(1 for m in daily_descent.values() if m and m > 0)
+    applied = n >= DESCENT_FAMILIARITY_MIN_SAMPLES
+    return {
+        "applied": applied,
+        "sample_dates": n,
+        "confidence": "ok" if n >= 2 * DESCENT_FAMILIARITY_MIN_SAMPLES else ("low" if applied else "off"),
+    }
 
 # ── Heat & altitude (docs/research/heat-altitude.md) ──────────────────────────────────────────────
 # THE RULE: heat and altitude already raise HR for a given effort, so the HR-driven channels (hrtss)
@@ -271,9 +397,42 @@ def _descent_load(activity: dict, profile: dict, c: dict) -> float:
     independently of the aerobic engine and ADDED to the neuromuscular channel. Descending brakes the
     body weight eccentrically (quads/tendons) while the heart stays calm, so this must not be
     discounted just because HR — and hence the aerobic load — was low. Linear in D-, scaled by mass.
-    `vertical_loss_m` may be absent (no altitude stream / non-GPS sport) → 0, degrading gracefully."""
+    `vertical_loss_m` may be absent (no altitude stream / non-GPS sport) → 0, degrading gracefully.
+    Modulated by the repeated-bout `descent_factor` when the caller has stamped `descent_familiarity`
+    (else 1.0 — inert)."""
     vloss = activity.get("vertical_loss_m") or 0.0
-    return (vloss / 1000.0) * c["descent_per_1000m"] * _mass_factor(activity, profile)
+    factor = descent_factor(activity.get("descent_familiarity"))
+    return (vloss / 1000.0) * c["descent_per_1000m"] * _mass_factor(activity, profile) * factor
+
+
+# ── Differential RPE (Phase 2; docs/research/descent-neuromuscular-rpe.md part B) ─────────────────
+# A single global session-RPE can't tell apart a cardio-driven day from a forearm/leg-driven one — yet
+# that is exactly the aerobic-vs-neuromuscular split this model lives on. So the athlete may add OPTIONAL
+# CR10 sub-scores (rpe_cardio = souffle → aerobic; rpe_legs / rpe_grip = local muscular → neuromuscular).
+# When present, they set the aerobic/neuromuscular SPLIT of the global-RPE magnitude (`points`) from
+# perception, REPLACING the fixed taxonomy ratio (CHANNEL_SPLIT) / impact fraction. The global perceived_rpe
+# still sets the magnitude (it is the validated session-RPE), and — crucially — the OBJECTIVE eccentric
+# descent term stays additive for aerobic-engine sports (a same-session RPE is taken before DOMS and
+# under-reports delayed eccentric damage; a big descent must still be able to outscore a calm day).
+
+def _differential_split(activity: dict) -> float | None:
+    """Aerobic FRACTION (0..1) from differential RPE, or None to fall back to the fixed taxonomy split.
+    Applies only when >= 2 of {rpe_cardio, rpe_legs, rpe_grip} are present (not None and > 0) — so a
+    climber's legs+grip pair works even with no cardio score. The two local systems combine in QUADRATURE
+    (>= max, < sum, capped at 10) so a second loaded system counts without two 8s reading as 16. aero_frac
+    = cardio^2 / (cardio^2 + neuro_rpe^2); 0 when cardio is absent (a pure structural session)."""
+    cardio = activity.get("rpe_cardio")
+    legs = activity.get("rpe_legs")
+    grip = activity.get("rpe_grip")
+    present = [x for x in (cardio, legs, grip) if x is not None and x > 0]
+    if len(present) < 2:
+        return None
+    neuro_rpe = min(10.0, ((legs or 0) ** 2 + (grip or 0) ** 2) ** 0.5)
+    cardio_sq = (cardio or 0) ** 2
+    denom = cardio_sq + neuro_rpe ** 2
+    if denom <= 0:
+        return None
+    return cardio_sq / denom
 
 
 # ── per-method computations: each returns (load_points, IF) or None if inputs are missing.
@@ -373,6 +532,14 @@ def compute_load(activity: dict, sport: dict, profile: dict, params: dict | None
     engine, so the session effort is split aerobic : neuromuscular by taxonomy (mostly neuromuscular)."""
     c = _effective(params)
     ladder = sport.get("load_method_ladder") or ["duration_fallback"]
+    # A USER-entered RPE is the athlete's direct report of how hard the session was → it supersedes the
+    # objective duration estimate (vertical_duration / duration_fallback) for needs_manual_rpe sports.
+    # Without this, vertical_duration (always has inputs) wins the alpinism/grande_voie/via_ferrata ladder
+    # and the user's RPE is silently ignored on recompute/sync (it only ever took effect via setRpe's forced
+    # session_rpe → divergence: a grande_voie rated RPE 10 could score ~38). HR/power methods are never in
+    # these ladders; auto-estimated RPE (rpe_source != 'user') does NOT trigger this.
+    if activity.get("rpe_source") == "user" and activity.get("perceived_rpe") and "session_rpe" in ladder:
+        ladder = ["session_rpe", *(m for m in ladder if m != "session_rpe")]
     chosen_method, points, intensity = "duration_fallback", 0.0, c["default_if"]
     for method in ladder:
         fn = _METHODS.get(method)
@@ -391,15 +558,35 @@ def compute_load(activity: dict, sport: dict, profile: dict, params: dict | None
             break
 
     group = sport["taxonomy_group"]
+    # Perception-derived split (differential RPE) only when the session was RPE-scored AND the athlete gave
+    # >= 2 sub-scores; else None → the fixed taxonomy split below (today's behaviour, inert for all existing
+    # rows since their sub-scores are NULL).
+    aero_frac = _differential_split(activity) if chosen_method == "session_rpe" else None
     if group in STRUCTURAL_EFFORT_GROUPS:
-        a_ratio, n_ratio = CHANNEL_SPLIT.get(group, CHANNEL_SPLIT["other"])
-        aerobic, neuromuscular = points * a_ratio, points * n_ratio
+        if aero_frac is not None:
+            aerobic, neuromuscular = points * aero_frac, points * (1.0 - aero_frac)
+        else:
+            a_ratio, n_ratio = CHANNEL_SPLIT.get(group, CHANNEL_SPLIT["other"])
+            aerobic, neuromuscular = points * a_ratio, points * n_ratio
     else:
         # `points` is the cardiometabolic cost → the aerobic channel in full. The neuromuscular
         # channel is built additively from stressors the aerobic number can't see.
         impact = points * IMPACT_FRAC.get(group, IMPACT_FRAC["other"])
-        aerobic = points
-        neuromuscular = impact + _descent_load(activity, profile, c)
+        objective_neuro = impact + _descent_load(activity, profile, c)
+        # The split applies here only when a CARDIO sub-score was given: on an aerobic-engine sport the
+        # engine IS the defining cost, so a blank rpe_cardio (with legs/grip filled) must NOT zero the
+        # aerobic channel — fall back to the full engine magnitude instead. (Structural sports above don't
+        # need cardio: their aerobic cost is genuinely ~0, so aero_frac=0 there is correct.)
+        if aero_frac is not None and activity.get("rpe_cardio"):
+            # Perception splits the engine magnitude; but the OBJECTIVE descent+impact stays a FLOOR so a
+            # big descent (which a same-session RPE under-reports) still outscores a calm day. neuro =
+            # max(perceived non-cardio share, objective descent+impact). aerobic shrinks when the athlete
+            # reports the cardio engine was easy (low rpe_cardio) — exactly the easy-HR / hard-legs case.
+            aerobic = points * aero_frac
+            neuromuscular = max(points * (1.0 - aero_frac), objective_neuro)
+        else:
+            aerobic = points
+            neuromuscular = objective_neuro
 
     eff_days = activity_span_days(
         activity.get("started_at"), activity.get("duration_s"), activity.get("moving_s"))

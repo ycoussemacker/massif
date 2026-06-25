@@ -268,8 +268,9 @@ def test_grande_voie_is_additive_with_higher_impact_not_structural():
     r = load.compute_load({"duration_s": 7200, "vertical_gain_m": 1000, "vertical_loss_m": 1000}, gv, {"weight_kg": 64})
     assert r.load_method_used == "vertical_duration"
     assert round(r.aerobic_load, 1) == 160.5
-    # neuro = impact 0.40 × aerobic + descent (1000/1000 × 70 × 1.0) = 64.2 + 70 = 134.2.
-    assert round(r.neuromuscular_load, 1) == round(160.5 * 0.40 + 70, 1)
+    # neuro = impact 0.40 × aerobic + descent (1000/1000 × 55 × 1.0; trained base, no familiarity stamped)
+    #       = 64.2 + 55 = 119.2.
+    assert round(r.neuromuscular_load, 1) == round(160.5 * 0.40 + load.DESCENT_LOAD_PER_1000M, 1)
     assert r.aerobic_load + r.neuromuscular_load == r.training_load
 
 
@@ -323,3 +324,149 @@ def test_resolve_profile_effective_dating():
     p26 = load.resolve_profile(base, hist, "2026-06-01")
     assert p26["lthr"] == 178 and p26["weight_kg"] == 64                    # null weight → base 64
     assert base["lthr"] == 178                                             # base dict not mutated
+
+# ── descent trainability (repeated-bout effect) — docs/research/descent-neuromuscular-rpe.md, part A ──
+
+def test_descent_factor_is_bounded_and_saturating():
+    # Typical exposure (ratio 1.0) or unknown → neutral 1.0 (inert default).
+    assert load.descent_factor(1.0) == 1.0
+    assert load.descent_factor(None) == 1.0
+    assert load.descent_factor(0) == 1.0
+    # Bounds: factor stays within [1-SWING, 1+SWING] even at extreme ratios.
+    lo, hi = 1 - load.DESCENT_FAMILIARITY_SWING, 1 + load.DESCENT_FAMILIARITY_SWING
+    assert load.descent_factor(1e6) > lo and load.descent_factor(1e6) < 1.0   # very exposed → < 1, never below lo
+    assert load.descent_factor(1e-6) < hi and load.descent_factor(1e-6) > 1.0  # de-adapted → > 1, never above hi
+    for r in (0.01, 0.5, 1.0, 3.0, 50.0):
+        assert lo <= load.descent_factor(r) <= hi
+    # Monotonic: more recent exposure → smaller factor (less damage).
+    assert load.descent_factor(0.5) > load.descent_factor(1.0) > load.descent_factor(2.0)
+
+
+def test_descent_familiarity_ratios_anchor_and_direction():
+    # Empty / no descent history → {} (callers fall back to factor 1.0).
+    assert load.descent_familiarity_ratios({}) == {}
+    assert load.descent_familiarity_ratios({"2026-01-01": 0.0}) == {}
+    # Below the min-sample gate (too little descent history) → {} (factor stays inert, no false precision).
+    few = {f"2026-03-{d:02d}": 1000.0 for d in range(1, load.DESCENT_FAMILIARITY_MIN_SAMPLES)}
+    assert load.descent_familiarity_ratios(few) == {}
+    # A steady block then a post-layoff descent: the layoff date sees less trailing D- → lower ratio than a
+    # date inside the heavy block. Enough active dates to clear the gate.
+    daily = {f"2026-03-{d:02d}": 1000.0 for d in range(1, 21)}        # 20 consecutive 1000 m-D- days
+    daily["2026-05-15"] = 1000.0                                       # a descent after a ~3-week layoff
+    ratios = load.descent_familiarity_ratios(daily)
+    assert ratios["2026-05-15"] < ratios["2026-03-20"]                 # post-layoff is less familiar
+    assert load.descent_factor(ratios["2026-05-15"]) > load.descent_factor(ratios["2026-03-20"])  # → more cost
+
+
+def test_descent_familiarity_modulates_only_the_neuro_channel():
+    profile = {"resting_hr": 48, "max_hr": 188, "lthr": 178, "weight_kg": 64}
+    sport = {"taxonomy_group": "mountain_vertical",
+             "load_method_ladder": ["hrtss", "session_rpe", "duration_fallback"]}
+    act = {"duration_s": 9000, "avg_hr": 130, "vertical_loss_m": 2000}
+    base = load.compute_load(act, sport, profile)                     # no familiarity stamped → factor 1.0
+    adapted = load.compute_load({**act, "descent_familiarity": 3.0}, sport, profile)  # well-exposed → < 1
+    naive = load.compute_load({**act, "descent_familiarity": 0.2}, sport, profile)    # de-adapted → > 1
+    assert adapted.neuromuscular_load < base.neuromuscular_load < naive.neuromuscular_load
+    assert adapted.aerobic_load == base.aerobic_load == naive.aerobic_load            # aerobic untouched
+
+# ── descent recovery τ (Phase 2: repeated-bout speeds recovery) ───────────────────────────────────
+
+def test_descent_recovery_factor_direction_and_bounds():
+    assert load.descent_recovery_factor(1.0) == 1.0          # typical exposure → base τ
+    assert load.descent_recovery_factor(None) == 1.0          # missing → inert
+    assert load.descent_recovery_factor(3.0) < 1.0 < load.descent_recovery_factor(0.3)  # adapted shorter, de-adapted longer
+    lo, hi = 1 - load.DESCENT_RECOVERY_SWING, 1 + load.DESCENT_RECOVERY_SWING
+    for r in (0.01, 0.5, 1.0, 2.0, 100.0):
+        assert lo <= load.descent_recovery_factor(r) <= hi
+
+
+def test_ewma_variable_tau_matches_fixed_when_constant():
+    from massif_ingest.sync import _ewma_series
+    vals = [10.0, 0.0, 30.0, 5.0, 0.0, 20.0, 0.0]
+    fixed = _ewma_series(vals, 14)
+    var = load.ewma_variable_tau(vals, [14.0] * len(vals))
+    assert all(abs(a - b) < 1e-9 for a, b in zip(fixed, var))   # constant τ ⇒ identical to the fixed EWMA
+
+
+def test_ewma_variable_tau_shorter_tau_recovers_faster():
+    # Sustain load until both ATLs converge to the same level (EWMA of a constant is τ-independent), THEN
+    # stop: from the SAME fatigue, a SHORTER τ (adapted) clears faster → less residual fatigue.
+    vals = [50.0] * 120 + [0.0] * 20
+    fast = load.ewma_variable_tau(vals, [10.0] * len(vals))     # adapted → quick clearance
+    slow = load.ewma_variable_tau(vals, [16.0] * len(vals))     # de-adapted → lingers
+    assert abs(fast[119] - slow[119]) < 0.3                     # both converged to ~50 before the stop
+    assert fast[-1] < slow[-1]                                  # then the shorter τ has recovered more
+
+# ── RPE Phase 2: user-RPE wins the ladder + differential channel split ─────────────────────────────
+
+ALPI = {"taxonomy_group": "mountain_vertical",
+        "load_method_ladder": ["vertical_duration", "session_rpe", "duration_fallback"]}
+CLIMB = {"taxonomy_group": "technical_strength",
+         "load_method_ladder": ["grade_volume", "session_rpe", "duration_fallback"]}
+PROF = {"resting_hr": 48, "max_hr": 188, "lthr": 178, "weight_kg": 64}
+
+
+def test_user_rpe_supersedes_vertical_duration_in_ladder():
+    # The bug fix: a USER rpe must win over the objective vertical_duration (else the athlete's effort
+    # report is ignored — a grande_voie rated 10 could score ~38). Auto-estimated RPE does NOT win.
+    act = {"duration_s": 21600, "vertical_gain_m": 1500, "vertical_loss_m": 1500, "perceived_rpe": 8}
+    user = load.compute_load({**act, "rpe_source": "user"}, ALPI, PROF)
+    auto = load.compute_load({**act, "rpe_source": "estimated"}, ALPI, PROF)
+    assert user.load_method_used == "session_rpe"
+    assert auto.load_method_used == "vertical_duration"   # unchanged when not user-entered
+
+
+def test_differential_split_helper_gate_and_quadrature():
+    assert load._differential_split({}) is None
+    assert load._differential_split({"rpe_cardio": 5}) is None              # need >= 2 present
+    assert load._differential_split({"rpe_cardio": 0, "rpe_legs": 8}) is None  # 0 is not "present"
+    assert load._differential_split({"rpe_legs": 8, "rpe_grip": 9}) == 0.0  # no cardio → pure structural
+    two = load._differential_split({"rpe_cardio": 5, "rpe_legs": 8, "rpe_grip": 8})  # neuro_rpe = min(10, √128)=10
+    one = load._differential_split({"rpe_cardio": 5, "rpe_grip": 8})                  # neuro_rpe = 8
+    assert abs(two - 25 / 125) < 1e-9                                       # 25/(25+100)
+    assert one > two                                                       # a 2nd loaded system → more neuro
+
+
+def test_differential_split_structural_supersedes_fixed_ratio():
+    base = load.compute_load({"duration_s": 7200, "perceived_rpe": 7, "rpe_source": "user"}, CLIMB, {})
+    diff = load.compute_load(
+        {"duration_s": 7200, "perceived_rpe": 7, "rpe_source": "user", "rpe_cardio": 3, "rpe_grip": 9}, CLIMB, {})
+    assert diff.load_method_used == "session_rpe"
+    assert abs(diff.training_load - base.training_load) < 0.5               # total magnitude unchanged (= points)
+    assert diff.aerobic_load < base.aerobic_load                           # perceived 0.10 aero < fixed 0.15
+    assert abs(diff.aerobic_load - diff.training_load * 0.1) < 0.5         # aero_frac = 9/(9+81) = 0.1
+
+
+def test_differential_aerobic_engine_keeps_descent_floor():
+    # Easy cardio + hard legs + big descent: aerobic shrinks (engine was easy), but neuro must not drop
+    # below the OBJECTIVE descent+impact floor (a same-session RPE under-reports delayed eccentric DOMS).
+    act = {"duration_s": 14400, "vertical_gain_m": 500, "vertical_loss_m": 2500,
+           "perceived_rpe": 6, "rpe_source": "user", "rpe_cardio": 3, "rpe_legs": 9}
+    r = load.compute_load(act, ALPI, PROF)
+    assert r.load_method_used == "session_rpe"
+    points = 4.0 * (0.6 ** 2) * 100                                        # 4 h × (6/10)² × 100 = 144
+    descent = 2.5 * load.DESCENT_LOAD_PER_1000M                            # 2500 m × 55, mass 1.0, no familiarity
+    assert abs(r.aerobic_load - points * 0.1) < 0.5                        # aero_frac 9/(9+81)=0.1
+    assert r.neuromuscular_load >= descent - 0.5                          # objective descent floor preserved
+
+
+def test_differential_inert_without_subscores_regression():
+    # Existing rows (no sub-scores) must be byte-identical to the pre-Phase-2 split.
+    r = load.compute_load({"duration_s": 7200, "perceived_rpe": 7, "rpe_source": "user"}, CLIMB, {})
+    assert abs(r.aerobic_load - r.training_load * 0.15) < 1e-9            # fixed 0.15/0.85 unchanged
+
+
+def test_differential_aerobic_engine_requires_cardio_else_no_zeroing():
+    # Aerobic-engine sport with legs+grip but BLANK cardio must NOT zero the aerobic engine — falls back
+    # to the full magnitude (the engine is the defining cost). Structural sports (climbing) are fine with
+    # cardio absent (aerobic ≈ 0), so legs+grip there DOES split.
+    no_cardio = {"duration_s": 7200, "vertical_gain_m": 800, "vertical_loss_m": 600,
+                 "perceived_rpe": 8, "rpe_source": "user", "rpe_legs": 8, "rpe_grip": 8}
+    r = load.compute_load(no_cardio, ALPI, PROF)
+    points = 2.0 * (0.8 ** 2) * 100                               # 2 h × (8/10)² × 100 = 128
+    assert abs(r.aerobic_load - points) < 0.5                     # engine NOT zeroed (fallback to full points)
+    # climbing (structural): legs+grip, no cardio → split applies, aerobic ≈ 0
+    rc = load.compute_load({"duration_s": 7200, "perceived_rpe": 8, "rpe_source": "user",
+                            "rpe_legs": 8, "rpe_grip": 8}, CLIMB, {})
+    assert rc.aerobic_load == 0.0                                 # pure structural session → no aerobic
+    assert abs(rc.neuromuscular_load - rc.training_load) < 1e-9

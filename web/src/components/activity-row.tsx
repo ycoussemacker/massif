@@ -81,7 +81,7 @@ export function ActivityCard({ a, avgLoad }: { a: Activity; avgLoad?: number | n
         <span>⏱ {dur(a.duration_s)}</span>
         <span>D+ {a.vertical_gain_m != null ? Math.round(a.vertical_gain_m) : "—"} / D− {a.vertical_loss_m != null ? Math.round(a.vertical_loss_m) : "—"}</span>
         {a.avg_hr != null && <span>FC {a.avg_hr}</span>}
-        {a.needs_manual_rpe && <RpeControl activityId={a.id} value={a.perceived_rpe} />}
+        {a.needs_manual_rpe && <RpeControl activityId={a.id} value={a.perceived_rpe} differential={{ cardio: a.rpe_cardio, legs: a.rpe_legs, grip: a.rpe_grip }} />}
         <StravaLink source={a.source} sourceActivityId={a.source_activity_id} className="ml-auto" />
       </div>
     </div>
@@ -140,7 +140,7 @@ export function ActivityRow({ a, avgLoad }: { a: Activity; avgLoad?: number | nu
       <td className="py-2 pr-3 text-right align-top tabular-nums text-stone-500">{a.avg_hr ?? "—"}</td>
       <td className="py-2 pr-3 align-top">
         {a.needs_manual_rpe
-          ? <RpeControl activityId={a.id} value={a.perceived_rpe} />
+          ? <RpeControl activityId={a.id} value={a.perceived_rpe} differential={{ cardio: a.rpe_cardio, legs: a.rpe_legs, grip: a.rpe_grip }} />
           : <span className="text-stone-300 dark:text-stone-600">—</span>}
       </td>
       <td className="py-2 text-right align-top whitespace-nowrap">

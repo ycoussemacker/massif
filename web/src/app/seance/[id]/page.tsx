@@ -176,6 +176,22 @@ function RealisedColumn({ v }: { v: SessionView }) {
       <Row label="D+ / D−" value={`${a.vertical_gain_m != null ? Math.round(a.vertical_gain_m) : "—"} / ${a.vertical_loss_m != null ? Math.round(a.vertical_loss_m) : "—"}`} />
       {a.avg_hr != null && <Row label="FC moyenne" value={`${a.avg_hr} bpm`} />}
       {a.perceived_rpe != null && <Row label="RPE" value={`${a.perceived_rpe} (${a.rpe_source})`} />}
+      {(a.rpe_cardio != null || a.rpe_legs != null || a.rpe_grip != null) && (
+        <Row label="RPE par système" value={
+          <span className="text-xs tabular-nums">
+            {([
+              a.rpe_cardio != null && { label: "souffle", v: a.rpe_cardio, color: VIZ.aerobic },
+              a.rpe_legs != null && { label: "jambes", v: a.rpe_legs, color: VIZ.neuro },
+              a.rpe_grip != null && { label: "prise", v: a.rpe_grip, color: VIZ.neuro },
+            ].filter(Boolean) as { label: string; v: number; color: string }[]).map((it, i) => (
+              <span key={it.label}>
+                {i > 0 && <span className="mx-1 text-stone-300">·</span>}
+                <span style={{ color: it.color }}>{it.label} {it.v}</span>
+              </span>
+            ))}
+          </span>
+        } />
+      )}
       <div className="mt-2 flex items-center justify-between gap-2 border-t border-stone-100 pt-2 dark:border-stone-800">
         <span className="text-xs text-stone-500 dark:text-stone-400">Catégorie</span>
         <ActivityFlag a={a} alwaysOffer />

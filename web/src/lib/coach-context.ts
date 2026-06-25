@@ -4,6 +4,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { buildPlanningView, favouriteSports, athleteConstraints } from "./planning";
 import { computeSessionBaselines } from "./session-baselines";
+import { descentModelConfidence } from "./load";
 
 export const ATHLETE_TZ = process.env.ATHLETE_TZ ?? "Europe/Paris";
 
@@ -171,7 +172,7 @@ export async function assembleCoachContext(sb: SupabaseClient): Promise<{ today:
     sb.from("daily_metrics").select("*").order("local_date", { ascending: false }).limit(21),
     sb.from("activities")
       .select("local_date,sport_id,training_load,aerobic_load,neuromuscular_load,load_method_used," +
-              "duration_s,vertical_gain_m,vertical_loss_m,avg_hr,rpe_source," +
+              "duration_s,vertical_gain_m,vertical_loss_m,avg_hr,rpe_source,rpe_cardio,rpe_legs,rpe_grip," +
               "avg_temp_c,max_altitude_m,time_high_altitude_s")
       .gte("local_date", since14).order("local_date", { ascending: false }),
     sb.from("sports").select("id,code"),
@@ -184,7 +185,8 @@ export async function assembleCoachContext(sb: SupabaseClient): Promise<{ today:
       .gte("local_date", today).order("local_date", { ascending: true }),
     // ~90 d of realised loads → the athlete's PERSONAL per-session-type baselines (replaces the
     // hard-coded coach target loads; falls back to them when a bucket is thin). See session-baselines.ts.
-    sb.from("activities").select("training_load,aerobic_load,neuromuscular_load,intensity_factor")
+    // local_date+vertical_loss_m also feed the descent-model reliability alert (descentModelConfidence).
+    sb.from("activities").select("training_load,aerobic_load,neuromuscular_load,intensity_factor,local_date,vertical_loss_m")
       .gte("local_date", dateMinusDays(today, 90)).order("local_date", { ascending: false }).limit(400),
   ]);
 
@@ -242,6 +244,17 @@ export async function assembleCoachContext(sb: SupabaseClient): Promise<{ today:
     // Personalised per-session-type target loads, derived from ~90 d of the athlete's own efforts (the
     // briefing uses these over the hard-coded BASE_LOAD when a bucket has enough samples).
     session_baselines: computeSessionBaselines((bm.data ?? []) as any[]),
+    // Reliability of the descent-trainability adjustment (Upgrade 7): 'off'/'low'/'ok' by descent-history
+    // depth. When 'low', tell the athlete the descent cost is adjusted to recent exposure but the estimate
+    // is still firming up — don't present it as fact. (90 d window proxy of the all-history gate.)
+    descent_model: descentModelConfidence(
+      Object.fromEntries(
+        ((bm.data ?? []) as any[]).reduce((m: Map<string, number>, r: any) => {
+          if (r.local_date) m.set(r.local_date, (m.get(r.local_date) ?? 0) + Number(r.vertical_loss_m || 0));
+          return m;
+        }, new Map<string, number>()),
+      ),
+    ),
     fitness_model_latest: latest && {
       date: latest.local_date, ctl: latest.ctl, atl: latest.atl, tsb: latest.tsb,
       ctl_aerobic: latest.ctl_aerobic, atl_aerobic: latest.atl_aerobic, tsb_aerobic: latest.tsb_aerobic,
@@ -267,6 +280,10 @@ export async function assembleCoachContext(sb: SupabaseClient): Promise<{ today:
       load: a.training_load, aerobic: a.aerobic_load, neuro: a.neuromuscular_load,
       method: a.load_method_used, dur_min: Math.round((a.duration_s || 0) / 60),
       dplus: a.vertical_gain_m, dminus: a.vertical_loss_m, avg_hr: a.avg_hr, rpe: a.rpe_source,
+      // Differential RPE (Phase 2): present only when the athlete rated systems separately — the aero/neuro
+      // split was then perception-derived (souffle → aérobie, jambes/avant-bras → neuro).
+      rpe_diff: (a.rpe_cardio != null || a.rpe_legs != null || a.rpe_grip != null)
+        ? { cardio: a.rpe_cardio ?? null, legs: a.rpe_legs ?? null, grip: a.rpe_grip ?? null } : undefined,
       temp_c: a.avg_temp_c ?? null, alt_max_m: a.max_altitude_m ?? null,
     })),
     trailing_7d: { d_plus_m: sum(acts7, "vertical_gain_m"), d_minus_m: sum(acts7, "vertical_loss_m") },

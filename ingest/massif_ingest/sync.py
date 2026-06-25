@@ -46,13 +46,22 @@ def recompute_activity_loads() -> int:
     profile = db.load_athlete_profile()
     params = db.load_load_params()  # personalized coefficients (empty → population defaults)
     threshold_history = db.load_threshold_history()  # effective-dated thresholds (empty → base profile)
+    activities = db.fetch_activities_for_recompute()
+    # Descent-familiarity (repeated-bout): build the daily D- series from ALL activities (raw vertical_loss_m,
+    # so no circularity with the load we're recomputing), then stamp each activity's familiarity ratio as-of
+    # its date — gated to ≥ MIN_SAMPLES descent-active dates (else inert). See docs/research/...rpe.md.
+    daily_descent: dict[str, float] = {}
+    for a in activities:
+        daily_descent[a["local_date"]] = daily_descent.get(a["local_date"], 0.0) + float(a.get("vertical_loss_m") or 0.0)
+    fam_ratios = load.descent_familiarity_ratios(daily_descent)
     updated = 0
-    for a in db.fetch_activities_for_recompute():
+    for a in activities:
         sport = sport_by_id.get(a["sport_id"])
         if not sport:
             continue
         # Resolve thresholds as-of the activity's date so a past threshold change re-scores history faithfully.
         eff_profile = load.resolve_profile(profile, threshold_history, a.get("local_date"))
+        a["descent_familiarity"] = fam_ratios.get(a["local_date"])
         r = load.compute_load(a, sport, eff_profile, params)
         db.update_activity_load(a["id"], {
             "aerobic_load": r.aerobic_load,
@@ -131,9 +140,16 @@ def rollup_daily_metrics(ctl_days: int = 42, atl_days: int = 7) -> int:
     # Neuromuscular ACUTE load uses the slower neuro τ (structural fatigue lingers); personalized from
     # athlete_load_params when fitted, else the NEURO_ATL_DAYS default. Its CTL keeps the shared chronic τ.
     neuro_atl_days = db.load_load_params().get("neuro_atl_days", NEURO_ATL_DAYS)
+    # Phase 2 (descent trainability): the neuro acute τ is NON-STATIONARY — descent familiarity (same proxy
+    # as the cost factor) shortens it when adapted (fatigue clears faster) and lengthens it when de-adapted.
+    # Built from the daily D- spine (rest days included → ratio for every day); inert (base τ everywhere)
+    # when history is below the gate. The neuro CTL keeps the fixed 42 d chronic τ, so this moves tsb_neuro.
+    daily_descent = {d.isoformat(): days.get(d, {}).get("vdn", 0.0) for d in spine}
+    fam = load.descent_familiarity_ratios(daily_descent)
+    neuro_tau = [neuro_atl_days * load.descent_recovery_factor(fam.get(d.isoformat())) for d in spine]
     ctl, atl = _ewma_series(total, ctl_days), _ewma_series(total, atl_days)
     ctl_a, atl_a = _ewma_series(aerobic, ctl_days), _ewma_series(aerobic, atl_days)
-    ctl_n, atl_n = _ewma_series(neuro, ctl_days), _ewma_series(neuro, neuro_atl_days)
+    ctl_n, atl_n = _ewma_series(neuro, ctl_days), load.ewma_variable_tau(neuro, neuro_tau)
 
     rows = []
     for i, d in enumerate(spine):

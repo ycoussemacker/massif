@@ -64,15 +64,23 @@ situer l'effort. C'est la méthode privilégiée pour course, trail, rando avec 
 > l'effort. Une longue journée à FC modérée est donc, à juste titre, une grosse charge.
 
 Sans cardio fiable (escalade, alpi, surf…), on bascule sur l'**effort perçu (RPE)** ou, à défaut, une
-estimation par la durée — moins précise, signalée comme telle.
+estimation par la durée — moins précise, signalée comme telle. Quand l'athlète **saisit** un RPE, celui-ci
+**prime** sur l'estimation par durée (c'est son ressenti qui fait foi). Et s'il **détaille par système**
+(souffle, jambes, avant-bras), la **répartition aéro/neuro suit ce ressenti** plutôt qu'un découpage fixe
+par sport — voir §11 Q5.
 
 ### 2.3 Le coût neuromusculaire (le « hors-cardio »)
 En plus du moteur cardiaque, on **ajoute** un coût neuromusculaire indépendant, dominé par :
 
 - **La descente (dénivelé négatif).** Le travail **excentrique** de freinage est la principale cause de
   dommages musculaires et de courbatures (DOMS). C'est, à notre sens, le facteur le plus sous-estimé des
-  modèles classiques en montagne. Notre valeur de départ : **~70 points de charge neuromusculaire par
-  1000 m de D−**. *(À valider/ajuster — voir §11.)*
+  modèles classiques en montagne. ✅ **Ce coût est *entraînable*** (recherche faite — Q2) : un athlète
+  habitué aux descentes encaisse moins et récupère plus vite. **Désormais implémenté** : la valeur de base
+  est celle d'un descendeur **entraîné** (**~55 points / 1000 m de D−**, au lieu des ~70 « débutant »), et
+  un **facteur dynamique** la fait remonter vers ~70 quand l'athlète est **peu exposé récemment**
+  (reprise après coupure → premières descentes plus coûteuses, le « casse-pattes » de début de saison) et
+  la fait baisser pendant un **gros bloc descente** (adaptation). Le facteur est **borné** (±25 %) et n'est
+  appliqué qu'avec assez d'historique — sinon on **signale** une estimation peu fiable. *(Voir §11 Q2.)*
 - **Le port de charge** (sac lourd, marche d'approche bivouac) — intégré à la charge.
 - **L'impact** (la composante traumatique selon la discipline).
 - **Le dénivelé positif** ajoute aussi un coût aérobie au-delà de ce que la FC seule capte.
@@ -116,7 +124,9 @@ calcule donc **une fraîcheur par canal** :
 Conséquence concrète pour le coach : après un bloc descente/montagne, un athlète peut paraître **frais
 côté cœur (et sur sa montre)** alors que ses **jambes portent encore une dette**. Le modèle le voit ; une
 fraîcheur neuromusculaire nettement négative = on protège les structures même si tout le reste semble OK.
-*(Constantes 7 j / 14 j : points de départ, à valider — §11.)*
+*(Constantes 7 j / 14 j : points de départ, à valider — §11. Le 14 j neuromusculaire n'est plus tout à
+fait fixe : il se **raccourcit** quand l'athlète est bien adapté aux descentes — récupération plus rapide —
+et s'**allonge** après une coupure, dans une fourchette ~11,5–16,5 j. Voir §11 Q2/Q6.)*
 
 ---
 
@@ -246,31 +256,54 @@ physiologique, lui, ne dépend pas de l'IA.
 C'est la section la plus importante : voici nos **valeurs de départ** et nos **partis pris**, à
 challenger. Toutes sont ajustables, et destinées à être personnalisées à partir des données de l'athlète.
 Chaque point porte un numéro stable (**Q1 … Q14**) pour qu'on puisse y revenir un par un. Deux d'entre eux
-font l'objet d'une **recherche en cours** (🔬 Q2 et Q5).
+(**Q2** descente, **Q5** RPE) ont fait l'objet d'une **revue de littérature** : elle est **faite** — voir
+les correctifs prévus ci-dessous et le détail sourcé dans `research/descent-neuromuscular-rpe.md`.
 
 ### Calcul de charge
 - **Q1 — Ancrage de la charge.** 1 h pile au seuil = 100 points ; la charge ∝ durée × intensité² (le carré
   pénalise le faible, valorise le dur). Cet ancrage et l'exposant 2 te semblent-ils justes pour un public
   montagne (longues sorties à intensité basse) ?
-- **Q2 — 🔬 Descente (coût neuromusculaire).** ~70 points neuromusculaires / 1000 m de D−, valeur **fixe**
-  aujourd'hui. C'est notre coefficient le plus sensible. **Hypothèse à étudier** : ce coût — *et sa vitesse
-  de récupération* — serait **entraînable**. Un athlète habitué aux descentes subirait moins de dommages
-  excentriques et récupérerait plus vite qu'un débutant, pour le même D− (effet « repeated-bout » /
-  adaptation à l'excentrique). Faut-il faire dépendre le coefficient **et** la constante de récupération
-  neuro (cf. Q6) du **niveau / du volume récent de descente** de l'athlète ? *(recherche en cours)*
+- **Q2 — ✅ Descente (coût neuromusculaire) : recherche faite + Phase 1 livrée.** **La littérature
+  tranche : ce coût — *et sa vitesse de récupération* — est entraînable.** Effet « repeated-bout » : un
+  athlète régulièrement exposé subit **~20–30 % de dommages en moins** pour le même D− et récupère **~1–2 j
+  plus vite** ; adaptation **spécifique à la descente** (la montée ne protège pas), **rapide** (1–2 sem
+  suffisent), à **rendements décroissants**. **Ce qu'on a implémenté** : (1) la base passe de ~70
+  (« débutant ») à **~55 / 1000 m** = le coût d'un descendeur **entraîné** (≈0,78× la valeur naïve, ancrage
+  littérature) — c'est la décote « entraîné » ; (2) un **facteur dynamique borné** (±25 %, qui sature)
+  fait remonter le coût vers ~70 après une coupure (reprise = descentes plus coûteuses) et le fait baisser
+  pendant un gros bloc descente. Un **point honnête issu des données réelles** : sur cet athlète, le facteur
+  dynamique est **net ≈ 0** (ses plus grosses descentes tombent en début de saison, peu adapté → on les
+  pénalise à juste titre) — c'est donc surtout un **signal de timing/risque** par jour, pas une décote
+  globale ; la décote globale, elle, vient de la base (−5,6 % neuro). **Phase 2 livrée aussi** : la
+  *vitesse de récupération* neuro dépend désormais de l'exposition (cf. Q6) — bien adapté → la fatigue
+  s'efface plus vite (τ plus court, ~11,5 j) ; peu adapté → elle traîne (~16,5 j). C'est le levier qui
+  bouge vraiment la fraîcheur neuro (`tsb_neuromuscular`). **Fiabilité** : tout ceci n'est appliqué qu'avec
+  assez d'historique de descente, sinon l'estimation est **signalée comme peu fiable**.
+  *(Détail + sources : `research/descent-neuromuscular-rpe.md`, partie A.)*
 - **Q3 — Dénivelé positif.** Un coût aérobie additionnel (~100 / 1000 m de D+) au-delà de ce que la FC
   capte. Pertinent, ou la FC suffit-elle déjà à le refléter ?
 - **Q4 — FC sur le temps écoulé (pas le mouvement).** Parce que la FC moyenne est déjà « diluée » par les
   pauses (§2.2), on garde le temps total pour les méthodes pilotées par la FC. D'accord avec ce
   raisonnement, ou une autre approche pour les très longues journées avec beaucoup d'arrêts ?
-- **Q5 — 🔬 Effort perçu (RPE).** Les sports techniques (alpi, grande voie, escalade) sont scorés au RPE
-  faute de FC fiable. **Quelle échelle, à quel moment, et avec quelle formulation** poser la question pour
-  obtenir un RPE valide et comparable d'une discipline à l'autre ? *(recherche en cours)*
+- **Q5 — ✅ Effort perçu (RPE) : recherche faite + livrée.** Les sports techniques (alpi, grande voie,
+  escalade) sont scorés au RPE faute de FC fiable. **Ce qu'on a implémenté** : (1) **échelle CR10 de Foster
+  (0–10)** avec **ancrages verbaux** (0 repos · 3 modéré · 5 dur · 7 très dur · 10 maximal), **formulation
+  globale** (« à quel point cette séance était-elle difficile ? Pense à toute la séance ») et un rappel de
+  **timing 20–30 min après** ; (2) **correctif important** : quand l'athlète saisit lui-même un RPE, celui-ci
+  **prime désormais** sur l'estimation par durée+dénivelé (avant, une grande voie notée 10/10 pouvait être
+  scorée ~38 car l'estimation objective gagnait — le ressenti était ignoré) ; (3) **RPE différencié**
+  (optionnel) : souffle/cardio → **aérobie**, jambes & avant-bras/prise → **neuromusculaire**. Dès qu'au
+  moins **deux** systèmes sont notés, **la répartition aéro/neuro vient du ressenti** au lieu d'un découpage
+  fixe par sport. Le coût **objectif de la descente reste un plancher** (un RPE pris juste après la séance
+  sous-estime les courbatures à retardement — une grosse descente doit rester « lourde »). C'est notre
+  logique à deux canaux rendue **mesurée**. *(Détail + sources : `research/descent-neuromuscular-rpe.md`,
+  partie B.)*
 
 ### Forme & fatigue
 - **Q6 — Constantes de temps.** Fitness 42 j ; Fatigue aérobie 7 j ; **Fatigue neuromusculaire 14 j**. Le
   14 j (vs 7 j côté cardio) capture-t-il bien la traîne des courbatures / tendons ? Trop court, trop long ?
-  *(lié à Q2 : cette durée est peut-être, elle aussi, fonction du niveau)*
+  *(lié à Q2 : ce 14 j est désormais le **centre** d'une fourchette — il se raccourcit/allonge avec
+  l'exposition récente aux descentes, ~11,5–16,5 j, cf. Q2 Phase 2. Le centre 14 j reste à valider.)*
 - **Q7 — Seuil de risque.** ACWR > ~1,5 = zone à risque. Adapté à un athlète montagne très variable d'un
   jour à l'autre ?
 

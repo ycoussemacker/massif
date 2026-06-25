@@ -266,11 +266,127 @@ migration `…0006_add_grande_voie_sport`. **Verification.** pytest 53 green (ne
 hrtss-keeps-elapsed, user-RPE-clears-flag, grande_voie additive split, grande-voie keyword); web + coach
 tsc clean. Reaches history via `--recompute-loads`.
 
+## 2026-06-25 · Upgrade 7 — Descent trainability (repeated-bout) + trained-base re-baseline
+
+Research + sources: [`research/descent-neuromuscular-rpe.md`](research/descent-neuromuscular-rpe.md) part A;
+coach-facing `MODELE_ENTRAINEMENT.md` §2.3 + §11 Q2. **(Also shipped this day: RPE Phase 1 — CR10 anchors +
+validated wording + `rpe_recorded_at`; see the backlog RPE entry, Phase 1 done.)**
+
+**Problem.** `DESCENT_LOAD_PER_1000M = 70` was a **fixed, naive** eccentric cost. The downhill-running
+literature shows the cost is **trainable** (repeated-bout effect): a regularly-exposed athlete takes
+~20–30 % less damage for the same D− and recovers ~1–2 d faster. A fixed naive coefficient therefore
+over-counts a trained descender's neuromuscular load.
+
+**Dry-run finding (the design driver).** A read-only dry-run on the real 399-activity history
+(`ingest/scripts/dry_run_descent.py`, reusing `compute_load` + the rollup EWMA) showed a **dynamic
+exposure factor alone nets ≈ 0** for this athlete — and *should*: his biggest descents fall at de-adapted
+season-starts, which the factor *correctly* penalises (+25 %), offsetting mid-block discounts. So the
+**−20–30 % trained-vs-naive** is an **absolute** effect → it belongs in the **base coefficient**; the
+factor is the **risk-timing** modulator around it. Anchor/swing sweeps confirmed no tuning makes the
+dynamic factor a standing discount without under-counting the genuinely damaging de-adapted descents.
+
+**Change (two moves).**
+1. **Trained base re-baseline:** `DESCENT_LOAD_PER_1000M 70 → 55` (≈0.78× naive; lit. trained force-loss
+   ≈ −16 % vs naive −24 %). Reversible; the soreness fit (below) refines it from real soreness later.
+2. **Dynamic repeated-bout factor**, applied as-of each activity's date, anchored at the athlete's
+   **median** exposure (trained base applies at typical training; climbs toward the naive ~70 when
+   de-adapted, dips in a heavy block):
+```
+familiarity_ratio(date) = trailing-28d D-  /  p50 of trailing-28d D- over descent-active dates
+descent_factor          = 1 − SWING·(ratio−1)/(ratio+1)        # bounded [1-SWING,1+SWING]=[0.75,1.25], saturating
+descent_per_1000m_eff   = DESCENT_LOAD_PER_1000M × descent_factor
+# gate: < MIN_SAMPLES=12 descent-active dates → no factor (inert), flagged low-confidence (no false precision)
+```
+   Built from the activities' raw `vertical_loss_m` (no circularity with the load).
+
+**Reliability ALERT.** `descent_model_confidence()` → `off` (<12 dates, factor inert) / `low` (12–24, noisy
+percentile baseline) / `ok` (≥24), so a still-firming estimate is surfaced rather than presented as fact.
+
+**Files.** `ingest/massif_ingest/load.py` (`descent_factor`, `descent_familiarity_ratios`, `_percentile`,
+`descent_model_confidence`, base 55, applied in `_descent_load`) ↔ mirror `web/src/lib/load.ts`. Wired into
+all scoring paths for parity: `sync.recompute_activity_loads`, `strava.sync` (+ `_build_activity_row`
+`fam_ratios`), `web/src/lib/strava-sync.ts`, and the RPE write `web/src/app/actions.ts` (`setRpe`). New
+dry-run tool `ingest/scripts/dry_run_descent.py`. **No migration** (factor baked into `neuromuscular_load`).
+
+**Verification (2026-06-25).** `--recompute-loads` re-scored **399** activities (rollup 1764 days). Base
+re-baseline ≈ **−5.6 %** total neuromuscular load (the trained discount); dynamic factor ≈ **+0.5 %** net
+(risk-timing: de-adapted descents up to +25 %, heavy-block to ~−7 %). pytest **62 green**; web `tsc` clean.
+The descent coefficient calibrates load *magnitude* (activity cards, `CTL_neuro`), barely the readiness
+verdict — `TSB_neuro` is a difference of two EWMAs that scale together.
+
+**Tunables.** `DESCENT_LOAD_PER_1000M=55`, `DESCENT_FAMILIARITY_{WINDOW_D=28, SWING=0.25, ANCHOR_PCT=50,
+MIN_SAMPLES=12}` (load.py ↔ load.ts). Population starts; the soreness fit refines the base later.
+
+**Phase 2 (recovery τ) — shipped same day.** The repeated-bout effect also speeds *recovery* (trained
+≈ 72 h vs naive ≥ 96 h), so the neuromuscular **acute τ** is now **non-stationary**:
+`neuro_atl_days_eff = NEURO_ATL_DAYS × descent_recovery_factor(ratio)`, `factor = 1 − 0.18·(r−1)/(r+1)`
+∈ [0.82, 1.18] → τ ≈ **11.5–16.5 d** (adapted clears faster, de-adapted lingers). Reuses the **same**
+familiarity ratios as the cost (coherent), computed per *spine* day (rest days included), feeding a
+variable-τ EWMA (`ewma_variable_tau` ↔ `ewmaVariableTau`) for `atl_neuromuscular` **only** — the neuro
+**CTL keeps the 42 d chronic τ**, so this is the piece that actually moves `tsb_neuromuscular` (Phase 1
+scaled CTL+ATL together → barely moved it). Files: `load.py` (`descent_recovery_factor`, `ewma_variable_tau`,
+`DESCENT_RECOVERY_SWING=0.18`) ↔ `load.ts`; rollup `sync.py` ↔ `web/src/lib/rollup.ts`. **No migration**
+(recomputed in the rollup). Dry-run `ingest/scripts/dry_run_descent_tau.py`. **Verified:** rollup re-run →
+latest `tsb_neuromuscular` −4.76 → **−4.54** (small now — athlete at typical exposure; the lever bites on
+season-transition days), combined CTL/ATL/TSB unchanged. pytest **65 green**; web `tsc` clean. Inert below
+the `MIN_SAMPLES` gate.
+
+## 2026-06-25 · Upgrade 8 — RPE: user-RPE wins the ladder + differential channel split
+
+Research + sources: [`research/descent-neuromuscular-rpe.md`](research/descent-neuromuscular-rpe.md) part B;
+coach-facing `MODELE_ENTRAINEMENT.md` §2.2 + §11 Q5. (Phase 1 — Foster CR10 anchors + global-session wording
++ 20–30 min nudge + `rpe_recorded_at`, migration `…0004` — shipped earlier the same day.)
+
+**Bug fixed.** For alpinism/via_ferrata/grande_voie the ladder is `[vertical_duration, session_rpe, …]`;
+`vertical_duration` always has inputs, so it won `compute_load` and a **user-entered RPE was silently
+ignored** on recompute/sync (only `setRpe` honoured it → divergence). Live cases: a grande_voie rated
+**RPE 10 scored 38**, an alpi rated **RPE 3 scored 182**. **Fix:** when `rpe_source=='user'` + `perceived_rpe`
+set + `session_rpe` in the ladder, `session_rpe` is moved to the front (the athlete's direct effort report
+supersedes the objective duration estimate; HR/power methods are never in these ladders, and auto-RPE does
+not trigger it). Re-scores ~5 historical user-RPE mountain days toward their RPE (all old → current model
+barely moves).
+
+**Differential RPE.** Optional CR10 sub-scores `rpe_cardio` (souffle → aerobic), `rpe_legs`, `rpe_grip`
+(→ neuromuscular). When **≥2** are present (>0), an RPE-scored session's aero/neuro SPLIT is perception-derived
+instead of the fixed `CHANNEL_SPLIT` / `IMPACT_FRAC`:
+```
+points    = hours·(perceived_rpe/10)²·100            # global magnitude unchanged (validated session-RPE)
+neuro_rpe = min(10, √(legs² + grip²))                # quadrature: ≥max, <sum (credits a 2nd loaded system)
+aero_frac = cardio² / (cardio² + neuro_rpe²)         # 0 if no cardio
+structural    → aerobic = points·aero_frac, neuro = points·(1−aero_frac)              (total = points)
+aerobic-engine→ aerobic = points·aero_frac, neuro = max(points·(1−aero_frac), impact+descent)  # descent FLOOR
+```
+The **objective descent term stays a floor** for aerobic-engine sports (a same-session RPE under-reports
+delayed eccentric DOMS, so a big descent must still outscore a calm day — the model thesis). **Guard:** on
+aerobic-engine sports the split needs an `rpe_cardio` score, else a blank cardio would zero the engine
+(structural sports split on legs+grip alone — their aerobic ≈ 0). **Inert by default** (existing rows have
+NULL sub-scores → byte-identical to pre-change, regression-locked).
+
+**Files.** `ingest/massif_ingest/load.py` (`_differential_split`, user-RPE ladder reorder, the split branches)
+↔ mirror `web/src/lib/load.ts` (`differentialSplit`, `sessionRpeLoad`, `computeLoad`). Carried through all
+five scoring paths for parity: `db.fetch_activities_for_recompute` (select) + `db.load_user_differential_rpes`,
+`strava.sync` (`_build_activity_row` `differential_rpe`), `web/src/lib/strava-sync.ts` (re-apply on pull),
+`web/src/app/actions.ts` (`setRpe(id, rpe, {cardio,legs,grip})`). Surfaced to the coach (`coach-context.ts`
+`rpe_diff`). UI: `web/src/components/rpe.tsx` "préciser par système" panel (cardio = Alpine, legs/grip =
+Summit). **Migration `…0005`** adds `rpe_cardio/rpe_legs/rpe_grip smallint 0..10` (nullable, additive).
+
+**Verification.** Adversarial multi-agent pass (parity load.py↔load.ts, partition invariant in all branches,
+inertness, edge cases, migration) → clean. Dry-run: the 5 ladder-fix activities move toward their RPE
+(alpi RPE 3: 182→57; grande_voie RPE 10: 38→75), all old → current CTL/TSB barely shifts. pytest **71 green**;
+web `tsc` clean. **Operational gate:** the three columns are SELECTed unconditionally → push migrations
+`…0004` + `…0005` (`supabase db push`, CLI only) **before** the code runs, then apply the ladder-fix re-score
+with `--recompute-loads`. The `/seance` detail shows the sub-scores back (souffle = Alpine, jambes/prise =
+Summit) and the `rpe.tsx` picker pre-fills + auto-expands them on re-edit (`data.ts` `ACTIVITY_COLS` + the
+`Activity` type carry the 3 columns). **Backlog:** the coach-chat/proposal tool schemas still carry only the
+global RPE (they read `perceived_rpe`, unaffected) — extend to differential if the coach should reason on it.
+
 ## Backlog (candidate upgrades, not yet built)
 
 - **Neuromuscular calibration** (the 3c payoff) — once the soreness log has data, fit
   `DESCENT_LOAD_PER_1000M` / `NEURO_ATL_DAYS` so modelled neuromuscular load predicts next-day soreness;
-  add the fitters to `calibrate_all()`. Needs ~2-3 weeks of optional soreness entries.
+  add the fitters to `calibrate_all()`. Needs ~2-3 weeks of optional soreness entries. *(Complementary to
+  the descent-trainability upgrade above: that one modulates by recent D− exposure; this one fits the
+  baseline level from soreness ground-truth.)*
 - **Per-sport "moving vs elapsed" scoring** — _resolved in Upgrade 6:_ mostly-stopped single-day outings
   now score the duration-driven methods on moving time (HR methods keep elapsed; a user RPE supersedes).
   Remaining calibration nuance (how effortful belay time is per sport) folds into the 3c neuromuscular fit.

@@ -9,7 +9,7 @@
  *  unseen sport_types, which this fast path maps to 'unknown' until then). KEEP IN SYNC with strava.py. */
 import type { SupabaseClient } from "@supabase/supabase-js";
 import {
-  computeLoad, resolveProfile, ALT_HYPOXIA_THRESHOLD_M,
+  computeLoad, resolveProfile, descentFamiliarityRatios, ALT_HYPOXIA_THRESHOLD_M,
   type LoadProfile, type LoadParams, type ThresholdRow,
 } from "./load";
 
@@ -187,7 +187,7 @@ export async function syncStrava(sb: SupabaseClient, afterDays = 21): Promise<St
   const [{ data: sportsRows }, { data: profileRow }, { data: rpeRows }, { data: paramRows }, { data: thresholdRows }] = await Promise.all([
     sb.from("sports").select("id,code,taxonomy_group,load_method_ladder,uses_distance,uses_hr,needs_manual_rpe,source_aliases"),
     sb.from("athlete_profile").select("max_hr,resting_hr,lthr,ftp_watts,threshold_pace_s_per_km,weight_kg,timezone").limit(1).maybeSingle(),
-    sb.from("activities").select("source_activity_id,perceived_rpe").eq("source", "strava").eq("rpe_source", "user"),
+    sb.from("activities").select("source_activity_id,perceived_rpe,rpe_cardio,rpe_legs,rpe_grip").eq("source", "strava").eq("rpe_source", "user"),
     sb.from("athlete_load_params").select("param,value"),
     sb.from("athlete_thresholds").select("*").order("effective_date", { ascending: true }),
   ]);
@@ -207,7 +207,26 @@ export async function syncStrava(sb: SupabaseClient, afterDays = 21): Promise<St
   const profile = (profileRow ?? {}) as LoadProfile & { timezone?: string };
   const tz = profileRow?.timezone || "Europe/Paris";
   const userRpe = new Map<string, number>();
-  for (const r of (rpeRows ?? []) as any[]) if (r.source_activity_id && r.perceived_rpe != null) userRpe.set(r.source_activity_id, r.perceived_rpe);
+  const userDiff = new Map<string, { rpe_cardio: number | null; rpe_legs: number | null; rpe_grip: number | null }>();
+  for (const r of (rpeRows ?? []) as any[]) {
+    if (!r.source_activity_id || r.perceived_rpe == null) continue;
+    userRpe.set(r.source_activity_id, r.perceived_rpe);
+    // Re-apply differential sub-scores so a re-sync preserves the perception-derived split (Phase 2).
+    if (r.rpe_cardio != null || r.rpe_legs != null || r.rpe_grip != null) {
+      userDiff.set(r.source_activity_id, { rpe_cardio: r.rpe_cardio ?? null, rpe_legs: r.rpe_legs ?? null, rpe_grip: r.rpe_grip ?? null });
+    }
+  }
+
+  // Descent-familiarity (repeated-bout): ratios from the stored daily D- series (mirror of strava.sync).
+  // recompute_activity_loads re-derives this across all history (source of truth); the recent pull stamps
+  // each row from it. NB relies on the <1000-activity PostgREST page; paginate if it ever grows.
+  const { data: descRows } = await sb.from("activities").select("local_date,vertical_loss_m");
+  const dailyDescent: Record<string, number> = {};
+  for (const dr of (descRows ?? []) as any[]) {
+    const d = dr.local_date as string;
+    dailyDescent[d] = (dailyDescent[d] ?? 0) + Number(dr.vertical_loss_m || 0);
+  }
+  const famRatios = descentFamiliarityRatios(dailyDescent);
 
   let pulled = 0;
   let newest: string | null = null;
@@ -271,6 +290,18 @@ export async function syncStrava(sb: SupabaseClient, afterDays = 21): Promise<St
       if (altStats.maxM != null) row.max_altitude_m = altStats.maxM;
       if (altStats.avgM != null) row.avg_altitude_m = altStats.avgM;
       if (altStats.timeHighS != null) row.time_high_altitude_s = altStats.timeHighS;
+    }
+
+    // Descent-familiarity ratio for this date (null when the series didn't clear the min-sample gate).
+    row.descent_familiarity = famRatios[row.local_date as string] ?? null;
+
+    // Differential RPE sub-scores (Phase 2), re-applied from the DB so a re-sync preserves the athlete's
+    // perception-derived channel split (computeLoad reads them when the user RPE wins → session_rpe).
+    const diff = userDiff.get(String(act.id));
+    if (diff) {
+      row.rpe_cardio = diff.rpe_cardio;
+      row.rpe_legs = diff.rpe_legs;
+      row.rpe_grip = diff.rpe_grip;
     }
 
     // Resolve thresholds as-of this activity's date (rec 2); empty history → base profile unchanged.

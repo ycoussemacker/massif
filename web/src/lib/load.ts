@@ -24,7 +24,104 @@ export const IMPACT_FRAC: Record<string, number> = {
   aquatic: 0.1,
   other: 0.25,
 };
-export const DESCENT_LOAD_PER_1000M = 70;
+// Base = the TRAINED descender's eccentric cost (lit. ≈0.78× naive; the dynamic factor climbs back toward
+// the naive ~70 when de-adapted). Mirror of load.py DESCENT_LOAD_PER_1000M.
+export const DESCENT_LOAD_PER_1000M = 55;
+
+// ── Descent trainability — repeated-bout effect (mirror of load.py; docs/research/descent-neuromuscular-rpe.md) ──
+// The eccentric descent cost is TRAINABLE: recent exposure takes ~20-30% less damage for the same D-. The
+// STANDING trained↔naive level lives in the base coefficient; this factor is the DYNAMIC (net-~0) modulator
+// around the athlete's TYPICAL exposure — climbs toward naive after a layoff, dips in a heavy block.
+// Factor 1.0 when the ratio is missing/typical → INERT until a caller stamps `descent_familiarity`.
+export const DESCENT_FAMILIARITY_WINDOW_D = 28; // trailing window (days) for the cumulative-D- proxy (lit.: 2-6 wk)
+export const DESCENT_FAMILIARITY_SWING = 0.25; // max ±swing → factor ∈ [0.75, 1.25]
+export const DESCENT_FAMILIARITY_ANCHOR_PCT = 50; // typical-exposure anchor (median); base applies here
+export const DESCENT_FAMILIARITY_MIN_SAMPLES = 12; // need ≥ this many descent-active dates before trusting the factor
+
+/** Repeated-bout multiplier on the descent coefficient, bounded to [1-SWING, 1+SWING] and saturating.
+ *  ratio = trailing-WINDOW D- as-of the activity / the athlete's typical such sum (1.0 = typical → 1.0).
+ *  Higher recent exposure → adapted → < 1; lower → de-adapted → > 1. Missing/zero → 1.0 (inert). */
+export function descentFactor(familiarityRatio?: number | null): number {
+  if (!familiarityRatio || familiarityRatio <= 0) return 1.0;
+  return 1.0 - DESCENT_FAMILIARITY_SWING * (familiarityRatio - 1.0) / (familiarityRatio + 1.0);
+}
+
+// Phase 2 — descent familiarity also speeds RECOVERY: it modulates the neuromuscular acute τ (NEURO_ATL_DAYS)
+// — adapted → shorter τ (fatigue clears faster), de-adapted → longer. Mirror of load.descent_recovery_factor.
+export const DESCENT_RECOVERY_SWING = 0.18; // τ_neuro swing → factor ∈ [0.82, 1.18]
+
+export function descentRecoveryFactor(familiarityRatio?: number | null): number {
+  if (!familiarityRatio || familiarityRatio <= 0) return 1.0;
+  return 1.0 - DESCENT_RECOVERY_SWING * (familiarityRatio - 1.0) / (familiarityRatio + 1.0);
+}
+
+/** Banister EWMA with a PER-STEP τ (non-stationary) — mirror of load.ewma_variable_tau. With a constant
+ *  τ list it equals the fixed-τ EWMA in rollup.ts. Used for the neuro acute load (Phase 2). */
+export function ewmaVariableTau(values: number[], tauDays: number[]): number[] {
+  const out: number[] = [];
+  let prev = 0;
+  for (let i = 0; i < values.length; i++) {
+    const tau = tauDays[i];
+    const alpha = tau && tau > 0 ? 1 - Math.exp(-1 / tau) : 1;
+    prev = prev + alpha * (values[i] - prev);
+    out.push(prev);
+  }
+  return out;
+}
+
+function percentile(sortedVals: number[], pct: number): number {
+  if (!sortedVals.length) return 0;
+  if (sortedVals.length === 1) return sortedVals[0];
+  const rank = (pct / 100) * (sortedVals.length - 1);
+  const lo = Math.floor(rank);
+  if (lo + 1 >= sortedVals.length) return sortedVals[sortedVals.length - 1];
+  return sortedVals[lo] + (rank - lo) * (sortedVals[lo + 1] - sortedVals[lo]);
+}
+
+/** {local_date: D- metres that day} → {local_date: familiarity RATIO}. Mirror of
+ *  load.descent_familiarity_ratios: trailing-WINDOW D- BEFORE each date / the ANCHOR_PCT percentile of
+ *  trailing D- over descent-active dates (typical exposure → factor 1.0). Returns {} below
+ *  DESCENT_FAMILIARITY_MIN_SAMPLES descent-active dates (too little history → inert). */
+export function descentFamiliarityRatios(
+  dailyDescent: Record<string, number>,
+  anchorPct: number = DESCENT_FAMILIARITY_ANCHOR_PCT,
+): Record<string, number> {
+  const parsed = Object.entries(dailyDescent)
+    .map(([d, m]) => [Date.parse(d + "T00:00:00Z"), m] as [number, number])
+    .sort((a, b) => a[0] - b[0]);
+  if (!parsed.length) return {};
+  const windowMs = DESCENT_FAMILIARITY_WINDOW_D * 86_400_000;
+  const oneDayMs = 86_400_000;
+  const trailing: Record<string, number> = {};
+  const active: number[] = [];
+  for (const [t, m] of parsed) {
+    let s = 0;
+    for (const [pt, pm] of parsed) if (pt >= t - windowMs && pt <= t - oneDayMs) s += pm;
+    trailing[new Date(t).toISOString().slice(0, 10)] = s;
+    if (m > 0) active.push(s);
+  }
+  if (active.length < DESCENT_FAMILIARITY_MIN_SAMPLES) return {};
+  active.sort((a, b) => a - b);
+  const baseline = percentile(active, anchorPct);
+  if (baseline <= 0) return {};
+  const out: Record<string, number> = {};
+  for (const iso in trailing) out[iso] = trailing[iso] / baseline;
+  return out;
+}
+
+/** Reliability of the descent-trainability adjustment (mirror of load.descent_model_confidence) — the
+ *  ALERT source: 'off' below MIN_SAMPLES (factor inert), 'low' until ~2× (noisy baseline), else 'ok'. */
+export function descentModelConfidence(dailyDescent: Record<string, number>): {
+  applied: boolean; sample_dates: number; confidence: "off" | "low" | "ok";
+} {
+  const n = Object.values(dailyDescent).filter((m) => m && m > 0).length;
+  const applied = n >= DESCENT_FAMILIARITY_MIN_SAMPLES;
+  return {
+    applied,
+    sample_dates: n,
+    confidence: n >= 2 * DESCENT_FAMILIARITY_MIN_SAMPLES ? "ok" : applied ? "low" : "off",
+  };
+}
 
 export type SessionRpeLoad = {
   aerobic_load: number;
@@ -38,7 +135,26 @@ export type StructuralInputs = {
   verticalLossM?: number | null;
   carriedLoadKg?: number | null;
   weightKg?: number | null;
+  descentFamiliarity?: number | null; // repeated-bout ratio (trailing D- vs typical); absent → factor 1.0
+  rpeCardio?: number | null; // differential RPE (Phase 2): souffle → aerobic
+  rpeLegs?: number | null; //  jambes → neuromuscular
+  rpeGrip?: number | null; //  avant-bras/prise → neuromuscular
 };
+
+/** Aerobic FRACTION (0..1) from differential RPE, or null to fall back to the fixed taxonomy split.
+ *  Mirror of load._differential_split: applies only when >= 2 of {cardio, legs, grip} are present (>0);
+ *  legs+grip combine in quadrature capped at 10; aero_frac = cardio²/(cardio²+neuro_rpe²), 0 if no cardio. */
+export function differentialSplit(
+  cardio?: number | null, legs?: number | null, grip?: number | null,
+): number | null {
+  const present = [cardio, legs, grip].filter((x): x is number => x != null && x > 0);
+  if (present.length < 2) return null;
+  const neuroRpe = Math.min(10, Math.sqrt((legs || 0) ** 2 + (grip || 0) ** 2));
+  const cardioSq = (cardio || 0) ** 2;
+  const denom = cardioSq + neuroRpe ** 2;
+  if (denom <= 0) return null;
+  return cardioSq / denom;
+}
 
 // NB: JS rounds half UP, Python round() rounds half-to-even, so a value landing exactly on a
 // half-cent can differ by 0.01 pt from load.py. Harmless — Python is the source of truth and
@@ -56,18 +172,36 @@ export function sessionRpeLoad(
   const points = hours * intensity * intensity * 100;
   const group = taxonomyGroup ?? "other";
 
+  // Differential RPE (Phase 2): perception-derived split (mirror of load.py compute_load session_rpe branch).
+  const aeroFrac = differentialSplit(structural.rpeCardio, structural.rpeLegs, structural.rpeGrip);
   let aerobic: number;
   let neuromuscular: number;
   if (STRUCTURAL_EFFORT_GROUPS.has(group)) {
-    const [a, n] = CHANNEL_SPLIT[group] ?? CHANNEL_SPLIT.other;
-    aerobic = points * a;
-    neuromuscular = points * n;
+    if (aeroFrac != null) {
+      aerobic = points * aeroFrac;
+      neuromuscular = points * (1 - aeroFrac);
+    } else {
+      const [a, n] = CHANNEL_SPLIT[group] ?? CHANNEL_SPLIT.other;
+      aerobic = points * a;
+      neuromuscular = points * n;
+    }
   } else {
     const weight = structural.weightKg || 70;
     const massFactor = 1 + (structural.carriedLoadKg || 0) / weight;
-    const descent = ((structural.verticalLossM || 0) / 1000) * DESCENT_LOAD_PER_1000M * massFactor;
-    aerobic = points;
-    neuromuscular = points * (IMPACT_FRAC[group] ?? IMPACT_FRAC.other) + descent;
+    const descent =
+      ((structural.verticalLossM || 0) / 1000) * DESCENT_LOAD_PER_1000M * massFactor *
+      descentFactor(structural.descentFamiliarity);
+    const objectiveNeuro = points * (IMPACT_FRAC[group] ?? IMPACT_FRAC.other) + descent;
+    // Require a cardio sub-score on aerobic-engine sports (blank cardio must not zero the engine; mirror load.py).
+    if (aeroFrac != null && structural.rpeCardio) {
+      // perception splits the engine magnitude; objective descent+impact stays a FLOOR (same-session RPE
+      // under-reports delayed eccentric DOMS, so a big descent must still be able to dominate).
+      aerobic = points * aeroFrac;
+      neuromuscular = Math.max(points * (1 - aeroFrac), objectiveNeuro);
+    } else {
+      aerobic = points;
+      neuromuscular = objectiveNeuro;
+    }
   }
 
   return {
@@ -123,7 +257,11 @@ export type LoadActivity = {
   carried_load_kg?: number | null;
   avg_altitude_m?: number | null; // drives the tss/rtss altitude correction (never hrtss)
   perceived_rpe?: number | null;
-  rpe_source?: string | null; // 'user' clears the mostly-stopped flag (see needsReview)
+  rpe_source?: string | null; // 'user' clears the mostly-stopped flag (see needsReview) + wins the ladder
+  descent_familiarity?: number | null; // repeated-bout ratio (trailing D- vs typical); absent → factor 1.0
+  rpe_cardio?: number | null; // differential RPE (Phase 2): souffle → aerobic
+  rpe_legs?: number | null; //  jambes → neuromuscular
+  rpe_grip?: number | null; //  avant-bras/prise → neuromuscular
 };
 export type LoadProfile = {
   ftp_watts?: number | null;
@@ -264,7 +402,8 @@ function effective(params?: LoadParams): Coeffs {
 }
 
 function descentLoad(a: LoadActivity, p: LoadProfile, c: Coeffs): number {
-  return ((a.vertical_loss_m || 0) / 1000) * c.descentPer1000m * massFactor(a, p);
+  return ((a.vertical_loss_m || 0) / 1000) * c.descentPer1000m * massFactor(a, p) *
+    descentFactor(a.descent_familiarity);
 }
 
 type MethodResult = [number, number] | null; // [points, intensity]
@@ -313,7 +452,12 @@ const METHODS: Record<string, (a: LoadActivity, p: LoadProfile, c: Coeffs) => Me
  *  for structural sports. */
 export function computeLoad(activity: LoadActivity, sport: LoadSport, profile: LoadProfile, params?: LoadParams): LoadResult {
   const c = effective(params);
-  const ladder = sport.load_method_ladder?.length ? sport.load_method_ladder : ["duration_fallback"];
+  let ladder = sport.load_method_ladder?.length ? sport.load_method_ladder : ["duration_fallback"];
+  // A USER-entered RPE supersedes the objective vertical_duration/duration_fallback for needs_manual_rpe
+  // sports (else vertical_duration wins and the athlete's effort report is ignored). Mirror of load.py.
+  if (activity.rpe_source === "user" && activity.perceived_rpe && ladder.includes("session_rpe")) {
+    ladder = ["session_rpe", ...ladder.filter((m) => m !== "session_rpe")];
+  }
   let chosen = "duration_fallback";
   let points = 0;
   let intensity = c.defaultIf;
@@ -332,15 +476,31 @@ export function computeLoad(activity: LoadActivity, sport: LoadSport, profile: L
   }
 
   const group = sport.taxonomy_group;
+  // Differential RPE (Phase 2): perception-derived split, only when RPE-scored (mirror of load.py).
+  const aeroFrac = chosen === "session_rpe"
+    ? differentialSplit(activity.rpe_cardio, activity.rpe_legs, activity.rpe_grip) : null;
   let aerobic: number;
   let neuromuscular: number;
   if (STRUCTURAL_EFFORT_GROUPS.has(group)) {
-    const [a, n] = CHANNEL_SPLIT[group] ?? CHANNEL_SPLIT.other;
-    aerobic = points * a;
-    neuromuscular = points * n;
+    if (aeroFrac != null) {
+      aerobic = points * aeroFrac;
+      neuromuscular = points * (1 - aeroFrac);
+    } else {
+      const [a, n] = CHANNEL_SPLIT[group] ?? CHANNEL_SPLIT.other;
+      aerobic = points * a;
+      neuromuscular = points * n;
+    }
   } else {
-    aerobic = points;
-    neuromuscular = points * (IMPACT_FRAC[group] ?? IMPACT_FRAC.other) + descentLoad(activity, profile, c);
+    const objectiveNeuro = points * (IMPACT_FRAC[group] ?? IMPACT_FRAC.other) + descentLoad(activity, profile, c);
+    // Require a cardio sub-score on aerobic-engine sports — a blank rpe_cardio must not zero the engine
+    // (mirror of load.py). Structural sports above are fine with cardio absent (their aerobic ≈ 0).
+    if (aeroFrac != null && activity.rpe_cardio) {
+      aerobic = points * aeroFrac;
+      neuromuscular = Math.max(points * (1 - aeroFrac), objectiveNeuro); // objective descent floor preserved
+    } else {
+      aerobic = points;
+      neuromuscular = objectiveNeuro;
+    }
   }
 
   const effectiveDays = activitySpanDays(activity.started_at, activity.duration_s, activity.moving_s);

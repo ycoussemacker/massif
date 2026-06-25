@@ -71,6 +71,9 @@ export type Activity = {
   avg_hr: number | null;
   perceived_rpe: number | null;
   rpe_source: string | null;
+  rpe_cardio: number | null; // differential RPE (Phase 2): souffle → aérobie
+  rpe_legs: number | null; //   jambes → neuro
+  rpe_grip: number | null; //   avant-bras/prise → neuro
   // Recorded environment (device truth for a PAST session) — CONTEXT, not a load input.
   avg_temp_c: number | null;        // Strava device ambient temp (°C)
   max_altitude_m: number | null;    // peak altitude reached (m)
@@ -90,7 +93,7 @@ export type Activity = {
 export const ACTIVITY_COLS =
   "id,local_date,started_at,source,source_activity_id,sport_id,training_load,aerobic_load,neuromuscular_load," +
   "load_method_used,duration_s,moving_s,distance_m,vertical_gain_m,vertical_loss_m,carried_load_kg,avg_hr," +
-  "perceived_rpe,rpe_source,avg_temp_c,max_altitude_m,time_high_altitude_s,effective_days,needs_review," +
+  "perceived_rpe,rpe_source,rpe_cardio,rpe_legs,rpe_grip,avg_temp_c,max_altitude_m,time_high_altitude_s,effective_days,needs_review," +
   "strava_name:sport_specific->>strava_name";
 
 /** Attach sport display fields (FR-friendly name/code, taxonomy, RPE flag) to raw activity rows.

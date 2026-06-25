@@ -6,7 +6,7 @@ import { createServiceClient } from "@/lib/supabase/server";
 import { listActivities } from "@/lib/activities";
 import type { DailyMetric, Activity } from "@/lib/data";
 import {
-  sessionRpeLoad, scoredDuration, activitySpanDays, needsReview, computeLoad,
+  sessionRpeLoad, scoredDuration, activitySpanDays, needsReview, computeLoad, descentFamiliarityRatios,
   type LoadActivity, type LoadSport, type LoadProfile,
 } from "@/lib/load";
 import { generateCoachReply, COACH_MODEL, type ChatTurn } from "@/lib/coach-chat";
@@ -64,16 +64,24 @@ export async function loadOlderConversation(
   return { items: page.items, cursor: page.cursor ?? beforeIso, done: !(await hasItemBefore(sb, page.cursor)) };
 }
 
-/** Log a post-session RPE (1–10) for an activity and recompute its load via session_rpe.
- *  Writes the two channels (never the generated total) + rpe_source='user' so the next sync keeps it.
- *  daily_metrics (CTL/ATL/charts) recompute on the next rollup/nightly run. */
-export async function setRpe(activityId: string, rpe: number): Promise<void> {
+/** Optional differential RPE sub-scores (CR10 0–10) — souffle/cardio → aerobic, jambes & avant-bras →
+ *  neuromuscular. When ≥2 are given the load split comes from perception (Phase 2). */
+export type DifferentialRpe = { cardio?: number | null; legs?: number | null; grip?: number | null };
+
+/** Log a post-session RPE (global CR10 1–10, + optional differential sub-scores) and recompute the load
+ *  via session_rpe. Writes the two channels (never the generated total) + rpe_source='user' so the next
+ *  sync keeps it. daily_metrics (CTL/ATL/charts) recompute on the next rollup/nightly run. */
+export async function setRpe(activityId: string, rpe: number, differential?: DifferentialRpe): Promise<void> {
   if (!Number.isInteger(rpe) || rpe < 1 || rpe > 10) throw new Error("RPE doit être un entier 1–10");
+  const cardio = differential?.cardio ?? null, legs = differential?.legs ?? null, grip = differential?.grip ?? null;
+  for (const [name, v] of [["souffle", cardio], ["jambes", legs], ["avant-bras", grip]] as const) {
+    if (v != null && (!Number.isInteger(v) || v < 0 || v > 10)) throw new Error(`RPE ${name} doit être un entier 0–10`);
+  }
 
   const sb = await createServiceClient();
   const { data: act, error } = await sb
     .from("activities")
-    .select("id,started_at,duration_s,moving_s,avg_hr,sport_id,vertical_loss_m,carried_load_kg")
+    .select("id,started_at,duration_s,moving_s,avg_hr,sport_id,vertical_loss_m,carried_load_kg,local_date")
     .eq("id", activityId).single();
   if (error || !act) throw new Error("Activité introuvable");
 
@@ -81,6 +89,16 @@ export async function setRpe(activityId: string, rpe: number): Promise<void> {
     .from("sports").select("taxonomy_group").eq("id", act.sport_id).single();
   // weight feeds the carried-mass factor; max_hr feeds the outlier guard (mirror of load.py).
   const { data: profile } = await sb.from("athlete_profile").select("weight_kg,max_hr").limit(1).single();
+
+  // Descent-familiarity (repeated-bout) ratio for this activity's date, so a manual RPE on a descent day
+  // (alpi) gets the same neuromuscular adjustment as the recompute. Built from the stored daily D- series.
+  const { data: descRows } = await sb.from("activities").select("local_date,vertical_loss_m");
+  const dailyDescent: Record<string, number> = {};
+  for (const dr of (descRows ?? []) as any[]) {
+    const d = dr.local_date as string;
+    dailyDescent[d] = (dailyDescent[d] ?? 0) + Number(dr.vertical_loss_m || 0);
+  }
+  const descentFamiliarity = descentFamiliarityRatios(dailyDescent)[act.local_date as string] ?? null;
 
   // Score on the SCORED duration + flag multi-day, exactly like compute_load — moving time for a
   // multi-day outing (elapsed counts the nights) OR a mostly-stopped single-day one (belays/pauses);
@@ -91,6 +109,10 @@ export async function setRpe(activityId: string, rpe: number): Promise<void> {
     verticalLossM: act.vertical_loss_m,
     carriedLoadKg: act.carried_load_kg,
     weightKg: profile?.weight_kg,
+    descentFamiliarity,
+    rpeCardio: cardio,
+    rpeLegs: legs,
+    rpeGrip: grip,
   });
 
   // rpe_source 'user' clears the mostly-stopped flag (the athlete vouched for the effort) — mirror load.py.
@@ -104,6 +126,10 @@ export async function setRpe(activityId: string, rpe: number): Promise<void> {
   const { error: upErr } = await sb.from("activities").update({
     perceived_rpe: rpe,
     rpe_source: "user",
+    rpe_recorded_at: new Date().toISOString(), // honour the validated post-session timing; weight late entries later
+    // Differential sub-scores: written only when the caller passed a `differential` object (the picker
+    // always does, even to clear); the coach-proposal path omits it → existing sub-scores left untouched.
+    ...(differential !== undefined ? { rpe_cardio: cardio, rpe_legs: legs, rpe_grip: grip } : {}),
     load_method_used: "session_rpe",
     aerobic_load: load.aerobic_load,
     neuromuscular_load: load.neuromuscular_load,
