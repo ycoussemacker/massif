@@ -1,8 +1,10 @@
 import { getProfilePageData } from "@/lib/profile";
+import { getDescentTraining } from "@/lib/descent-training";
 import { Nav } from "@/components/nav";
 import { ProfileForm } from "@/components/profile-form";
 import { GoalsEditor } from "@/components/goals-editor";
 import { HrZonesPanel } from "@/components/hr-zones";
+import { DescentTrainingCard } from "@/components/descent-training";
 import { BriefingModeSetting } from "@/components/briefing-mode-setting";
 import { Connections } from "@/components/connections";
 
@@ -13,8 +15,9 @@ export default async function ProfilPage({
 }: {
   searchParams: Promise<{ strava?: string }>;
 }) {
-  const [{ profile, goals, sports, connections, briefingMode }, sp] = await Promise.all([
+  const [{ profile, goals, sports, connections, briefingMode }, descentTraining, sp] = await Promise.all([
     getProfilePageData(),
+    getDescentTraining(),
     searchParams,
   ]);
 
@@ -34,9 +37,10 @@ export default async function ProfilPage({
 
         <div className="space-y-6">
           <GoalsEditor goals={goals} sports={sports} />
-          <BriefingModeSetting initial={briefingMode} />
-          <ProfileForm profile={profile} />
           <HrZonesPanel zones={profile?.hr_zones ?? null} />
+          <DescentTrainingCard data={descentTraining} />
+          <ProfileForm profile={profile} />
+          <BriefingModeSetting initial={briefingMode} />
           <Connections status={connections} justConnected={sp?.strava === "ok"} />
         </div>
 
