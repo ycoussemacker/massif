@@ -8,6 +8,10 @@ how it was *verified*, and the *tunable* parameters it introduced.
 **Why this file exists:** the baseline model is documented in ARCHITECTURE.md; this file tracks the
 *deltas* so the innovation relative to a textbook Banister/TrainingPeaks PMC stays legible and auditable.
 
+**Coach-facing rationale (no tech):** [`MODELE_ENTRAINEMENT.md`](MODELE_ENTRAINEMENT.md) explains the same
+model from a physiology / sport-logic / coaching point of view — written to be reviewed and validated by a
+real mountain coach (with an explicit "assumptions to validate" section). Keep it in sync conceptually.
+
 **Ground rules carried by every upgrade**
 - `load.py` is the source of truth. The TS mirrors (`web/src/lib/load.ts`, `web/src/lib/rollup.ts`,
   `web/src/lib/strava-sync.ts`) and the coach mirrors (`coach/src/context.ts` ↔ `web/src/lib/coach-context.ts`,
