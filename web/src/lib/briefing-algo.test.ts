@@ -91,15 +91,32 @@ test("week plan: never two consecutive hard days on the same system", () => {
   }
 });
 
-test("week plan: declared event is anchored (not overwritten) + eve is tapered", () => {
+test("week plan: declared event is anchored (not overwritten), and does NOT trigger a taper", () => {
   const w = buildWeekPlan(ctx({
     declared_events: [{ ref: "e1", day_offset: 5, sport: "alpinism", title: "Sortie AD+", is_key: true,
       estimated_load: { aerobic: 200, neuro: 150 }, forecast: { tsb: 3, tsb_aerobic: 4, tsb_neuromuscular: 1 } }],
   }), "green");
   assert.equal(w[5].anchors_event_ref, "e1");
   assert.equal(w[5].is_key, true);
-  assert.equal(w[5].target_load, 350);
-  assert.ok(!isHard(w[4].system_tag), "eve of a key event must not be hard (taper)");
+  assert.equal(w[5].target_load, 350); // event keeps its estimated load (never tapered/rescaled)
+});
+
+test("taper: a primary GOAL within 14 d lightens the week (events don't, goals do)", () => {
+  const hard = (w: WeekDay[]) => w.filter((d) => d.system_tag.startsWith("hard")).length;
+  const base = buildWeekPlan(ctx(), "green");                                              // no goal
+  const near = buildWeekPlan(ctx({ goals: [{ title: "Course A", rank: 1, days_to: 3 }] }), "green"); // J-3
+  assert.ok(hard(base) >= 1, "without a goal, the week has a quality day");
+  assert.equal(hard(near), 0, "primary goal in 3 days → no hard days this week (taper)");
+  // Volume is scaled down too (factor < 1) on the non-anchored days.
+  const easyBase = base.find((d) => d.system_tag === "easy");
+  const easyNear = near.find((d) => d.system_tag === "easy");
+  if (easyBase && easyNear) assert.ok(easyNear.target_load < easyBase.target_load, "taper lowers easy-day load");
+});
+
+test("targetLoadFor: calibrated to real values (seuil ~72, not CTL-ballooned)", () => {
+  assert.equal(targetLoadFor("hard_aerobic"), 72);
+  assert.equal(targetLoadFor("easy"), 42);
+  assert.equal(targetLoadFor("rest"), 0);
 });
 
 test("target loads: rest is 0, others positive and ordered", () => {

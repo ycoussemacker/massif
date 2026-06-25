@@ -21,9 +21,10 @@ function show(label: string, ctx: any) {
   const dot = ({ green: "🟢", amber: "🟡", red: "🔴" } as Record<string, string>)[b.readiness] ?? "•";
   const s0 = b.detailed_sessions[0];
   const band = s0?.target_hr_low ? ` ${s0.target_hr_low}-${s0.target_hr_high} bpm` : "";
+  const durTxt = s0?.target_duration_min ? `  (${s0.target_duration_min} min)` : "";
   console.log(`\n===== ${label} =====`);
   console.log(`${dot} readiness=${b.readiness}  confidence=${b.confidence}`);
-  console.log(`Séance du jour : ${s0?.title} — ${s0?.intensity_zone ?? "—"}${band}  (${s0?.target_duration_min ?? 0} min)`);
+  console.log(`Séance du jour : ${s0?.title} — ${s0?.intensity_zone ?? "—"}${band}${durTxt}`);
   console.log(`Why  : ${b.why}`);
   if (b.flag) console.log(`⚠️   ${b.flag}`);
   console.log(`État : ${b.state_assessment}`);

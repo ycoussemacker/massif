@@ -71,11 +71,13 @@ const R = {
 };
 /** A day counts as "hard" (for spacing) at/above this realised load. */
 const HARD_LOAD = 70;
-/** Per-tag base target load (points ≈ 1 h at threshold) before the CTL scale. */
+/** Per-tag target load (points ≈ 1 h at threshold). Calibrated to the athlete's REAL sessions — a
+ *  threshold run (3×6 min Z4 ~10 km) scores ~60-75, an easy run ~40-50 — NOT scaled up by CTL (a quality
+ *  session is a quality session, whatever the fitness). Population values; refine from history later. */
 const BASE_LOAD: Record<SystemTag, number> = {
-  rest: 0, recovery: 22, easy: 45, hard_aerobic: 95, hard_neuromuscular: 75, hard_structural: 85,
+  rest: 0, recovery: 22, easy: 42, hard_aerobic: 72, hard_neuromuscular: 62, hard_structural: 68,
 };
-/** Per-tag base session duration (min) before the CTL scale. */
+/** Per-tag session duration (min). */
 const BASE_MIN: Record<SystemTag, number> = {
   rest: 0, recovery: 30, easy: 60, hard_aerobic: 55, hard_neuromuscular: 50, hard_structural: 55,
 };
@@ -149,17 +151,31 @@ const altHard = (lastSys: "aerobic" | "neuro" | null): SystemTag =>
   lastSys === "aerobic" ? "hard_neuromuscular" : "hard_aerobic";
 
 // ── Per-day target load + channel split ─────────────────────────────────────────────────────────
-export function targetLoadFor(tag: SystemTag, ctx: any): number {
-  if (tag === "rest") return 0;
-  const ctl = ctx.fitness_model_latest?.ctl;
-  const scale = ctl != null && ctl > 0 ? clamp(ctl / 45, 0.7, 1.4) : 1;
-  return round(BASE_LOAD[tag] * scale);
+/** Target load for a coach-prescribed day — the calibrated base, NOT scaled by CTL (taper is applied
+ *  separately in buildWeekPlan). `_ctx` kept for signature stability. */
+export function targetLoadFor(tag: SystemTag, _ctx?: any): number {
+  return BASE_LOAD[tag];
 }
-function durationFor(tag: SystemTag, ctx: any): number {
-  if (tag === "rest") return 0;
-  const ctl = ctx.fitness_model_latest?.ctl;
-  const scale = ctl != null && ctl > 0 ? clamp(ctl / 45, 0.8, 1.3) : 1;
-  return round(BASE_MIN[tag] * scale);
+function durationFor(tag: SystemTag): number {
+  return BASE_MIN[tag];
+}
+
+/** Taper for GOALS only (not declared events — those are anchored and planned AROUND, never tapered for).
+ *  Primary goal (rank 1) begins tapering up to 14 d out; secondary/other goals up to 7 d. Returns a
+ *  volume factor (1 = full week, → 0.5 on the goal day) and how many hard days to still allow this week. */
+function taperState(ctx: any): { active: boolean; factor: number; daysTo: number; hardCap: number; title: string } {
+  let best: { daysTo: number; primary: boolean; title: string } | null = null;
+  for (const g of (ctx.goals ?? [])) {
+    if (g.days_to == null || g.days_to < 0) continue;
+    const primary = g.rank === 1;
+    const window = primary ? 14 : 7; // primary objective → longer, deeper taper
+    if (g.days_to <= window && (!best || g.days_to < best.daysTo)) best = { daysTo: g.days_to, primary, title: g.title };
+  }
+  if (!best) return { active: false, factor: 1, daysTo: Infinity, hardCap: 2, title: "" };
+  const win = best.primary ? 14 : 7;
+  const factor = clamp(0.5 + 0.5 * (best.daysTo / win), 0.5, 1);
+  const hardCap = best.daysTo <= 4 ? 0 : 1; // nearer the goal → fewer / no hard days (sharpen, don't dig)
+  return { active: true, factor, daysTo: best.daysTo, hardCap, title: best.title };
 }
 
 function zoneBand(ctx: any, zoneName: string | null): { low: number; high: number } | null {
@@ -198,9 +214,10 @@ function anchorFocus(a: Anchor): string {
 export function buildWeekPlan(ctx: any, readiness: Readiness, anchors: Map<number, Anchor> = anchorsByOffset(ctx)): WeekDay[] {
   const noHard = new Set<string>((ctx.athlete_constraints?.no_hard_days ?? []).map((d: string) => String(d).toLowerCase()));
   const fav = (ctx.favourite_sports ?? [])[0] ?? "running";
-  const keyEventOffsets = new Set<number>(
-    (ctx.declared_events ?? []).filter((e: any) => e.is_key && e.day_offset >= 0 && e.day_offset <= 6).map((e: any) => e.day_offset),
-  );
+  // Taper is driven by GOALS, never by declared events (events are anchored + planned around, not tapered for).
+  const taper = taperState(ctx);
+  const hardCap = taper.hardCap;
+  const loadMul = taper.active ? taper.factor : 1;
 
   const { daysSince, system } = lastHard(ctx);
   let sinceHard = daysSince;
@@ -213,7 +230,7 @@ export function buildWeekPlan(ctx: any, readiness: Readiness, anchors: Map<numbe
     const date = dateMinusDays(ctx.today, -off);
     const wd = frWeekday(date);
 
-    // 1) Fixed anchor (declared event / pinned session) — never overwrite its day.
+    // 1) Fixed anchor (declared event / pinned session) — never overwrite its day, never taper it.
     const anchor = anchors.get(off);
     if (anchor) {
       days.push({
@@ -226,25 +243,22 @@ export function buildWeekPlan(ctx: any, readiness: Readiness, anchors: Map<numbe
       continue;
     }
 
-    const dayBeforeKey = keyEventOffsets.has(off + 1); // taper the eve of a key event
     let tag: SystemTag;
-
     if (off === 0) {
       // Today is gated by this morning's readiness.
       if (readiness === "red") tag = "rest";
       else if (readiness === "amber") tag = "recovery";
-      else tag = canHard(wd, noHard, sinceHard, hardCount, dayBeforeKey) ? altHard(lastSys) : "easy";
+      else tag = canHard(wd, noHard, sinceHard, hardCount, hardCap) ? altHard(lastSys) : "easy";
     } else {
-      // Future days: assume recovery proceeds; still respect spacing + constraints + taper.
-      if (dayBeforeKey) tag = "easy";
-      else if (canHard(wd, noHard, sinceHard, hardCount, false)) tag = altHard(lastSys);
+      // Future days: assume recovery proceeds; respect spacing + constraints + the goal taper (hardCap).
+      if (canHard(wd, noHard, sinceHard, hardCount, hardCap)) tag = altHard(lastSys);
       else if (!restPlaced && sinceHard >= 1 && off >= 4) tag = "rest"; // one rest day later in the week
       else tag = sinceHard === 0 ? "recovery" : "easy"; // recovery the day after a hard day
     }
 
     days.push({
       day_offset: off, sport_code: fav, system_tag: tag, focus: focusFor(tag, null),
-      target_load: targetLoadFor(tag, ctx), is_key: false, anchors_event_ref: null,
+      target_load: round(targetLoadFor(tag) * loadMul), is_key: false, anchors_event_ref: null,
     });
 
     if (isHard(tag)) { sinceHard = 0; lastSys = systemFamily(tag); hardCount++; }
@@ -253,10 +267,10 @@ export function buildWeekPlan(ctx: any, readiness: Readiness, anchors: Map<numbe
   return days;
 }
 
-/** A hard day is allowed iff: not a no-hard weekday, ≥2 days since the last hard, <2 hard so far this
- *  week (80/20), and it isn't the eve of a key event. */
-function canHard(wd: string, noHard: Set<string>, sinceHard: number, hardCount: number, dayBeforeKey: boolean): boolean {
-  return !noHard.has(wd) && sinceHard >= 2 && hardCount < 2 && !dayBeforeKey;
+/** A hard day is allowed iff: not a no-hard weekday, ≥2 days since the last hard, and under the week's
+ *  hard-day cap (2 normally; 1 or 0 during a goal taper). */
+function canHard(wd: string, noHard: Set<string>, sinceHard: number, hardCount: number, hardCap: number): boolean {
+  return !noHard.has(wd) && sinceHard >= 2 && hardCount < hardCap;
 }
 
 function focusFor(tag: SystemTag, eventNote: string | null): string {
@@ -281,7 +295,9 @@ function detailedFor(day: WeekDay, ctx: any, anchor: Anchor | null = null): Deta
   const tag = day.system_tag;
   const zoneName = ZONE_BY_TAG[tag];
   const band = zoneBand(ctx, zoneName);
-  const dur = durationFor(tag, ctx);
+  // For an anchored day (event / pinned session) the REAL duration lives on that session (its title +
+  // its planned_sessions row, shown on /seance) — don't fabricate a generic one that contradicts it.
+  const dur = anchor ? 0 : durationFor(tag);
   const split = splitByTag(day.target_load, tag);
   const bandTxt = band && zoneName ? ` en ${zoneName} (${band.low}-${band.high} bpm)` : "";
   const durTxt = dur > 0 ? ` ~${dur} min` : "";
