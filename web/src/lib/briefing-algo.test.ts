@@ -50,6 +50,18 @@ test("readiness: amber on mild fatigue / missing Garmin / poor HRV", () => {
   assert.equal(computeReadiness(ctx({ recovery_today: { available: false, missing: ["sommeil"] } })), "amber");
   assert.equal(computeReadiness(ctx({ recovery_today: { available: true, hrv_status: "low" } })), "amber");
 });
+test("readiness: amber on a moderate Garmin readiness (the live calibration case)", () => {
+  // tsb_neuro -2.56, tsb -4.45, training_readiness 56 → was wrongly GREEN; now AMBER (don't greenlight hard).
+  assert.equal(computeReadiness(ctx({
+    fitness_model_latest: { ctl: 81, tsb: -4.45, tsb_aerobic: 0.63, tsb_neuromuscular: -2.56, acwr: 1.06 },
+    recovery_today: { available: true, training_readiness: 56, hrv_status: "balanced", resting_hr: 50 },
+  })), "amber");
+  // A clearly fresh morning (readiness 72) stays green.
+  assert.equal(computeReadiness(ctx({
+    fitness_model_latest: { ctl: 81, tsb: 2, tsb_aerobic: 3, tsb_neuromuscular: 1, acwr: 1.0 },
+    recovery_today: { available: true, training_readiness: 72, hrv_status: "balanced", resting_hr: 48 },
+  })), "green");
+});
 
 test("week plan: always 7 days, offsets 0..6", () => {
   const w = buildWeekPlan(ctx(), "green");

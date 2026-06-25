@@ -54,15 +54,18 @@ export type AlgoBriefing = {
 };
 
 // ── Calibrable constants (population starting points) ───────────────────────────────────────────
-/** Readiness thresholds (TSB / per-channel TSB / ACWR / Garmin readiness). */
+/** Readiness thresholds (TSB / per-channel TSB / ACWR / Garmin readiness). Tuned so a genuinely
+ *  borderline morning (Garmin training-readiness "moderate" ~56, slightly negative TSB, mild lingering
+ *  neuromuscular debt) reads AMBER (keep it easy/technical) rather than GREEN — matching a coach's call,
+ *  especially in the days before a key event. Still population starting points; calibrate from history. */
 const R = {
   acwr_red: 1.5,
   tsb_neuro_red: -15,
   tsb_red: -20,
   readiness_red: 25,
-  tsb_neuro_amber: -5,
-  tsb_amber: -10,
-  readiness_amber: 50,
+  tsb_neuro_amber: -4,    // lingering structural/tendon debt (slower τ) → caution
+  tsb_amber: -8,
+  readiness_amber: 60,    // Garmin "moderate" readiness (50–75) → caution, don't greenlight a hard day
   resting_hr_amber_delta: 5, // bpm above the athlete's baseline resting HR
   heat_acclim_low: 50,       // % — below this, a hot forecast day warrants caution
 };
