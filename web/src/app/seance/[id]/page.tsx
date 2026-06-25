@@ -106,7 +106,7 @@ function PlannedColumn({ v }: { v: SessionView }) {
     return <Card title="Prévu"><p className="text-sm text-stone-500 dark:text-stone-400">Aucune séance planifiée.</p></Card>;
   }
   return (
-    <Card title={p?.isEvent || v.kind === "goal" ? "Événement prévu" : "Prévu (coach)"}>
+    <Card title={p?.isEvent || v.kind === "goal" ? "Événement prévu" : p?.isPinned ? "Séance validée" : "Prévu (coach)"}>
       {p && (
         <>
           {p.systemTag && <Row label="Type d'effort" value={SYSTEM_TAG_FR[p.systemTag] ?? p.systemTag} />}
@@ -197,8 +197,10 @@ export default async function SeancePage({ params }: { params: Promise<{ id: str
   const { id } = await params;
   const v = await getSession(id);
 
-  // Edit/delete is offered only for athlete-declared events (not coach-generated sessions).
-  const editable = v.kind === "planned" && !!v.planned?.isEvent;
+  // Edit/delete is offered for anything the ATHLETE owns — declared events AND chat-accepted (pinned)
+  // sessions are both modified_by='user', so they're his to change, like a manual entry. Coach-generated
+  // sessions (modified_by='coach') stay managed by the coach (they regenerate).
+  const editable = v.kind === "planned" && v.planned?.modifiedBy === "user";
   const sports = editable ? await getSports() : [];
   const daysOut = v.date ? daysBetween(todayLocal(), v.date) : 0;
 

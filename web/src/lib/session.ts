@@ -28,6 +28,7 @@ export type PlannedMeta = {
   isEvent: boolean;
   isPinned: boolean;
   isKey: boolean;
+  modifiedBy: string | null; // 'user' = athlete owns it (declared OR chat-accepted) → editable/deletable; 'coach' = managed by the coach
   status: string | null;
   targetLoad: number | null;
   targetAerobic: number | null;
@@ -87,7 +88,7 @@ function toPlannedMeta(p: any, sportCode: string | null, sportName: string | nul
     id: p.id, title: p.title, description: p.description ?? null, sportId: p.sport_id ?? null, sportCode, sportName,
     systemTag: p.system_tag ?? null, intensityZone: p.intensity_zone ?? null,
     targetHrLow: p.target_hr_low ?? null, targetHrHigh: p.target_hr_high ?? null,
-    isEvent: !!p.is_event, isPinned: !!p.is_pinned, isKey: !!p.is_key, status: p.status ?? null,
+    isEvent: !!p.is_event, isPinned: !!p.is_pinned, isKey: !!p.is_key, modifiedBy: p.modified_by ?? null, status: p.status ?? null,
     targetLoad: p.target_load ?? null,
     targetAerobic: p.target_aerobic_load ?? null, targetNeuro: p.target_neuromuscular_load ?? null,
     targetAerobicMin: p.target_aerobic_min ?? null, targetAerobicMax: p.target_aerobic_max ?? null,

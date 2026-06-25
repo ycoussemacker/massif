@@ -13,6 +13,7 @@ export type CalPlanned = {
   isKey: boolean;
   isEvent: boolean; // athlete-declared (vs coach-planned)
   isPinned: boolean; // coach session the athlete accepted via chat (a fixed prescription)
+  modifiedBy: string | null; // 'user' = athlete owns it (editable/deletable) ; 'coach' = managed by the coach
   systemTag: string | null;
 };
 export type CalGoal = { id: string; title: string; sportCode: string | null };
@@ -89,6 +90,7 @@ export async function getCalendar(from: string, to: string): Promise<CalendarDat
       isKey: !!p.is_key,
       isEvent: !!p.is_event,
       isPinned: !!p.is_pinned,
+      modifiedBy: p.modified_by ?? null,
       systemTag: p.system_tag ?? null,
     });
   }

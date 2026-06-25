@@ -258,11 +258,11 @@ export function CalendarGrid({
                               <span className="flex min-w-0 items-center gap-2 text-stone-700 dark:text-stone-200">
                                 <span aria-hidden>{sportIcon(p.sportCode)}</span>
                                 <span className="truncate">{p.title}</span>
-                                {!p.isEvent && <span className="shrink-0 text-[10px] uppercase tracking-wide text-stone-400">coach</span>}
+                                {p.modifiedBy === "coach" && <span className="shrink-0 text-[10px] uppercase tracking-wide text-stone-400">coach</span>}
                               </span>
                               <span className="shrink-0 text-stone-300 transition-colors group-hover:text-alpine-600 dark:text-stone-600" aria-hidden>→</span>
                             </Link>
-                            {p.isEvent && (
+                            {p.modifiedBy === "user" && (
                               <button type="button" onClick={() => removeEvent(p.id)} disabled={deleting}
                                 className="shrink-0 text-xs text-stone-400 transition hover:text-red-600 disabled:opacity-50" aria-label="Supprimer">
                                 ✕
