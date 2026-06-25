@@ -81,8 +81,10 @@ big descent adds real neuromuscular cost on top of a calm-HR aerobic load. See `
 
 ## Run
 **Prod:** web on Vercel → `https://massif-omega.vercel.app` (Vercel Root Directory = `web`; login gate
-via `APP_PASSWORD`/`AUTH_SECRET`). The nightly pull+rollup+coach+push runs in the cloud via GitHub
-Actions (`.github/workflows/nightly.yml`) — no Mac needed. Full runbook: `ops/PHONE_ACCESS.md`.
+via `APP_PASSWORD`/`AUTH_SECRET`). **NO cron + NO web push** (retired — see the on-demand-briefing status
+below): the briefing is generated ONLY on demand in the web app; data stays fresh via on-demand Strava
+pull-to-refresh + the throttled Garmin refresh (`garmin-refresh.yml`, fired by `GarminAutoRefresh` on app
+open). Full runbook: `ops/PHONE_ACCESS.md`.
 ```bash
 # web (local dev)
 pnpm -C web dev                              # http://localhost:3100  (port pinned off 3000)
@@ -95,7 +97,7 @@ python -m massif_ingest.sync --strava-days 3650 --stream-days 90 # deep history 
 python -m massif_ingest.sync --export-garmin-token               # mirror the local Garmin token to Supabase
 
 # coach
-pnpm -C coach coach                          # daily briefing (+ web push); reads COACH_MODEL
+pnpm -C coach ask ["question"]               # read-only Q&A CLI (the daily briefing is now ON-DEMAND in web/, not a CLI/cron)
 
 # supabase
 supabase db push                             # apply migrations to cloud (CLI ONLY, never the MCP)
@@ -280,3 +282,26 @@ stream, migration `…0007`) and `daily_metrics.{heat_acclimation_pct,altitude_a
 rewritten **rule 8** in all four coach prompts (read HR/recovery through heat/altitude; never inflate load).
 KEEP the usual mirrors in sync (load.py↔load.ts, context.ts↔coach-context.ts, coach.ts↔coach-briefing.ts).
 Additive + inert until data flows; reaches history via `--recompute-loads`. pytest 44 green; web+coach tsc clean.
+
+**ON-DEMAND TWO-MODE BRIEFING — CRON + PUSH RETIRED (token economy).** The morning cron was too costly
+(adaptive-thinking burned ~14k tokens), fragile (depended on Garmin syncing after wake) and slow (timed out
+on mobile). It's gone. The briefing is now generated **only on demand** and reads the **current DB** (no
+inline sync → instant, no timeout). It has **two modes**, chosen in the coach-settings modal (Profil/coach
+card; `coach_settings.briefing_mode`, default `'free'`): **free** = 100 % ALGORITHMIC, **zero tokens**;
+**ai** = same algorithmic plan, then ONE small **cached, no-thinking** LLM call re-voices three text fields
+(today's description + state_assessment + why) in the persona. The toggle governs ONLY the briefing — the
+**chat stays AI-on-demand in both modes** (the AD+/bivouac-style natural-language planning lives there,
+unchanged). Engine = `web/src/lib/briefing-algo.ts` (`buildAlgorithmicBriefing`, PURE over the assembled
+context → unit-tested in `briefing-algo.test.ts`, 11 tests): `computeReadiness` (TSB/ACWR/recovery
+thresholds), `buildWeekPlan` (event-aware, taper via `declared_events[].forecast`, no_hard_days, 80/20, no
+two same-system hard back-to-back, readiness-gated), per-day target loads (`splitByTag`), today's session
+with **Z-band bpm from `hr_zones`**, templated why/state/flag/confidence (coach-voice variant pattern). It
+returns the SAME object shape, so `buildForwardPlanRows` + the `coach_briefings` write are unchanged and the
+dashboard/`/seance` need no changes. `coach-briefing.ts` (`generateBriefing`) builds the algo briefing then
+optionally enriches (mode `ai`); `regen.ts`/`generateBriefingNow`/`api/coach/regen` no longer sync inline
+(maxDuration 60). **Removed**: `nightly.yml`, `morning.py`, `coach/src/coach.ts`+`push.ts`+`briefing-shared.ts`,
+`web/src/lib/push.ts`, `api/push`, `notification-opt-in.tsx`, `public/sw.js`, `nightly.sh`/`morning.sh`/plist.
+The coach BRIEFING mirror (coach/↔web/) is retired — briefing logic lives only in web/; `coach/` keeps the
+read-only `ask` CLI. Migrations: `…0002` (briefing_mode) + `…0003` (drop push_subscriptions, keeps the Garmin
+token in `…0006`). Unused secrets: `VAPID_*` everywhere + `ANTHROPIC_API_KEY`/`COACH_MODEL` in GitHub Actions
+(Vercel still needs them for ai-mode + chat). web build + tsc green, coach tsc clean, 11 engine + 59 ingest tests.

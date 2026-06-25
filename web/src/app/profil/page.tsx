@@ -4,7 +4,6 @@ import { ProfileForm } from "@/components/profile-form";
 import { GoalsEditor } from "@/components/goals-editor";
 import { HrZonesPanel } from "@/components/hr-zones";
 import { Connections } from "@/components/connections";
-import { NotificationOptIn } from "@/components/notification-opt-in";
 
 export const dynamic = "force-dynamic"; // toujours refléter les dernières modifs / le dernier sync
 
@@ -37,7 +36,6 @@ export default async function ProfilPage({
           <ProfileForm profile={profile} />
           <HrZonesPanel zones={profile?.hr_zones ?? null} />
           <Connections status={connections} justConnected={sp?.strava === "ok"} />
-          <NotificationOptIn />
         </div>
 
         <footer className="mt-8 text-center text-xs text-stone-400">

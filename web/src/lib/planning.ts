@@ -12,7 +12,9 @@ const NEURO_FRAC_BY_TAG: Record<string, number> = {
   recovery: 0.2,
   rest: 0.2,
 };
-function splitByTag(total: number, tag: string | null): { aerobic: number; neuro: number } {
+/** Split a total target_load into aerobic + neuromuscular channels by system_tag (exported so the
+ *  algorithmic briefing engine — briefing-algo.ts — sets per-channel targets the same way). */
+export function splitByTag(total: number, tag: string | null): { aerobic: number; neuro: number } {
   const nf = (tag ? NEURO_FRAC_BY_TAG[tag] : undefined) ?? 0.25;
   return { aerobic: total * (1 - nf), neuro: total * nf };
 }

@@ -1,7 +1,15 @@
 # Massif sur ton téléphone — passage en prod
 
-Objectif : l'app sur l'écran d'accueil de l'iPhone + une notification chaque matin avec le briefing
-du coach + l'automatisation qui tourne **sans ton Mac**.
+> ⚠️ **OBSOLÈTE en partie (cron + web push retirés).** Le briefing n'est plus généré par un cron et il
+> n'y a plus de notification matinale : il se génère **à la demande** dans l'app (modes *gratuit*
+> algorithmique / *IA* — voir CLAUDE.md « ON-DEMAND TWO-MODE BRIEFING »). Ce qui reste **valable** ici :
+> l'installation PWA, le gate mot de passe, et le rafraîchissement **Garmin à la demande**
+> (`garmin-refresh.yml`, déclenché par `GarminAutoRefresh` à l'ouverture). À **ignorer** : les étapes
+> Web Push / VAPID / `push_subscriptions` / `nightly.yml` / notifications. Les secrets `VAPID_*` (Vercel +
+> Actions) et `ANTHROPIC_API_KEY`/`COACH_MODEL` (Actions) sont inutiles ; Vercel garde `ANTHROPIC_API_KEY`
+> + `COACH_MODEL` pour le mode IA et le chat.
+
+Objectif : l'app sur l'écran d'accueil de l'iPhone + l'automatisation qui tourne **sans ton Mac**.
 
 Architecture :
 

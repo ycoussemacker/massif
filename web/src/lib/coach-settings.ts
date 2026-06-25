@@ -17,6 +17,9 @@ export type CoachSettings = {
   persona: PersonaId;
   persona_gender: Gender | null;
   custom_instructions: string | null;
+  /** Briefing engine: 'free' = 100 % algorithmique (0 token) ; 'ai' = même plan, re-voicé par un petit
+   *  appel LLM dans la voix de la persona. N'affecte QUE le briefing — le chat reste IA dans les deux cas. */
+  briefing_mode: "free" | "ai";
 };
 
 /** Sensible-for-most defaults (also baked into the DB row). */
@@ -31,6 +34,7 @@ export const COACH_SETTINGS_DEFAULTS: CoachSettings = {
   persona: "bouquetin",
   persona_gender: null,
   custom_instructions: null,
+  briefing_mode: "free",
 };
 
 export const COACH_INSTRUCTIONS_MAX = 600;
@@ -213,11 +217,13 @@ export function sanitizeCoachSettings(input: Partial<CoachSettings> | null | und
     : { ...persona.settings };
 
   const custom = (input?.custom_instructions ?? "").toString().trim().slice(0, COACH_INSTRUCTIONS_MAX);
+  const briefing_mode: CoachSettings["briefing_mode"] = (input as any)?.briefing_mode === "ai" ? "ai" : "free";
   return {
     ...behaviour,
     persona: personaId,
     persona_gender,
     custom_instructions: custom || null,
+    briefing_mode,
   };
 }
 

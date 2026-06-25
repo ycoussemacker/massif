@@ -16,6 +16,7 @@ import { syncStrava } from "@/lib/strava-sync";
 import { rollupDailyMetrics } from "@/lib/rollup";
 import { generateBriefing, type BriefingResult } from "@/lib/coach-briefing";
 import { postDayVerdictMessage } from "@/lib/day-verdict";
+import { linkRealizedSessions } from "@/lib/link-sessions";
 import { buildTimeline, hasItemBefore, MESSAGE_BATCH, type TimelineItem } from "@/lib/chat";
 import { estimateForDeclared } from "@/lib/estimate-server";
 import type { LoadEstimate } from "@/lib/estimate";
@@ -276,12 +277,15 @@ export async function saveCoachSettings(input: CoachSettings): Promise<void> {
 
 /** Pull the athlete's recent Strava activities + recompute the fitness model, entirely in TS
  *  (mirror of the Python sync — see lib/strava-sync.ts + lib/rollup.ts). For instant freshness when
- *  the athlete just finished a session, without waiting for the nightly cron. Garmin recovery is NOT
- *  pulled here (no API; it stays on the cron). Returns a short summary for the UI toast. */
+ *  the athlete just finished a session. Garmin recovery is NOT pulled here (no API; on-demand via the
+ *  Garmin refresh). Returns a short summary for the UI toast. */
 export async function syncNow(): Promise<{ pulled: number; newest: string | null; days: number }> {
   const sb = await createServiceClient();
   const { pulled, newest } = await syncStrava(sb);
   const days = await rollupDailyMetrics(sb);
+  // A freshly-logged activity "completes" a same-day, same-sport planned session (links it) so the agenda
+  // merges plan↔realised instead of showing two rows. Best-effort.
+  try { await linkRealizedSessions(sb); } catch { /* non-critical side-effect */ }
   // Drop the coach's same-day "load vs plan" verdict into the conversation (LLM-free template, one row
   // per day, updated in place). Best-effort: never let it fail the sync the athlete asked for.
   try { await postDayVerdictMessage(sb); } catch { /* non-critical side-effect */ }
@@ -434,20 +438,18 @@ async function enforceBriefingRateLimit(sb: SupabaseClient): Promise<void> {
   if ((daily.count ?? 0) >= 20) throw new Error("Limite quotidienne de régénérations atteinte (20/jour).");
 }
 
-/** On-demand "Régénérer le briefing" (the dashboard ⋮ menu). Pulls the latest Strava + recomputes the
- *  model (so the briefing sees fresh activities), then regenerates today's briefing inline — in the
- *  athlete's chosen coach voice, with the freshest profile/goals. Garmin recovery stays on the cron
- *  (no API); no push (the athlete is looking at the screen). Returns a summary for the UI toast. */
-export async function generateBriefingNow(): Promise<{ pulled: number; briefing: BriefingResult }> {
+/** On-demand "Régénérer le briefing" — regenerates today's briefing from the CURRENT DB state (no inline
+ *  Strava/Garmin sync: that's a separate gesture — pull-to-refresh / the Garmin button — so the brief is
+ *  instant and never times out on mobile). In 'free' mode it's 100 % algorithmic (zero tokens); in 'ai'
+ *  mode it adds one small, cached Claude call (the athlete's coach voice). No push. Returns a UI summary. */
+export async function generateBriefingNow(): Promise<{ briefing: BriefingResult }> {
   const sb = await createServiceClient();
   await enforceBriefingRateLimit(sb);
-  const { pulled } = await syncStrava(sb);
-  await rollupDailyMetrics(sb);
-  const briefing = await generateBriefing(sb);
+  const briefing = await generateBriefing(sb); // reads current DB — instant, no inline sync
   try { await postDayVerdictMessage(sb); } catch { /* non-critical side-effect */ }
   revalidatePath("/");
   revalidatePath("/coach");
-  return { pulled, briefing };
+  return { briefing };
 }
 
 // ── Declared events (athlete plans an activity this week → the coach plans around it) ────────────

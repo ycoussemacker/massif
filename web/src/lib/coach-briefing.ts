@@ -1,29 +1,29 @@
-/** On-demand briefing generator — server-only. The SAME morning briefing the cron writes, but run
- *  inline from the web app so the athlete can regenerate it on demand (the ⋮ "Régénérer" action).
- *
- *  MIRROR of coach/src/coach.ts (web/ and coach/ are separate pnpm workspaces — no cross-import, same
- *  as load.ts ↔ load.py and coach-context.ts ↔ context.ts). The SYSTEM prompt, schema and the
- *  buildForwardPlanRows materializer live in ./briefing-shared (mirror of coach/src/briefing-shared.ts).
- *  Differences here, by design:
- *   - the chosen coach PERSONA is injected (buildPersonaInstructions), so the briefing speaks in the
- *     same voice as the chat — the cron mirrors this via coach/src/persona.ts;
- *   - NO web push (the athlete is looking at the screen — the push is the cron's morning job). */
+/** On-demand briefing generator — server-only. Builds the daily briefing from the CURRENT DB state
+ *  (no inline sync — the athlete refreshes Strava/Garmin separately), in one of two modes set in the
+ *  Profil (coach_settings.briefing_mode):
+ *   - 'free' : 100 % algorithmic (buildAlgorithmicBriefing) — ZERO LLM tokens.
+ *   - 'ai'   : same algorithmic plan, then ONE small, cached LLM call re-voices three text fields
+ *              (today's description + state_assessment + why) in the athlete's coach persona.
+ *  Either way it writes the SAME shape (coach_briefings + planned_sessions via buildForwardPlanRows), so
+ *  the dashboard and /seance pages are unchanged. The conversational chat (coach-chat.ts) is a SEPARATE,
+ *  always-available AI feature and is not touched here. */
 import Anthropic from "@anthropic-ai/sdk";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { assembleCoachContext, dateMinusDays } from "./coach-context";
-import { loadCoachSettings, buildPersonaInstructions } from "./coach-settings";
+import { loadCoachSettings, buildPersonaInstructions, type CoachSettings } from "./coach-settings";
 import { COACH_MODEL } from "./coach-chat";
-import { COACH_SYSTEM, COACH_BRIEFING_SCHEMA, buildForwardPlanRows, deriveToday } from "./briefing-shared";
+import { buildForwardPlanRows, deriveToday } from "./briefing-shared";
+import { buildAlgorithmicBriefing, type AlgoBriefing } from "./briefing-algo";
 
 export interface BriefingResult {
   readiness: "green" | "amber" | "red";
   today_session: string | null;
   why: string;
+  mode: "free" | "ai";
 }
 
-/** Regenerate today's briefing from the current DB picture (fresh profile/goals) in the athlete's
- *  chosen coach voice, and persist it (coach_briefings + the coach's forward 7-day planned_sessions,
- *  idempotent). Returns a compact summary for the UI toast. No push (on-demand path). */
+/** Generate today's briefing from the current DB picture and persist it (coach_briefings + the forward
+ *  7-day planned_sessions, idempotent). Returns a compact summary for the UI. No push, no sync. */
 export async function generateBriefing(sb: SupabaseClient): Promise<BriefingResult> {
   const [{ today, context }, settings, sportsRes] = await Promise.all([
     assembleCoachContext(sb),
@@ -33,44 +33,21 @@ export async function generateBriefing(sb: SupabaseClient): Promise<BriefingResu
   const sports = sportsRes.data ?? [];
   const sportIdByCode = new Map<string, number | null>(sports.map((s: any) => [s.code, s.id]));
 
-  const system = COACH_SYSTEM + "\n\n" + buildPersonaInstructions(settings);
+  // 1) Algorithmic core (0 token) — always.
+  const briefing = buildAlgorithmicBriefing(context);
 
-  const userPrompt =
-    `Allowed sport codes: ${sports.map((s: any) => s.code).join(", ")}.\n` +
-    `Priority sports: ${sports.filter((s: any) => s.is_priority).map((s: any) => s.code).join(", ")}.\n` +
-    `Sports needing a manual RPE (no reliable HR): ` +
-    `${sports.filter((s: any) => s.needs_manual_rpe).map((s: any) => s.code).join(", ")}.\n\n` +
-    `Athlete picture (JSON):\n${JSON.stringify(context, null, 1)}\n\n` +
-    `Produce today's briefing for ${today}.`;
-
-  const client = new Anthropic();
-  // STREAM then await the final message. Two reasons, coupled: adaptive thinking can burn ~14k tokens on a
-  // heavy week, and at max_tokens 16000 the JSON output block got truncated to nothing ("No text block in
-  // coach response"); raising the ceiling fixes that, but a ceiling > ~21k trips the SDK's 10-minute
-  // non-streaming guard — so we stream (the SDK-recommended path) and read finalMessage(). max_tokens is a
-  // ceiling only; adaptive thinking still uses just what it needs, so this doesn't raise cost. Mirror in coach.ts.
-  const resp = await client.messages.stream({
-    model: COACH_MODEL,
-    max_tokens: 32000,
-    thinking: { type: "adaptive" },
-    output_config: { format: { type: "json_schema", schema: COACH_BRIEFING_SCHEMA } },
-    system,
-    messages: [{ role: "user", content: userPrompt }],
-  } as any).finalMessage();
-
-  if ((resp as any).stop_reason === "refusal") {
-    throw new Error("La génération du briefing a été refusée par les classifieurs de sécurité.");
+  // 2) Optional AI re-voicing (paid mode) — rewrites only 3 text fields in the persona voice.
+  if (settings.briefing_mode === "ai") {
+    try {
+      await enrichBriefingWithLLM(briefing, settings);
+    } catch (e) {
+      // Never let the LLM layer break the briefing — fall back to the algorithmic text.
+      console.error("briefing AI enrich failed, using algorithmic text:", (e as Error)?.message ?? e);
+    }
   }
-  const textBlock = (resp.content as any[]).find((b: any) => b.type === "text") as any;
-  if (!textBlock) throw new Error("Réponse du coach vide (aucun bloc texte).");
-  const briefing = JSON.parse(textBlock.text);
 
-  // Materialize the coach's forward 7-day plan (skips declared-event days, enforces no_hard_days).
-  // SAFE delete scoped to the coach's own still-planned, not-yet-linked rows in [today, today+6]
-  // (mirror of coach/src/db.ts replaceForwardCoachPlan).
+  // 3) Materialize the forward 7-day plan (skips declared-event days + chat-accepted pinned sessions).
   const noHardDays = (((context as any).athlete_constraints?.no_hard_days) as string[] | null) ?? [];
-  // Days [today, today+6] carrying a chat-accepted pinned session — the materializer SKIPS them so a
-  // regen never overwrites or duplicates a session the athlete validated. Derived from the context.
   const pinnedDates = new Set<string>(
     (((context as any).pinned_sessions ?? []) as any[])
       .filter((p) => p.day_offset >= 0 && p.day_offset <= 6)
@@ -93,23 +70,24 @@ export async function generateBriefing(sb: SupabaseClient): Promise<BriefingResu
 
   const briefingIns = await sb.from("coach_briefings").insert({
     briefing_date: today,
-    model: COACH_MODEL,
+    model: settings.briefing_mode === "ai" ? COACH_MODEL : "algo",
     readiness: briefing.readiness,
     today_session: todaySession,
     why: briefing.why,
     changed: null,
-    week_skeleton: briefing.week_plan, // richer week_plan stored in the existing week_skeleton column
+    week_skeleton: briefing.week_plan,
     flag: briefing.flag,
     reasoning: briefing.state_assessment,
     input_snapshot: context,
     actions: {
+      mode: settings.briefing_mode,
       materialized_planned_ids: materializedIds,
       detailed_sessions: briefing.detailed_sessions,
       event_targets: briefing.event_targets,
       today: { sport_code: todaySportCode, session: todaySession },
     },
     confidence: briefing.confidence,
-    raw_response: textBlock.text,
+    raw_response: JSON.stringify(briefing),
   }).select("id").single();
   if (briefingIns.error) throw new Error(briefingIns.error.message);
 
@@ -117,5 +95,69 @@ export async function generateBriefing(sb: SupabaseClient): Promise<BriefingResu
     readiness: briefing.readiness,
     today_session: todaySession,
     why: briefing.why,
+    mode: settings.briefing_mode,
   };
+}
+
+// ── AI re-voicing layer (paid mode only) — small, cached, no thinking ───────────────────────────
+const ENRICH_SYSTEM = `Tu es le coach Massif. Un briefing du jour a DÉJÀ été calculé (séance, charges, zones FC, état de forme).
+Ta SEULE tâche : RÉÉCRIRE trois textes courts dans TA voix, en FRANÇAIS — sans changer aucun chiffre, zone FC,
+durée ni la nature de la séance ; reprends fidèlement les valeurs fournies (bpm, charges).
+- today_description : 2-3 phrases — comment mener la séance du jour + une intention/un conseil concret.
+- state_assessment : 2-3 phrases — l'état de forme + le cap de la semaine (une TENDANCE, pas une liste de chiffres).
+- why : UNE seule phrase — la raison n°1 de la séance d'aujourd'hui.
+N'invente aucune donnée. Réponds uniquement avec le JSON demandé.`;
+
+const ENRICH_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    today_description: { type: "string" },
+    state_assessment: { type: "string" },
+    why: { type: "string" },
+  },
+  required: ["today_description", "state_assessment", "why"],
+};
+
+/** Mutate the briefing's three text fields in place with persona-voiced versions. Small + cached + no
+ *  thinking → ~cheap. The numbers/zones/plan are decided algorithmically and are NOT sent for change. */
+async function enrichBriefingWithLLM(briefing: AlgoBriefing, settings: CoachSettings): Promise<void> {
+  const today0 = briefing.detailed_sessions.find((d) => d.day_offset === 0) ?? briefing.detailed_sessions[0] ?? null;
+  const plan0 = briefing.week_plan[0];
+  const facts = {
+    readiness: briefing.readiness,
+    today: {
+      title: today0?.title ?? plan0?.focus,
+      system_tag: plan0?.system_tag,
+      sport: plan0?.sport_code,
+      zone: today0?.intensity_zone ?? null,
+      hr_low: today0?.target_hr_low ?? null,
+      hr_high: today0?.target_hr_high ?? null,
+      duration_min: today0?.target_duration_min ?? null,
+      aerobic_load: today0?.target_aerobic_load ?? null,
+      neuro_load: today0?.target_neuromuscular_load ?? null,
+    },
+    week: briefing.week_plan.map((d) => ({ off: d.day_offset, tag: d.system_tag, sport: d.sport_code, load: d.target_load, is_key: d.is_key })),
+    flag: briefing.flag,
+    // The algorithmic drafts — keep the substance, rewrite the voice.
+    draft: { today_description: today0?.description ?? "", state_assessment: briefing.state_assessment, why: briefing.why },
+  };
+
+  const client = new Anthropic();
+  const resp: any = await client.messages.create({
+    model: COACH_MODEL,
+    max_tokens: 1500,
+    output_config: { format: { type: "json_schema", schema: ENRICH_SCHEMA } },
+    system: [{ type: "text", text: ENRICH_SYSTEM + "\n\n" + buildPersonaInstructions(settings), cache_control: { type: "ephemeral" } }],
+    messages: [{ role: "user", content: `Faits du jour (JSON) — réécris uniquement les 3 textes de "draft" dans ta voix :\n${JSON.stringify(facts)}` }],
+  } as any);
+
+  if (resp?.stop_reason === "refusal") return; // keep algorithmic text
+  const textBlock = (resp.content as any[]).find((b: any) => b.type === "text") as any;
+  if (!textBlock) return;
+  const out = JSON.parse(textBlock.text) as { today_description?: string; state_assessment?: string; why?: string };
+
+  if (out.state_assessment) briefing.state_assessment = out.state_assessment;
+  if (out.why) briefing.why = out.why;
+  if (out.today_description && today0) today0.description = out.today_description;
 }

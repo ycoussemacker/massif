@@ -3,20 +3,17 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Massif agentic coach — reads the unified load + recovery picture and writes a daily briefing.",
+  "description": "Massif coach CLI — read-only Q&A over the unified load + recovery picture (pnpm ask). The daily briefing now lives on-demand in web/.",
   "scripts": {
-    "coach": "tsx src/coach.ts",
     "ask": "tsx src/ask.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.105.0",
     "@supabase/supabase-js": "^2.108.2",
-    "dotenv": "^17.4.2",
-    "web-push": "^3.6.7"
+    "dotenv": "^17.4.2"
   },
   "devDependencies": {
     "@types/node": "^26.0.0",
-    "@types/web-push": "^3.6.4",
     "tsx": "^4.22.4",
     "typescript": "^6.0.3"
   }

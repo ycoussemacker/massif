@@ -1,12 +1,13 @@
-/** Shared "regenerate the week plan" runner — the paid, rate-limited pipeline behind the background
- *  regeneration (web/src/app/api/coach/regen). Pulls fresh Strava + recomputes the model, then
- *  regenerates today's briefing + the forward 7-day plan, and posts the LLM-free day verdict.
- *  Run from an API route (plain fetch) rather than a Server Action so it never blocks navigation. */
+/** Shared "regenerate the week plan" runner — the rate-limited pipeline behind the on-demand
+ *  regeneration (web/src/app/api/coach/regen). Reads the CURRENT DB state and (re)generates today's
+ *  briefing + the forward 7-day plan, then posts the LLM-free day verdict. Data freshness (Strava
+ *  pull-to-refresh / Garmin button) is a SEPARATE gesture — the briefing is instant, never blocked on a
+ *  sync (that's what made it time out on mobile). Run from an API route (plain fetch) so it never blocks
+ *  navigation. In 'free' briefing mode this makes ZERO Anthropic calls. */
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { syncStrava } from "./strava-sync";
-import { rollupDailyMetrics } from "./rollup";
 import { generateBriefing, type BriefingResult } from "./coach-briefing";
 import { postDayVerdictMessage } from "./day-verdict";
+import { linkRealizedSessions } from "./link-sessions";
 
 /** Cost/abuse guard (shared DB state, works on serverless): 2/min burst, 20/day on coach_briefings. */
 async function enforceRate(sb: SupabaseClient): Promise<void> {
@@ -21,11 +22,10 @@ async function enforceRate(sb: SupabaseClient): Promise<void> {
   if ((daily.count ?? 0) >= 20) throw new Error("Limite quotidienne de régénérations atteinte (20/jour).");
 }
 
-export async function runRegen(sb: SupabaseClient): Promise<{ pulled: number; briefing: BriefingResult }> {
+export async function runRegen(sb: SupabaseClient): Promise<{ briefing: BriefingResult }> {
   await enforceRate(sb);
-  const { pulled } = await syncStrava(sb);
-  await rollupDailyMetrics(sb);
-  const briefing = await generateBriefing(sb);
+  const briefing = await generateBriefing(sb); // reads current DB — no inline sync
+  try { await linkRealizedSessions(sb); } catch { /* non-critical: merge realised↔planned */ }
   try { await postDayVerdictMessage(sb); } catch { /* non-critical side-effect */ }
-  return { pulled, briefing };
+  return { briefing };
 }

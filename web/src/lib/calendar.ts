@@ -53,7 +53,7 @@ export async function getCalendar(from: string, to: string): Promise<CalendarDat
   const [mm, planRes, goalRes, actPage, wxRes] = await Promise.all([
     sb.from("daily_metrics").select("local_date,tsb,ctl").gte("local_date", from).lte("local_date", to),
     sb.from("planned_sessions")
-      .select("id,planned_date,sport_id,title,is_key,is_event,is_pinned,system_tag,modified_by,status")
+      .select("id,planned_date,sport_id,title,is_key,is_event,is_pinned,system_tag,modified_by,status,linked_activity_id")
       .gte("planned_date", planFrom).lte("planned_date", to).neq("status", "skipped"),
     sb.from("goals").select("id,title,sport_id,target_date").eq("status", "active")
       .gte("target_date", from).lte("target_date", to),
@@ -80,6 +80,7 @@ export async function getCalendar(from: string, to: string): Promise<CalendarDat
   }
 
   for (const p of (planRes.data ?? []) as any[]) {
+    if (p.linked_activity_id) continue; // completed by a realised activity → shown under `done`, not as a dangling "prévu"
     const c = day(p.planned_date);
     c.planned.push({
       id: p.id,
