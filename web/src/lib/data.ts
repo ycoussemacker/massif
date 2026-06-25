@@ -2,22 +2,17 @@
 import { createServiceClient } from "./supabase/server";
 import { pickTopGoal, type GoalHeader } from "./profile-types";
 import { todayLocal, daysBetween, dateMinusDays } from "./coach-context";
-import { buildPlanningView, buildPlannedLoads } from "./planning";
+import { buildPlanningView, buildPlannedLoads, splitByTag } from "./planning";
 import { projectFromMetrics } from "./project";
 import { weatherAlerts } from "./weather";
 import { suggestSport, type SportSuggestion } from "./sport-suggest";
 
-/** Calendar date `n` months before `iso` (handles month lengths). */
-function monthsAgo(iso: string, n: number): string {
-  const d = new Date(iso + "T00:00:00Z");
-  d.setUTCMonth(d.getUTCMonth() - n);
-  return d.toISOString().slice(0, 10);
-}
-
-/** Rolling window (in months) shown by the dashboard charts. Kept tight (1 month) so the homepage stays
- *  light to load; deeper history lives in /analyse. (CTL/ATL/TSB are precomputed server-side over full
- *  history in the rollup, so a shorter display window doesn't change their values — only the chart span.) */
-export const DASHBOARD_WINDOW_MONTHS = 1;
+/** Rolling window (in days) shown by the dashboard charts. Kept to 3 weeks so the homepage stays light
+ *  AND the days are spread out wide enough to read the (now denser) forward-plan markers; deeper history
+ *  lives in /analyse. (CTL/ATL/TSB are precomputed server-side over full history in the rollup, so a
+ *  shorter display window doesn't change their values — only the chart span; the forward projection is
+ *  Markovian and seeds from the last computed row, so it's unaffected too.) */
+export const DASHBOARD_WINDOW_DAYS = 21;
 
 export type DailyMetric = {
   local_date: string;
@@ -162,15 +157,16 @@ export type TodayPlan = {
 };
 
 /** One projected day on the dashboard charts' dotted forecast line (future days only, chronological).
- *  Event days carry the ARRIVAL (eve) form rather than the post-load spike, so each event marker sits on
- *  the line; the days AFTER an event reflect its load (the fatigue you'll actually carry forward). */
+ *  Days that carry a TARGET marker (a committed event/pinned session or a key day — the ones drawn with a
+ *  hollow dot on the curve) plot the ARRIVAL (eve) form rather than the post-load spike, so the dot sits on
+ *  the line; the days AFTER it reflect its load (the fatigue you'll actually carry forward). */
 export type ProjectedPoint = {
   date: string;   // YYYY-MM-DD
   offset: number; // calendar days after the LAST real metric day (≥1) — chart x-position anchor
   ctl: number;
   atl: number;
   tsb: number;
-  isEvent: boolean;
+  isTarget: boolean; // a day a target dot sits on → plotted at eve form (see above)
 };
 
 /** No-LLM, rule-based readiness flag for arriving at a declared event under the current plan. */
@@ -179,31 +175,36 @@ export type ProjectionWarning = {
   message: string;
 };
 
-/** A declared event the dotted forecast reaches, with the form projected for ARRIVING at it (the eve) and
- *  a readiness flag — each event's own estimated load feeds the form arriving at the next one. */
-export type ProjectedEvent = {
-  date: string;     // event date (YYYY-MM-DD)
+/** A planned session the dotted forecast reaches within the next 7 days — a declared EVENT, a PINNED
+ *  (chat-accepted) session, or a COACH proposal — with the form projected for ARRIVING at it (the eve) and
+ *  a readiness flag. Each session's own estimated load feeds the form arriving at the next one. */
+export type PlannedMarker = {
+  date: string;     // session date (YYYY-MM-DD)
   offset: number;   // calendar days from the LAST real metric day (chart marker x-position)
   daysOut: number;  // calendar days from today (1..7)
-  eventId: string | null; // planned_sessions id → /seance/[id] (click-through from the chart panel)
+  // event/pinned = the athlete's COMMITTED plan (own event or accepted prescription) → drawn prominently;
+  // coach = a proposal the coach made for that day → drawn muted but still clickable.
+  kind: "event" | "pinned" | "coach";
+  sessionId: string | null; // planned_sessions id → /seance/[id] (click-through from the chart panel)
   sportCode: string | null;
+  systemTag: string | null;  // coach focus (rest/recovery/hard_*…) — drives the rest glyph + panel label
   title: string;
   isKey: boolean;
-  predictedLoad: number | null; // estimated cost of the event itself
-  targetCtl: number | null;     // projected CTL the day before the event (the form you arrive with)
-  targetAtl: number | null;     // projected ATL the day before the event
-  targetTsb: number | null;     // projected TSB (freshness) the day before the event
+  predictedLoad: number | null; // estimated cost of the session itself (null when ~rest)
+  targetCtl: number | null;     // projected CTL the day before (the form you arrive with)
+  targetAtl: number | null;     // projected ATL the day before
+  targetTsb: number | null;     // projected TSB (freshness) the day before
   warn: ProjectionWarning | null;
 };
 
-/** All declared events within the next 7 days + the form projected for them under the current plan. Drives
- *  the dashboard Forme charts' DOTTED forecast: a day-by-day projected line from the last real point that
- *  continues THROUGH every event (chaining each event's estimated load into the next), with a target
- *  marker + readiness flag per event. null when no upcoming event. */
+/** All planned sessions within the next 7 days (declared events + pinned + coach proposals) + the form
+ *  projected for them under the current plan. Drives the dashboard Forme charts' DOTTED forecast: a
+ *  day-by-day projected line from the last real point that continues THROUGH every session (chaining each
+ *  one's estimated load into the next), with a target marker + readiness flag. null when nothing planned. */
 export type DashboardProjection = {
-  events: ProjectedEvent[];  // chronological, all within 7 d
-  lastOffset: number;        // furthest event's offset — drives the reserved trailing region width
-  series: ProjectedPoint[];  // the dotted line: future days (last real +1 … the furthest event), chronological
+  markers: PlannedMarker[];  // chronological, all within 7 d (events + pinned + coach)
+  lastOffset: number;        // furthest marker's offset — drives the reserved trailing region width
+  series: ProjectedPoint[];  // the dotted line: future days (last real +1 … the furthest marker), chronological
 };
 
 /** Arrival form (the eve of an event) the readiness flag reasons on. */
@@ -268,7 +269,7 @@ export type Dashboard = {
   activities: Activity[];     // 3 most recent (newest first) — homepage recents preview
   allActivities: Activity[];  // full charted-window set (oldest first) — feeds the interactive charts
   todayPlan: TodayPlan;       // coach's recommended load for today
-  projection: DashboardProjection | null; // nearest declared event ≤7 d + its projected form
+  projection: DashboardProjection | null; // all planned sessions ≤7 d (event/pinned/coach) + projected form
   weekPlan: WeekPlanDay[];    // today + next 6 days: coach focus + declared events (homepage strip)
 };
 
@@ -277,7 +278,7 @@ export async function getDashboard(): Promise<Dashboard> {
   // The dashboard shows a rolling window (today − N months); deeper history is in /analyse. Bounded
   // queries also stay under PostgREST's per-response row cap.
   const today = todayLocal();
-  const windowStart = monthsAgo(today, DASHBOARD_WINDOW_MONTHS);
+  const windowStart = dateMinusDays(today, DASHBOARD_WINDOW_DAYS);
   const [pm, mm, bm, chartActs, multiActs, recents, sm, gm, pl, up, npm, wx] = await Promise.all([
     sb.from("athlete_profile").select("*").limit(1).maybeSingle(),
     sb.from("daily_metrics").select("*").gte("local_date", windowStart).order("local_date", { ascending: true }),
@@ -325,7 +326,7 @@ export async function getDashboard(): Promise<Dashboard> {
     isRest: plannedRows.some((r) => r.system_tag === "rest"),
   };
 
-  // Projected "target" point: the nearest declared event ≤7 d ahead + the form it'll meet under the plan.
+  // Projected "target" markers: every planned session ≤7 d ahead + the form each meets under the plan.
   const metricsRows = (mm.data as DailyMetric[]) ?? [];
   const upcoming = (up.data ?? []) as any[];
   const neuroAtlDays = Number((npm.data as any)?.value) || undefined;
@@ -338,10 +339,27 @@ export async function getDashboard(): Promise<Dashboard> {
   for (const c of coach_prior_plan as any[]) {
     if (c.day_offset >= 0 && c.day_offset <= 6 && c.ref != null) coachIdByOffset.set(c.day_offset, c.ref);
   }
-  // Every declared event within the next 7 days, chronological — the dotted forecast reaches the furthest.
-  const events7 = (declared_events as any[])
-    .filter((e) => e.day_offset >= 1 && e.day_offset <= 7)
-    .sort((a, b) => a.day_offset - b.day_offset);
+  // Every planned session within the next 7 days, chronological — events, pinned (chat-accepted)
+  // sessions AND coach proposals all get a chart marker now (was: declared events only, which dropped
+  // the athlete's own pinned approach-hike / climb and every coach-suggested day). Built straight from the
+  // raw planned_sessions rows so each carries its kind + load. day_offset 0 (today) is excluded — today is
+  // the cursor, not a future marker. The dotted forecast reaches the furthest one.
+  const HARD_TAGS = new Set(["hard_aerobic", "hard_neuromuscular", "hard_structural"]);
+  const markerKind = (r: any): "event" | "pinned" | "coach" =>
+    r.is_event ? "event" : r.is_pinned ? "pinned" : "coach";
+  // Per-session channel loads: prefer the persisted predicted/target split, else split target_load by tag.
+  const rowLoads = (r: any): { aero: number; neu: number } => {
+    let aero = r.predicted_aerobic_load ?? r.target_aerobic_load;
+    let neu = r.predicted_neuromuscular_load ?? r.target_neuromuscular_load;
+    if (aero == null && neu == null && r.target_load != null) {
+      const s = splitByTag(Number(r.target_load), r.system_tag); aero = s.aerobic; neu = s.neuro;
+    }
+    return { aero: Number(aero) || 0, neu: Number(neu) || 0 };
+  };
+  const sessions7 = upcoming
+    .map((r) => ({ r, daysOut: daysBetween(today, r.planned_date as string), kind: markerKind(r), ...rowLoads(r) }))
+    .filter((s) => s.daysOut >= 1 && s.daysOut <= 7)
+    .sort((a, b) => a.daysOut - b.daysOut);
 
   // 7-day plan strip (today..+6): seed with the coach's week_skeleton focus, then OVERLAY declared
   // events (authoritative + fresh) so a just-added event appears at once. Keyed by day_offset.
@@ -416,20 +434,22 @@ export async function getDashboard(): Promise<Dashboard> {
     .map((d) => ({ ...d, weatherAlerts: wxAlertByDate.get(d.date) ?? [] }));
 
   // Dotted forecast: walk the fitness model forward over the planned loads from the last real day THROUGH
-  // every event within 7 d (each event's estimated load lands in the walk, so the form arriving at a later
-  // event already carries the cost of the earlier ones). The line plots the arrival (eve) form on event
-  // days so markers sit on it; post-event days reflect the load. Each event gets a target + readiness flag.
+  // every planned session within 7 d (each one's estimated load lands in the walk, so the form arriving at
+  // a later session already carries the cost of the earlier ones). COMMITTED/key markers (events, pinned,
+  // key days) get a hollow target dot on the curve and the line dips to their arrival (eve) form so the dot
+  // sits on it; routine coach days are shown only as a muted glyph + faint guide (no dot — the line keeps
+  // its true post-load value there). Each marker carries a readiness flag where it's meaningful.
   let projection: DashboardProjection | null = null;
-  if (events7.length) {
+  if (sessions7.length) {
     // Anchor on the last row WITH a computed model (CTL) — the very last daily_metrics row is OFTEN a Garmin
     // recovery-only upsert with null CTL, and the chart's solid line + the projection MUST share that anchor
     // (the dashboard uses latestModel/latestIdx for exactly this), else the dotted line skips a column.
     let lastModelDate = today;
     for (let i = metricsRows.length - 1; i >= 0; i--) { if (metricsRows[i].ctl != null) { lastModelDate = metricsRows[i].local_date; break; } }
-    const lastEvent = events7[events7.length - 1];
+    const lastSession = sessions7[sessions7.length - 1];
     const plannedLoads = buildPlannedLoads(upcoming);
     const projected = projectFromMetrics(metricsRows, plannedLoads, {
-      today, horizonDays: Math.max(1, lastEvent.day_offset), neuroAtlDays,
+      today, horizonDays: Math.max(1, lastSession.daysOut), neuroAtlDays,
     });
     // Combined form lookup (real history overlaid by the projection) for arrival/eve reads.
     const formByDate = new Map<string, ArrivalForm>();
@@ -440,51 +460,64 @@ export async function getDashboard(): Promise<Dashboard> {
       ctl: p.ctl, atl: p.atl, tsb: p.tsb, ctlAero: p.ctl_aerobic, tsbAero: p.tsb_aerobic, ctlNeuro: p.ctl_neuromuscular, tsbNeuro: p.tsb_neuromuscular,
     });
 
-    // Group events that share a date — the marker + arrival form are per-DAY; same-day events combine their
-    // loads (one marker, no duplicate keys, panel reachable). events7 is already chronological.
-    const byDate = new Map<string, any[]>();
-    for (const e of events7) { const k = e.date as string; const g = byDate.get(k); if (g) g.push(e); else byDate.set(k, [e]); }
-    const eventDates = new Set(byDate.keys());
+    // Group sessions that share a date — the marker + arrival form are per-DAY; same-day sessions combine
+    // their loads (one marker, no duplicate keys, panel reachable). sessions7 is already chronological.
+    type Sess = { r: any; daysOut: number; kind: "event" | "pinned" | "coach"; aero: number; neu: number };
+    const rank = { event: 3, pinned: 2, coach: 1 } as const; // committed events win the day's kind/link
+    const byDate = new Map<string, Sess[]>();
+    for (const s of sessions7 as Sess[]) { const k = s.r.planned_date as string; const g = byDate.get(k); if (g) g.push(s); else byDate.set(k, [s]); }
 
-    const events: ProjectedEvent[] = [...byDate.entries()].map(([date, group]) => {
+    const markers: PlannedMarker[] = [...byDate.entries()].map(([date, group]) => {
       const arrival = formByDate.get(dateMinusDays(date, 1)) ?? formByDate.get(lastModelDate) ?? null;
-      const aero = group.reduce((s, e) => s + Number(e.estimated_load?.aerobic ?? 0), 0);
-      const neu = group.reduce((s, e) => s + Number(e.estimated_load?.neuro ?? 0), 0);
-      const main = group.reduce((a, b) => ((Number(b.estimated_load?.aerobic ?? 0) + Number(b.estimated_load?.neuro ?? 0)) >
-        (Number(a.estimated_load?.aerobic ?? 0) + Number(a.estimated_load?.neuro ?? 0)) ? b : a));
+      const aero = group.reduce((s, g) => s + g.aero, 0);
+      const neu = group.reduce((s, g) => s + g.neu, 0);
+      // Primary session = highest-priority kind, then heaviest — drives the day's kind, link, sport, title.
+      const main = group.reduce((a, b) =>
+        (rank[b.kind] - rank[a.kind] || (b.aero + b.neu) - (a.aero + a.neu)) > 0 ? b : a);
+      const kind = main.kind;
+      const isKey = group.some((g) => !!g.r.is_key);
+      const systemTag = main.r.system_tag ?? null;
+      // A readiness flag only where arriving fatigued matters: a committed session, a key day, or a hard
+      // coach session — never a routine recovery/rest proposal (would be noise on every easy day).
+      const wantWarn = kind !== "coach" || isKey || HARD_TAGS.has(systemTag ?? "");
       return {
         date,
         offset: daysBetween(lastModelDate, date),
-        daysOut: group[0].day_offset,
-        eventId: group.length === 1 ? (group[0].ref ?? null) : null, // ambiguous on a shared day → no single link
-        sportCode: main.sport,
-        title: group.length === 1 ? group[0].title : group.map((e) => e.title).join(" + "),
-        isKey: group.some((e) => !!e.is_key),
+        daysOut: main.daysOut,
+        kind,
+        sessionId: main.r.id ?? null, // link the primary (highest-priority, heaviest) session of the day
+        sportCode: main.r.sport_id != null ? (sportCodeById.get(main.r.sport_id) ?? null) : null,
+        systemTag,
+        title: group.length === 1 ? main.r.title : group.map((g) => g.r.title).join(" + "),
+        isKey,
         predictedLoad: aero || neu ? Math.round(aero + neu) : null,
         targetCtl: arrival?.ctl ?? null,
         targetAtl: arrival?.atl ?? null,
         targetTsb: arrival?.tsb ?? null,
-        warn: arrival ? assessArrival(arrival, aero, neu) : null,
+        warn: wantWarn && arrival ? assessArrival(arrival, aero, neu) : null,
       };
     }).sort((a, b) => a.offset - b.offset);
 
+    // Dates that get a hollow target dot on the curve (committed or key) → the line plots their eve form.
+    const targetDates = new Set(markers.filter((m) => m.kind !== "coach" || m.isKey).map((m) => m.date));
+
     const series: ProjectedPoint[] = projected
-      .filter((p) => p.local_date > lastModelDate && p.local_date <= lastEvent.date)
+      .filter((p) => p.local_date > lastModelDate && p.local_date <= lastSession.r.planned_date)
       .map((p) => {
-        const isEvent = eventDates.has(p.local_date);
-        // On an event day plot the ARRIVAL (eve) form so the marker sits on the line; otherwise the day's value.
-        const src = isEvent ? formByDate.get(dateMinusDays(p.local_date, 1)) : null;
+        const isTarget = targetDates.has(p.local_date);
+        // On a target day plot the ARRIVAL (eve) form so the dot sits on the line; otherwise the day's value.
+        const src = isTarget ? formByDate.get(dateMinusDays(p.local_date, 1)) : null;
         return {
           date: p.local_date,
           offset: daysBetween(lastModelDate, p.local_date),
           ctl: src?.ctl ?? p.ctl,
           atl: src?.atl ?? p.atl,
           tsb: src?.tsb ?? p.tsb,
-          isEvent,
+          isTarget,
         };
       });
 
-    projection = { events, lastOffset: daysBetween(lastModelDate, lastEvent.date as string), series };
+    projection = { markers, lastOffset: daysBetween(lastModelDate, lastSession.r.planned_date as string), series };
   }
 
   return {

@@ -9,7 +9,7 @@
  *  TSB; movement always synchronised. Dependency-free SVG. */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import type { DailyMetric, Activity, DashboardProjection, ProjectedPoint, ProjectedEvent } from "@/lib/data";
+import type { DailyMetric, Activity, DashboardProjection, ProjectedPoint, PlannedMarker } from "@/lib/data";
 import { loadOlderForme } from "@/app/actions";
 import { HelpButton, type HelpContent } from "./help";
 import { DayDetailPanel, type PlannedDetail } from "./day-detail-panel";
@@ -21,7 +21,10 @@ import { fmt } from "@/lib/format";
 import { VIZ, STATE, AXIS, MUTED } from "@/lib/theme";
 
 const H = 112;
-const PX_PER_DAY = 12;
+// Wider per-day spacing (was 12) so the now-denser forward-plan markers — events, pinned sessions AND
+// coach proposals can fall on consecutive days — have room to breathe ("étaler"); paired with the tighter
+// 3-week history window (DASHBOARD_WINDOW_DAYS) the total chart width stays comfortable.
+const PX_PER_DAY = 16;
 const LOAD_MONTHS = 2;
 const plotWidth = (n: number) => n * PX_PER_DAY;
 // Dotted forecast to the nearest declared event (≤7 d ahead): a contiguous future region (one slot/day,
@@ -322,31 +325,42 @@ function lineChart(
   return { cx, scaleFor, poly };
 }
 
-/** Half-width (px) of each event marker's clickable hit-rect — clamped so neighbouring markers (events a
- *  day apart sit only PX_PER_DAY apart) can't overlap; lone markers get the comfortable full width. */
-function hitHalves(events: ProjectedEvent[]): number[] {
-  return events.map((e, i) => {
+/** Half-width (px) of each marker's clickable hit-rect — clamped so neighbouring markers (sessions a day
+ *  apart sit only PX_PER_DAY apart) can't overlap; lone markers get the comfortable full width. */
+function hitHalves(markers: PlannedMarker[]): number[] {
+  return markers.map((m, i) => {
     let gapDays = Infinity;
-    if (i > 0) gapDays = Math.min(gapDays, e.offset - events[i - 1].offset);
-    if (i < events.length - 1) gapDays = Math.min(gapDays, events[i + 1].offset - e.offset);
+    if (i > 0) gapDays = Math.min(gapDays, m.offset - markers[i - 1].offset);
+    if (i < markers.length - 1) gapDays = Math.min(gapDays, markers[i + 1].offset - m.offset);
     return Math.min(PX_PER_DAY * 0.8, (gapDays * PX_PER_DAY) / 2);
   });
 }
 
-/** The event "target" marker in a chart's trailing region: a dashed vertical guide + the sport glyph,
- *  clickable to reveal the planned event in the day panel. When a no-LLM readiness flag is raised (arriving
- *  fatigued under the plan), the guide takes the warn colour and a ⚠️ sits by the glyph. Shared by CTL/ATL
- *  and TSB so they stay aligned. */
-function FutureMarker({ x, h, sportCode, active, warn, hitHalf, onPick }: {
-  x: number; h: number; sportCode: string | null; active: boolean; warn: "caution" | "hard" | null; hitHalf: number; onPick: () => void;
+/** Glyph for a planned marker: a rest day reads as 😴 (its sport_id is a placeholder), otherwise the sport. */
+const markerGlyph = (kind: PlannedMarker["kind"], systemTag: string | null, sportCode: string | null) =>
+  systemTag === "rest" ? "😴" : sportIcon(sportCode);
+
+/** A planned "target" marker in a chart's trailing region: a dashed vertical guide + a glyph, clickable to
+ *  reveal the session in the day panel. Two tiers (no new category hue — the design system keeps colour for
+ *  physiology): the athlete's COMMITTED plan (declared events + pinned/accepted sessions) is drawn solid &
+ *  full-opacity; a COACH proposal is muted (fainter guide + glyph) — visible & clickable, but clearly "just
+ *  suggested". A no-LLM readiness flag (arriving fatigued under the plan) tints the guide + adds a ⚠️.
+ *  Shared by CTL/ATL and TSB so they stay aligned. */
+function FutureMarker({ x, h, kind, glyph, active, warn, hitHalf, onPick }: {
+  x: number; h: number; kind: PlannedMarker["kind"]; glyph: string; active: boolean;
+  warn: "caution" | "hard" | null; hitHalf: number; onPick: () => void;
 }) {
   const warnColor = warn === "hard" ? STATE.rest : warn === "caution" ? STATE.caution : null;
+  const coach = kind === "coach";
+  // Selected → solid thick guide; else dashed = projected/future. Coach proposals sit fainter than the
+  // athlete's committed plan so the eye lands on what's locked in first.
+  const guideOpacity = active ? 1 : warn ? 0.8 : coach ? 0.28 : 0.5;
+  const glyphOpacity = active ? 1 : coach ? 0.55 : 1;
   return (
     <g>
-      {/* selected event → solid, thicker guide (clear emphasis); unselected → dashed = projected/future */}
       <line x1={x} y1={0} x2={x} y2={h} stroke={warnColor ?? AXIS} strokeWidth={active ? 1.5 : 1}
-        strokeDasharray={active ? undefined : "3 3"} opacity={active ? 1 : warn ? 0.8 : 0.5} />
-      <text x={x} y={11} textAnchor="middle" fontSize={11}>{sportIcon(sportCode)}</text>
+        strokeDasharray={active ? undefined : coach ? "2 3" : "3 3"} opacity={guideOpacity} />
+      <text x={x} y={11} textAnchor="middle" fontSize={coach ? 10 : 11} opacity={glyphOpacity}>{glyph}</text>
       {warn && <text x={x + 6} y={6} textAnchor="middle" fontSize={8.5}>⚠️</text>}
       <rect x={x - hitHalf} y={0} width={hitHalf * 2} height={h} fill="transparent" className="cursor-pointer" onClick={onPick} />
     </g>
@@ -428,13 +442,14 @@ export function ChartsSection({
   const fusedNode = <CtlAtlChart {...shared} kind="fused" selM={selM} projection={projection} />;
   const tsbNode = <TsbChart {...shared} selM={selM} projection={projection} />;
 
-  // When the selected day is one of the projected events (not a real metrics row), show its prevision +
+  // When the selected day is one of the projected sessions (not a real metrics row), show its prevision +
   // readiness flag in the panel.
-  const selEvent = projection?.events.find((e) => e.date === panelDate) ?? null;
-  const plannedDetail: PlannedDetail | null = selEvent ? {
-    eventId: selEvent.eventId, sportCode: selEvent.sportCode, title: selEvent.title,
-    predictedLoad: selEvent.predictedLoad, targetCtl: selEvent.targetCtl, targetAtl: selEvent.targetAtl,
-    targetTsb: selEvent.targetTsb, warn: selEvent.warn,
+  const selMarker = projection?.markers.find((m) => m.date === panelDate) ?? null;
+  const plannedDetail: PlannedDetail | null = selMarker ? {
+    kind: selMarker.kind, sessionId: selMarker.sessionId, sportCode: selMarker.sportCode,
+    systemTag: selMarker.systemTag, title: selMarker.title,
+    predictedLoad: selMarker.predictedLoad, targetCtl: selMarker.targetCtl, targetAtl: selMarker.targetAtl,
+    targetTsb: selMarker.targetTsb, warn: selMarker.warn,
   } : null;
 
   return (
@@ -505,8 +520,8 @@ type SharedChart = {
 };
 
 /** CTL / ATL line chart — or both fused (mobile). Thin ridge line(s); ATL alone shows a faint CTL ref.
- *  When an event is declared ahead, a DOTTED projected line continues each channel over the planned loads
- *  from the last real point to the event's hollow "target" marker. */
+ *  When sessions are planned ahead, a DOTTED projected line continues each channel over the planned loads
+ *  from the last real point through them, with a hollow "target" dot on committed/key days. */
 function CtlAtlChart({ kind, metrics, selected, onSelect, register, onReachStart, loadingOlder, selM, h, trailingPx, baseIdx, defaultDate, projection }: SharedChart & { kind: "ctl" | "atl" | "fused"; projection?: DashboardProjection | null }) {
   const n = metrics.length;
   const w = plotWidth(n);
@@ -515,17 +530,19 @@ function CtlAtlChart({ kind, metrics, selected, onSelect, register, onReachStart
   // Future days/events count their offset from the last day WITH a model (baseIdx) — NOT n-1, which may be a
   // recovery-only row with null CTL; keeping them aligned stops the dotted line skipping a column.
   const base = baseIdx ?? n - 1;
-  type S = { vals: (number | null)[]; color: string; projSel: (p: ProjectedPoint) => number; targetSel: (e: ProjectedEvent) => number | null };
-  const series: S[] = kind === "ctl" ? [{ vals: ctl, color: VIZ.aerobic, projSel: (p) => p.ctl, targetSel: (e) => e.targetCtl }]
-    : kind === "atl" ? [{ vals: atl, color: VIZ.neuro, projSel: (p) => p.atl, targetSel: (e) => e.targetAtl }]
-    : [{ vals: ctl, color: VIZ.aerobic, projSel: (p) => p.ctl, targetSel: (e) => e.targetCtl },
-       { vals: atl, color: VIZ.neuro, projSel: (p) => p.atl, targetSel: (e) => e.targetAtl }];
+  type S = { vals: (number | null)[]; color: string; projSel: (p: ProjectedPoint) => number; targetSel: (m: PlannedMarker) => number | null };
+  const series: S[] = kind === "ctl" ? [{ vals: ctl, color: VIZ.aerobic, projSel: (p) => p.ctl, targetSel: (m) => m.targetCtl }]
+    : kind === "atl" ? [{ vals: atl, color: VIZ.neuro, projSel: (p) => p.atl, targetSel: (m) => m.targetAtl }]
+    : [{ vals: ctl, color: VIZ.aerobic, projSel: (p) => p.ctl, targetSel: (m) => m.targetCtl },
+       { vals: atl, color: VIZ.neuro, projSel: (p) => p.atl, targetSel: (m) => m.targetAtl }];
   const refVals = kind === "atl" ? ctl : null; // faint CTL behind ATL
   const { cx, poly } = lineChart(series, refVals, n, w);
 
   const proj = projection?.series ?? [];
-  const events = projection?.events ?? [];
-  const xOfEvent = (e: ProjectedEvent) => cxAt(base + e.offset);
+  const markers = projection?.markers ?? [];
+  // A hollow target dot on the curve only for COMMITTED/key markers — routine coach days stay glyph-only.
+  const dotMarkers = markers.filter((m) => m.kind !== "coach" || m.isKey);
+  const xOfMarker = (m: PlannedMarker) => cxAt(base + m.offset);
   // Last real (non-null) point of a series — the dotted projection anchors here for visual continuity.
   const lastReal = (vals: (number | null)[]) => {
     for (let i = vals.length - 1; i >= 0; i--) if (vals[i] != null) return { i, v: vals[i]! };
@@ -543,13 +560,13 @@ function CtlAtlChart({ kind, metrics, selected, onSelect, register, onReachStart
     if (projection && vis.hi >= n - 1) {
       for (const s of series) {
         for (const p of proj) mx = Math.max(mx, s.projSel(p));
-        for (const e of events) { const t = s.targetSel(e); if (t != null) mx = Math.max(mx, t); }
+        for (const m of dotMarkers) { const t = s.targetSel(m); if (t != null) mx = Math.max(mx, t); }
       }
     }
     return { lo, hi, max: mx * 1.1 };
   };
-  // Dotted forecast points for a channel: last real point → each projected day (event days carry the
-  // arrival/eve form so markers sit on the line; post-event days reflect each event's load).
+  // Dotted forecast points for a channel: last real point → each projected day (target days carry the
+  // arrival/eve form so dots sit on the line; post-session days reflect each session's load).
   const projPoly = (s: S, yOf: (v: number) => number) => {
     const pts: string[] = [];
     const a = lastReal(s.vals);
@@ -580,12 +597,13 @@ function CtlAtlChart({ kind, metrics, selected, onSelect, register, onReachStart
         return (<>{series.map((s, k) => (s.vals[i] != null ? <circle key={k} cx={cx(i)} cy={yOf(s.vals[i]!)} r={3} fill={s.color} /> : null))}</>);
       }}
       renderTrailing={projection ? () => {
-        const hh = hitHalves(events);
+        const hh = hitHalves(markers);
         return (
           <>
-            {events.map((e, i) => (
-              <FutureMarker key={e.date} x={xOfEvent(e)} h={h} sportCode={e.sportCode} active={selected === e.date}
-                warn={e.warn?.level ?? null} hitHalf={hh[i]} onPick={() => onSelect(selected === e.date ? null : e.date)} />
+            {markers.map((m, i) => (
+              <FutureMarker key={m.date} x={xOfMarker(m)} h={h} kind={m.kind}
+                glyph={markerGlyph(m.kind, m.systemTag, m.sportCode)} active={selected === m.date}
+                warn={m.warn?.level ?? null} hitHalf={hh[i]} onPick={() => onSelect(selected === m.date ? null : m.date)} />
             ))}
           </>
         );
@@ -605,12 +623,12 @@ function CtlAtlChart({ kind, metrics, selected, onSelect, register, onReachStart
               const pts = projPoly(s, yOf);
               return pts ? <polyline key={`p${k}`} points={pts} fill="none" stroke={s.color} strokeWidth={1.4} strokeDasharray="2 2.5" opacity={0.85} strokeLinejoin="round" strokeLinecap="round" /> : null;
             })}
-            {/* event-target markers: hollow + dashed = projected; FILLED when that event is selected */}
-            {events.flatMap((e) => series.map((s, k) => {
-              const t = s.targetSel(e);
+            {/* target markers (committed/key only): hollow + dashed = projected; FILLED when selected */}
+            {dotMarkers.flatMap((m) => series.map((s, k) => {
+              const t = s.targetSel(m);
               if (t == null) return null;
-              const on = selected === e.date;
-              return <circle key={`f${e.date}-${k}`} cx={xOfEvent(e)} cy={yOf(t)} r={on ? 4 : 3.5}
+              const on = selected === m.date;
+              return <circle key={`f${m.date}-${k}`} cx={xOfMarker(m)} cy={yOf(t)} r={on ? 4 : 3.5}
                 fill={on ? s.color : "none"} stroke={s.color} strokeWidth={1.6} strokeDasharray={on ? undefined : "2 1.5"} />;
             }))}
           </>
@@ -621,8 +639,8 @@ function CtlAtlChart({ kind, metrics, selected, onSelect, register, onReachStart
 }
 
 /** TSB bar chart — frais (green) / fatigue productive (amber) / surcharge (red), with the 0 line + zones.
- *  When an event is declared ahead, a DOTTED projected freshness path continues from the last real bar to
- *  the event's hollow target marker (coloured by the arrival state). */
+ *  When sessions are planned ahead, a DOTTED projected freshness path continues from the last real bar
+ *  through them, with a hollow target dot on committed/key days (coloured by the arrival state). */
 function TsbChart({ metrics, selected, onSelect, register, onReachStart, loadingOlder, selM, h, trailingPx, baseIdx, defaultDate, projection }: SharedChart & { projection?: DashboardProjection | null }) {
   const n = metrics.length;
   const w = plotWidth(n);
@@ -630,8 +648,9 @@ function TsbChart({ metrics, selected, onSelect, register, onReachStart, loading
   const bw = (w / Math.max(1, n)) * 0.66;
   const base = baseIdx ?? n - 1; // future region continues from the last day WITH a model (see CtlAtlChart)
   const proj = projection?.series ?? [];
-  const events = projection?.events ?? [];
-  const xOfEvent = (e: ProjectedEvent) => cxAt(base + e.offset);
+  const markers = projection?.markers ?? [];
+  const dotMarkers = markers.filter((m) => m.kind !== "coach" || m.isKey); // target dots: committed/key only
+  const xOfMarker = (m: PlannedMarker) => cxAt(base + m.offset);
   const tsbBand = (val: number) => (val >= 0 ? STATE.ready : val > -30 ? STATE.caution : STATE.rest);
   const lastRealTsb = (() => {
     for (let i = metrics.length - 1; i >= 0; i--) if (metrics[i].tsb != null) return { i, v: metrics[i].tsb! };
@@ -643,7 +662,7 @@ function TsbChart({ metrics, selected, onSelect, register, onReachStart, loading
     for (let i = lo; i <= hi; i++) { mx = Math.max(mx, tsb[i]); mn = Math.min(mn, tsb[i]); }
     if (projection && vis.hi >= n - 1) {
       for (const p of proj) { mx = Math.max(mx, p.tsb); mn = Math.min(mn, p.tsb); }
-      for (const e of events) if (e.targetTsb != null) { mx = Math.max(mx, e.targetTsb); mn = Math.min(mn, e.targetTsb); }
+      for (const m of dotMarkers) if (m.targetTsb != null) { mx = Math.max(mx, m.targetTsb); mn = Math.min(mn, m.targetTsb); }
     }
     return { lo, hi, max: mx, min: mn };
   };
@@ -662,12 +681,13 @@ function TsbChart({ metrics, selected, onSelect, register, onReachStart, loading
       trailingPx={trailingPx} defaultDate={defaultDate}
       axis={(vis) => { const s = scaleFor(vis); return { min: s.min, max: s.max }; }}
       renderTrailing={projection ? () => {
-        const hh = hitHalves(events);
+        const hh = hitHalves(markers);
         return (
           <>
-            {events.map((e, i) => (
-              <FutureMarker key={e.date} x={xOfEvent(e)} h={h} sportCode={e.sportCode} active={selected === e.date}
-                warn={e.warn?.level ?? null} hitHalf={hh[i]} onPick={() => onSelect(selected === e.date ? null : e.date)} />
+            {markers.map((m, i) => (
+              <FutureMarker key={m.date} x={xOfMarker(m)} h={h} kind={m.kind}
+                glyph={markerGlyph(m.kind, m.systemTag, m.sportCode)} active={selected === m.date}
+                warn={m.warn?.level ?? null} hitHalf={hh[i]} onPick={() => onSelect(selected === m.date ? null : m.date)} />
             ))}
           </>
         );
@@ -677,7 +697,7 @@ function TsbChart({ metrics, selected, onSelect, register, onReachStart, loading
         const { lo, hi, max, min } = scaleFor(vis);
         const span = max - min || 1;
         const yOf = (val: number) => h - ((val - min) / span) * h;
-        // Dotted freshness path: last real bar → each projected day (event days carry the arrival/eve form).
+        // Dotted freshness path: last real bar → each projected day (target days carry the arrival/eve form).
         const projPts: string[] = [];
         if (projection) {
           if (lastRealTsb) projPts.push(`${cxAt(lastRealTsb.i).toFixed(1)},${yOf(lastRealTsb.v).toFixed(1)}`);
@@ -697,15 +717,15 @@ function TsbChart({ metrics, selected, onSelect, register, onReachStart, loading
               return <rect key={i} x={x} y={y} width={bw} height={Math.max(0.5, h)} rx={1}
                 fill={tsbBand(val)} opacity={0.9} />;
             })}
-            {/* dotted projected freshness path (neutral so it doesn't imply a single state) + per-event targets */}
+            {/* dotted projected freshness path (neutral so it doesn't imply a single state) + per-target dots */}
             {projection && projPts.length > 1 && (
               <polyline points={projPts.join(" ")} fill="none" stroke={MUTED} strokeWidth={1.4} strokeDasharray="2 2.5" opacity={0.85} strokeLinejoin="round" strokeLinecap="round" />
             )}
-            {events.map((e) => {
-              if (e.targetTsb == null) return null;
-              const on = selected === e.date;
-              return <circle key={`f${e.date}`} cx={xOfEvent(e)} cy={yOf(e.targetTsb)} r={on ? 4 : 3.5}
-                fill={on ? tsbBand(e.targetTsb) : "none"} stroke={tsbBand(e.targetTsb)} strokeWidth={1.6} strokeDasharray={on ? undefined : "2 1.5"} />;
+            {dotMarkers.map((m) => {
+              if (m.targetTsb == null) return null;
+              const on = selected === m.date;
+              return <circle key={`f${m.date}`} cx={xOfMarker(m)} cy={yOf(m.targetTsb)} r={on ? 4 : 3.5}
+                fill={on ? tsbBand(m.targetTsb) : "none"} stroke={tsbBand(m.targetTsb)} strokeWidth={1.6} strokeDasharray={on ? undefined : "2 1.5"} />;
             })}
           </>
         );

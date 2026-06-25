@@ -6,7 +6,7 @@ import type { Activity } from "@/lib/data";
 import { aggregate } from "@/lib/aggregate";
 import { fmt, longDateFr } from "@/lib/format";
 import { VIZ, STATE } from "@/lib/theme";
-import { sportIcon } from "@/lib/labels";
+import { sportIcon, SYSTEM_TAG_FR } from "@/lib/labels";
 import { ActivityLine } from "./activity-row";
 
 function ChannelDot({ color, label, value }: { color: string; label: string; value: number }) {
@@ -18,16 +18,25 @@ function ChannelDot({ color, label, value }: { color: string; label: string; val
   );
 }
 
-/** A future planned event shown in the panel when its day has no realised activity yet. */
+/** A future planned session shown in the panel when its day has no realised activity yet. */
 export type PlannedDetail = {
-  eventId: string | null; // planned_sessions id → /seance/[id] (the event detail), when known
+  kind: "event" | "pinned" | "coach"; // event/pinned = the athlete's committed plan; coach = a proposal
+  sessionId: string | null; // planned_sessions id → /seance/[id] (the session detail), when known
   sportCode: string | null;
+  systemTag: string | null;  // coach focus (rest/recovery/…) — shown as a sub-label for coach proposals
   title: string;
   predictedLoad: number | null;
   targetCtl: number | null;
   targetAtl: number | null;
   targetTsb: number | null;
   warn: { level: "caution" | "hard"; message: string } | null;
+};
+
+/** Short FR label for the kind of plan a marker represents (panel chip). */
+const PLANNED_KIND_FR: Record<PlannedDetail["kind"], string> = {
+  event: "Événement",
+  pinned: "Séance prévue",
+  coach: "Proposé par le coach",
 };
 
 export function DayDetailPanel({
@@ -44,15 +53,26 @@ export function DayDetailPanel({
       <div className="mt-3 rounded-xl border border-dashed border-stone-300 bg-stone-50 p-4 dark:border-stone-600 dark:bg-stone-800/40">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <div className="text-sm font-semibold text-stone-900 dark:text-stone-50">Prévu · {longDateFr(date)}</div>
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <span className="text-sm font-semibold text-stone-900 dark:text-stone-50">Prévu · {longDateFr(date)}</span>
+              {/* Kind chip: committed plan (event/pinned) reads Alpine = "mine/primary"; a coach proposal stays neutral. */}
+              <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                planned.kind === "coach"
+                  ? "bg-stone-100 text-stone-500 dark:bg-stone-800 dark:text-stone-400"
+                  : "bg-alpine-50 text-alpine-700 dark:bg-alpine-950/40 dark:text-alpine-300"
+              }`}>{PLANNED_KIND_FR[planned.kind]}</span>
+            </div>
             <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
-              {planned.eventId ? (
+              {planned.sessionId ? (
                 <Link
-                  href={`/seance/${planned.eventId}`}
+                  href={`/seance/${planned.sessionId}`}
                   className="group inline-flex items-center gap-1.5 text-sm text-stone-700 transition-colors hover:text-alpine-700 dark:text-stone-200 dark:hover:text-alpine-300"
                 >
                   <span aria-hidden>{sportIcon(planned.sportCode)}</span>
                   <span className="font-medium">{planned.title}</span>
+                  {planned.systemTag && SYSTEM_TAG_FR[planned.systemTag] && (
+                    <span className="text-xs text-stone-400">· {SYSTEM_TAG_FR[planned.systemTag]}</span>
+                  )}
                   <span aria-hidden className="text-stone-300 transition-colors group-hover:text-alpine-600 dark:text-stone-600 dark:group-hover:text-alpine-400">→</span>
                 </Link>
               ) : (

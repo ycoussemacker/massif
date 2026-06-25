@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { Suspense } from "react";
-import { getDashboard, latestModel, DASHBOARD_WINDOW_MONTHS, type DailyMetric } from "@/lib/data";
+import { getDashboard, latestModel, DASHBOARD_WINDOW_DAYS, type DailyMetric } from "@/lib/data";
 import { ChartsSection } from "@/components/charts-section";
 import { ActivityCard, ActivityRow, ActivityTableHead } from "@/components/activity-row";
 import { Nav } from "@/components/nav";
@@ -253,7 +253,7 @@ async function DashboardBody() {
         </section>
 
         <footer className="mt-8 text-center text-xs text-stone-400">
-          Massif · indicateurs sur {DASHBOARD_WINDOW_MONTHS} mois ({metrics.length} jours) · historique complet dans Analyse
+          Massif · indicateurs sur {Math.round(DASHBOARD_WINDOW_DAYS / 7)} semaines ({metrics.length} jours) · historique complet dans Analyse
         </footer>
     </>
   );
