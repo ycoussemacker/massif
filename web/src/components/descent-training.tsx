@@ -3,9 +3,25 @@
  *  Design system: descent = Summit/neuro; the adaptation baseline is a neutral (stone) reference. */
 import type { DescentTraining } from "@/lib/descent-training";
 import { DescentChart } from "./descent-chart";
+import { HelpButton, type HelpContent } from "./help";
 import { VIZ, MUTED } from "@/lib/theme";
 
 const fmtM = (m: number) => `${new Intl.NumberFormat("fr-FR").format(Math.round(m))} m`;
+
+/** What being descent-adapted actually buys, on the load model (coach-facing, accurate to load.py:
+ *  the repeated-bout descent_factor ±25% + the exposure-dependent neuromuscular recovery τ). */
+const ADAPT_HELP: HelpContent = {
+  title: "Adaptation à la descente — ce que ça change",
+  blocks: [
+    { type: "p", text: "« Exposition » = ton volume de descente (D−) sur 28 j. « Adaptation » = ton niveau de référence, plus lent. Plus tu descends régulièrement, plus tes quadriceps et tendons encaissent le travail excentrique du freinage (effet « repeated-bout »)." },
+    { type: "dl", items: [
+      { k: "Au-dessus (bien adapté)", v: "le modèle compte le coût neuro de tes descentes comme plus FAIBLE (jusqu'à −25 %) ET ta fatigue neuro récupère plus vite." },
+      { k: "En-dessous (en reprise)", v: "le coût neuro de tes descentes monte (jusqu'à +25 %) et les courbatures traînent plus longtemps — une grosse descente après une coupure casse davantage." },
+    ] },
+    { type: "formula", lines: ["coût neuro descente : ×0,75 (adapté) … ×1,25 (désadapté)", "récupération neuro :  ~11,5 j (adapté) … ~16,5 j (désadapté)"] },
+    { type: "p", text: "Concrètement : rester exposé te laisse encaisser plus de descente et récupérer plus vite, donc le coach peut programmer davantage de D−. N'affecte que le canal neuromusculaire — pas l'aérobie." },
+  ],
+};
 const STATE: Record<"building" | "maintaining" | "detraining", { text: string; tone: string }> = {
   building: { text: "tu montes en capacité descente", tone: "text-summit-700 dark:text-summit-400" },
   maintaining: { text: "tu maintiens ta capacité descente", tone: "text-stone-500 dark:text-stone-400" },
@@ -48,13 +64,14 @@ export function DescentTrainingCard({ data }: { data: DescentTraining }) {
             </span>
           </div>
           <DescentChart points={points} />
-          <p className="mt-2 text-xs text-stone-500 dark:text-stone-400">
+          <div className="mt-2 flex flex-wrap items-center gap-x-1 text-xs text-stone-500 dark:text-stone-400">
             <span className="tabular-nums">
               expo <span className="font-medium text-summit-700 dark:text-summit-400">{fmtM(currentFast)}</span>
               {" · "}adaptation {fmtM(currentSlow)}
             </span>
-            {s && <span className={`ml-1 ${s.tone}`}>— {s.text}</span>}
-          </p>
+            {s && <span className={s.tone}>— {s.text}</span>}
+            <HelpButton content={ADAPT_HELP} />
+          </div>
         </>
       )}
     </section>
