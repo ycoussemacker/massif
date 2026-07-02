@@ -171,6 +171,19 @@ const isHard = (tag: SystemTag) => tag.startsWith("hard");
 const altHard = (lastSys: "aerobic" | "neuro" | null): SystemTag =>
   lastSys === "aerobic" ? "hard_neuromuscular" : "hard_aerobic";
 
+/** Sport of a GENERATED day (quick-win precursor to the discipline-profile layer J). The default put the
+ *  SAME single sport on every day — so a rest/recovery/easy day showed the mountain-sport icon (🥾 rando).
+ *  Instead: a REST day carries NO sport (no icon); easy & recovery run on the flat (a foot-sport athlete's
+ *  base is running 🏃, not the mountain sport); quality/structural days carry the goal sport (⛰️ trail).
+ *  Full per-day multi-sport (rotating renfo/vélo/escalade onto the right days) is the J layer. */
+const FOOT_GOAL = new Set(["trail_running", "hiking", "running", "trail"]);
+const baseSport = (goalSport: string): string => (FOOT_GOAL.has(goalSport) ? "running" : goalSport);
+function sportForDay(tag: SystemTag, fav: string): string {
+  if (tag === "rest") return "";                                   // rest → no sport (no icon)
+  if (tag === "easy" || tag === "recovery") return baseSport(fav); // base endurance ≠ the mountain sport
+  return fav;                                                      // quality / structural → the goal sport
+}
+
 // ── Per-day target load + channel split ─────────────────────────────────────────────────────────
 /** Target load for a coach-prescribed day. PERSONALISED: the athlete's own per-session-type baseline
  *  (ctx.session_baselines, derived from ~90 d of their efforts) when it exists, else the population
@@ -295,7 +308,7 @@ export function buildWeekPlan(ctx: any, readiness: Readiness, anchors: Map<numbe
     }
 
     days.push({
-      day_offset: off, sport_code: fav, system_tag: tag, focus: focusFor(tag, null),
+      day_offset: off, sport_code: sportForDay(tag, fav), system_tag: tag, focus: focusFor(tag, null),
       target_load: round(targetLoadFor(tag, ctx) * loadMul), is_key: false, anchors_event_ref: null,
     });
 

@@ -154,17 +154,25 @@ test("readiness (F5): ACWR amber only when high AND load rising AND TSB not nega
   })), "amber");
 });
 
-test("sport (#1 quick-win): generated days follow the PRIMARY GOAL's sport, not the most-frequent", () => {
-  // Base-phase volume is rando (hiking most frequent) but the goal is trail → generated days = trail.
+test("sport (#1): quality = goal sport, easy/recovery = base run, rest = no sport (not all rando)", () => {
+  // Base-phase volume is rando (hiking most frequent) but the goal is trail.
   const w = buildWeekPlan(ctx({
     favourite_sports: ["hiking", "running"],
     primary_goal: { sport: "trail_running", rank: 1 },
   }), "green");
-  const gen = w.filter((d) => !d.anchors_event_ref);
-  assert.ok(gen.every((d) => d.sport_code === "trail_running"), "generated days use the goal sport (trail), not hiking");
-  // Fallback when the goal carries no sport → most-frequent sport.
+  for (const d of w.filter((x) => !x.anchors_event_ref)) {
+    if (d.system_tag === "rest") assert.equal(d.sport_code, "", "rest → no sport icon");
+    else if (d.system_tag === "easy" || d.system_tag === "recovery")
+      assert.equal(d.sport_code, "running", "easy/recovery → running (base), not rando/trail");
+    else assert.equal(d.sport_code, "trail_running", "quality/structural → the goal sport (trail)");
+  }
+  // Fallback when the goal carries no sport: quality falls back to the most-frequent sport…
   const w2 = buildWeekPlan(ctx({ favourite_sports: ["hiking"], primary_goal: { rank: 1 } }), "green");
-  assert.ok(w2.every((d) => d.sport_code === "hiking"), "no goal sport → falls back to most-frequent");
+  const hard2 = w2.find((d) => d.system_tag.startsWith("hard"));
+  assert.equal(hard2?.sport_code, "hiking", "no goal sport → quality falls back to most-frequent");
+  // …but easy/recovery still read as a flat run, and rest still has no sport.
+  assert.ok(w2.filter((d) => d.system_tag === "easy" || d.system_tag === "recovery").every((d) => d.sport_code === "running"));
+  assert.ok(w2.filter((d) => d.system_tag === "rest").every((d) => d.sport_code === ""));
 });
 
 test("targetLoadFor: default when no history, personalised baseline when present", () => {
