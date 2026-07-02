@@ -175,6 +175,48 @@ Le coach propose un plan **7 jours** construit sur des principes simples et déf
   - **Objectifs secondaires / moins prioritaires** : affûtage **plus court (max ~1 semaine)**, allègement
     léger.
 
+> **Ce que dit la recherche sur l'affûtage** (méta-analyses Bosquet 2007, Wang 2023 ; revue Mujika &
+> Padilla 2003 — détail sourcé dans [`research/periodisation-phases-seances-cles.md`](research/periodisation-phases-seances-cles.md)) :
+> durée **7-21 j** (optimum souvent **10-14 j**), **baisse de volume de 41-60 %**, **intensité ET
+> fréquence maintenues** (on garde des rappels courts à intensité de course), **décroissance
+> exponentielle/progressive** plutôt qu'une chute brutale, et taper plus efficace **après un bloc de
+> surcharge**. La **fraîcheur cible le jour J** se situe vers **TSB 0 à +10** pour un objectif
+> d'endurance. Conséquence pour nos deux canaux : on **réduit le coût neuromusculaire plus tôt**
+> (descente/excentrique, dès J-10 à J-14) que l'intensité aérobie. *(Aujourd'hui notre affûtage est
+> linéaire et ne concerne que les objectifs — pistes d'évolution en Q18.)*
+
+---
+
+### 5.2 Découper l'objectif en phases (périodisation) — *cadre de référence, pas encore implémenté*
+
+Au-delà du plan de 7 jours, un objectif lointain se prépare en **phases** (vocabulaire : macrocycle =
+la saison ; mésocycles = blocs de 3-6 semaines ; microcycles = semaines). Les phases canoniques et
+leurs points de départ chiffrés :
+
+| Phase | Durée | Objectif | Ce qui change |
+|---|---|---|---|
+| **Base** (prépa générale) | 4-10 sem | socle aérobie, robustesse musculo-tendineuse | volume ↑, intensité basse, peu de spécifique |
+| **Build** (prépa spécifique) | 3-8 sem | seuil, côtes, **descente**, sorties longues | intensité ciblée ↑, spécificité ↑↑ |
+| **Peak** (pré-compétition) | 1-4 sem | fraîcheur sans désentraînement | volume ↓, intensité-clé maintenue |
+| **Affûtage** (taper) | 7-21 j | évacuer la fatigue (voir §5.1) | volume −41-60 %, intensité maintenue |
+| **Transition** (récup) | 1-4 sem | restaurer, faire baisser le CTL | charge très basse |
+
+En montagne (plusieurs qualités en conflit : volume aérobie, tolérance D−, force de portage, technique),
+l'approche la plus défendable est **hybride** : base plutôt linéaire, puis **blocs concentrés**
+(force/descente, puis spécificité), puis affûtage. La distribution d'intensité de fond reste
+**polarisée ~80/20** (Seiler).
+
+Deux garde-fous chiffrés pour **progresser sans se blesser**, à terme **par canal** :
+- **Vitesse de montée du fond (CTL)** : ~**+3 à +5 points/semaine** côté aérobie, **+1 à +3** côté
+  **neuromusculaire** (les structures encaissent plus lentement — un CTL global masque le vrai risque).
+- **Semaines de décharge (deload)** : une toutes les **3-4 semaines** (**3:1** en base, **2:1** dès
+  qu'on empile descente/portage/force), **−30 à −50 %** de volume, intensité conservée.
+
+> Ces valeurs sont des **points de départ sourcés** (détail + références dans
+> [`research/periodisation-phases-seances-cles.md`](research/periodisation-phases-seances-cles.md)).
+> Massif **ne découpe pas encore la saison en phases** ni ne borne la vitesse de montée du CTL (le plan
+> est une fenêtre glissante de 7 jours) — c'est l'objet des questions Q15-Q18.
+
 ---
 
 ## 6. Estimer la charge d'une séance **prévue**
@@ -255,9 +297,10 @@ physiologique, lui, ne dépend pas de l'IA.
 
 C'est la section la plus importante : voici nos **valeurs de départ** et nos **partis pris**, à
 challenger. Toutes sont ajustables, et destinées à être personnalisées à partir des données de l'athlète.
-Chaque point porte un numéro stable (**Q1 … Q14**) pour qu'on puisse y revenir un par un. Deux d'entre eux
-(**Q2** descente, **Q5** RPE) ont fait l'objet d'une **revue de littérature** : elle est **faite** — voir
-les correctifs prévus ci-dessous et le détail sourcé dans `research/descent-neuromuscular-rpe.md`.
+Chaque point porte un numéro stable (**Q1 … Q18**) pour qu'on puisse y revenir un par un. Plusieurs ont
+fait l'objet d'une **revue de littérature** : **Q2** (descente) et **Q5** (RPE) — détail sourcé dans
+`research/descent-neuromuscular-rpe.md` ; **Q15-Q18** (périodisation, phases, affûtage, pilotage de la
+charge) — détail sourcé dans `research/periodisation-phases-seances-cles.md`.
 
 ### Calcul de charge
 - **Q1 — Ancrage de la charge.** 1 h pile au seuil = 100 points ; la charge ∝ durée × intensité² (le carré
@@ -328,6 +371,26 @@ les correctifs prévus ci-dessous et le détail sourcé dans `research/descent-n
   les très longues sorties (5–7 h), même faciles. Est-ce le bon reflet du **stress d'entraînement** réel,
   ou faut-il introduire des **rendements décroissants** au-delà d'un certain temps pour ces journées
   d'endurance fondamentale ?
+
+### Périodisation, phases & pilotage de la charge (recherche faite — `research/periodisation-phases-seances-cles.md`)
+- **Q15 — Découpage en phases & vitesse de montée du CTL.** On propose de découper un objectif en
+  base/build/peak/affûtage/transition (§5.2) et de **borner la montée du CTL à +3-5/sem (aérobie) /
+  +1-3/sem (neuromusculaire)**. Aujourd'hui Massif n'a **ni phases ni garde-fou de ramp-rate** (plan
+  glissant 7 j). Ces fourchettes (issues de la pratique TrainingPeaks/Friel — niveau de preuve = avis
+  d'expert, pas d'ECR) te semblent-elles justes pour un public montagne ?
+- **Q16 — Seuil ACWR & sa controverse.** On code aujourd'hui un seuil unique ~1,5 (rouge). La
+  littérature propose une **bande 0,8-1,3** (vigilance au-delà de 1,3, alerte >1,5) **mais critique
+  fortement l'ACWR** (couplage mathématique, pas de preuve causale — Impellizzeri 2020, Lolli 2019) :
+  à lire comme **signal descriptif** + charge absolue, pas comme feu rouge automatique. Faut-il ajouter
+  l'orange à 1,3 et un ACWR **par canal** (surtout neuromusculaire) ?
+- **Q17 — Cadence de décharge (deload).** Proposée : **3:1** en base, **2:1** en bloc neuromusculaire,
+  **−30-50 %** de volume (intensité conservée). Non implémentée. Bonne cadence pour la montagne (où un
+  « jour facile » est souvent une rando de 3-4 h) ?
+- **Q18 — Forme de l'affûtage & événements.** La recherche (Bosquet, Mujika, Wang) penche pour une
+  décroissance **exponentielle** avec **intensité maintenue** et un **canal neuro coupé plus tôt**
+  (J-10 à J-14) ; notre affûtage actuel est **linéaire** et coupe l'intensité près de J (`hardCap=0`).
+  Faut-il l'aligner ? Et faut-il **affûter aussi pour un événement clé** (aujourd'hui on n'allège que
+  pour les objectifs — §5.1) ?
 
 ---
 
