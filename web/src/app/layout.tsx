@@ -3,6 +3,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { RegenProvider } from "@/components/regen-provider";
 import { GarminAutoRefresh } from "@/components/garmin-auto-refresh";
+import { StravaAutoRefresh } from "@/components/strava-auto-refresh";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -52,8 +53,10 @@ export default function RootLayout({
     >
       <body className="min-h-full flex flex-col">
         <RegenProvider>{children}</RegenProvider>
-        {/* Pull Garmin recovery on app open if this morning's isn't in yet (background, no UI). */}
+        {/* On app open (background, no UI): pull Garmin recovery if this morning's isn't in yet, and
+            refresh Strava activities + the load model so the graphs are current without a manual gesture. */}
         <GarminAutoRefresh />
+        <StravaAutoRefresh />
       </body>
     </html>
   );

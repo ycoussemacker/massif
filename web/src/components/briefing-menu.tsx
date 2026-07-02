@@ -4,10 +4,11 @@ import { useEffect, useRef, useState } from "react";
 import { useBriefingRegen } from "./briefing-regen";
 
 /** Discreet ⋮ menu on the coach card. Hides the deliberate, rate-limited "Régénérer le briefing"
- *  action (a paid Claude call): pulls fresh Strava + recomputes the model, then rewrites today's
- *  briefing in the chosen coach voice with the latest profile/goals. Distinct from the cheap, LLM-free
- *  pull-to-refresh (lib syncNow) — that stays the quick data refresh. The regeneration state (transition,
- *  in-flight guard, top toast) lives in BriefingRegenProvider so the brief content can dim while it runs. */
+ *  action: it recomputes today's briefing from the CURRENT DB (in 'ai' mode a paid Claude call re-voices
+ *  it). It does NOT pull Strava/Garmin itself — data is kept fresh by the on-open auto-refresh
+ *  (StravaAutoRefresh/GarminAutoRefresh) + the pull-to-refresh gesture (lib syncNow). The regeneration
+ *  state (transition, in-flight guard, top toast) lives in BriefingRegenProvider so the brief content
+ *  can dim while it runs. */
 export function BriefingMenu() {
   const { regenerate, regenerating } = useBriefingRegen();
   const [open, setOpen] = useState(false);
@@ -74,7 +75,7 @@ export function BriefingMenu() {
             </svg>
             <span className="min-w-0">
               <span className="block text-sm font-medium text-stone-800 dark:text-stone-100">Régénérer le briefing</span>
-              <span className="block text-xs text-stone-500 dark:text-stone-400">Synchronise Strava puis recalcule la reco du jour</span>
+              <span className="block text-xs text-stone-500 dark:text-stone-400">Recalcule la reco du jour à partir de tes données à jour</span>
             </span>
           </button>
         </div>

@@ -6,6 +6,7 @@ import { StaleBriefingNotice } from "./stale-briefing-notice";
 import { BriefingDetail } from "./briefing-detail";
 import { BriefingCollapsible } from "./briefing-collapsible";
 import { CoachCta } from "./coach-cta";
+import { LegsChip } from "./legs-chip";
 import { ActivitySnapshot } from "./activity-snapshot";
 import { READINESS, sportIcon, type Readiness } from "@/lib/labels";
 import { todayLocal, dateMinusDays, ATHLETE_TZ } from "@/lib/coach-context";
@@ -88,11 +89,12 @@ function BriefingPlan({ briefing }: { briefing: Briefing }) {
  *  briefing stays in front and the verdict appears as a soft "keep resting" note below (the day isn't
  *  over — the athlete may sync many times before training). Server component (no client JS of its own). */
 export async function CoachHero({
-  briefing, verdict, todayActivities,
+  briefing, verdict, todayActivities, tsbNeuro,
 }: {
   briefing: Briefing | null;
   verdict: VerdictVoice | null;
   todayActivities: Activity[]; // today's logged sessions — shown as a conversation "snapshot" + debrief target
+  tsbNeuro: number | null;     // latest tsb_neuromuscular — drives the "jambes chargées" chip
 }) {
   const today = todayLocal();
   const debriefDate = todayActivities.length > 0 ? today : null;
@@ -123,20 +125,25 @@ export async function CoachHero({
             <div className="truncate text-lg font-bold leading-tight tracking-tight text-stone-900 dark:text-stone-50 sm:text-xl">
               {coachName}
             </div>
-            {/* Statut du jour : verdict de charge si dispo, sinon readiness du briefing */}
-            {headline ? (
-              <span className={`inline-flex w-fit items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-semibold ${VERDICT_PILL[headline.tone].pill}`}>
-                <span className={`inline-block h-1.5 w-1.5 rounded-full ${VERDICT_PILL[headline.tone].dot}`} />
-                {headline.pillLabel}
-              </span>
-            ) : readiness ? (
-              <BriefingBody>
-                <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-semibold ${READINESS_PILL[readiness]}`}>
-                  <span className={`inline-block h-1.5 w-1.5 rounded-full ${READINESS[readiness].dot}`} />
-                  {READINESS[readiness].label}
+            {/* Statut du jour : verdict de charge si dispo, sinon readiness du briefing. La puce
+                "jambes chargées" (canal neuromusculaire) s'affiche à côté quand la fraîcheur neuro est
+                basse — rend lisible le « cardio frais MAIS jambes encore chargées » du modèle 2 canaux. */}
+            <div className="flex flex-wrap items-center gap-1.5">
+              {headline ? (
+                <span className={`inline-flex w-fit items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-semibold ${VERDICT_PILL[headline.tone].pill}`}>
+                  <span className={`inline-block h-1.5 w-1.5 rounded-full ${VERDICT_PILL[headline.tone].dot}`} />
+                  {headline.pillLabel}
                 </span>
-              </BriefingBody>
-            ) : null}
+              ) : readiness ? (
+                <BriefingBody>
+                  <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-semibold ${READINESS_PILL[readiness]}`}>
+                    <span className={`inline-block h-1.5 w-1.5 rounded-full ${READINESS[readiness].dot}`} />
+                    {READINESS[readiness].label}
+                  </span>
+                </BriefingBody>
+              ) : null}
+              <LegsChip tsbNeuro={tsbNeuro} />
+            </div>
             {/* Heure de génération + confiance — petit, gris */}
             {briefing && (
               <div className="flex min-w-0 items-center gap-1 text-[11px] text-stone-400 sm:text-xs">

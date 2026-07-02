@@ -142,8 +142,9 @@ async function DashboardBody() {
           </div>
         </section>
 
-        {/* Le coach prend la parole — verdict du jour en tête, briefing repliable dessous, CTA unique */}
-        <CoachHero briefing={briefing} verdict={verdict} todayActivities={todayActivities} />
+        {/* Le coach prend la parole — verdict du jour en tête, briefing repliable dessous, CTA unique.
+            `tsbNeuro` alimente la puce "jambes chargées" (fraîcheur du canal neuromusculaire). */}
+        <CoachHero briefing={briefing} verdict={verdict} todayActivities={todayActivities} tsbNeuro={latest?.tsb_neuromuscular ?? null} />
 
         {/* Indicateurs clés — CTL/ATL/TSB interactifs (sélection = scrubber) + indicateurs du jour. */}
         {metrics.length > 1 ? (
