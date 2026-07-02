@@ -68,6 +68,9 @@ const R = {
   readiness_amber: 60,    // Garmin "moderate" readiness (50–75) → caution, don't greenlight a hard day
   resting_hr_amber_delta: 5, // bpm above the athlete's baseline resting HR
   heat_acclim_low: 50,       // % — below this, a hot forecast day warrants caution
+  acwr_amber: 1.3,        // ACWR vigilance band — armed ONLY alongside a rising absolute load + non-negative TSB
+  acwr_neuro_amber: 1.3,  // per-channel neuromuscular ACWR vigilance (atl_neuro / ctl_neuro)
+  ctl_neuro_floor: 12,    // min neuromuscular CTL to trust a neuro ACWR ratio (else low-confidence → ignored)
 };
 /** A day counts as "hard" (for spacing) at/above this realised load. */
 const HARD_LOAD = 70;
@@ -87,7 +90,6 @@ const ZONE_BY_TAG: Record<SystemTag, string | null> = {
   hard_neuromuscular: null, hard_structural: null, rest: null,
 };
 const CHANNEL_BAND = 0.4; // ±40 % bounds around each channel target (verdict band)
-const TAPER_DAYS = 2;     // days before a key event we lighten the load
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 const round = (n: number) => Math.round(n);
@@ -123,6 +125,15 @@ export function computeReadiness(ctx: any): Readiness {
   if (rec?.resting_hr != null && baseRhr != null && rec.resting_hr > baseRhr + R.resting_hr_amber_delta) return "amber";
   if (heatRisk(ctx)) return "amber";
 
+  // ACWR vigilance (F5) — ORTHOGONAL + anti-flicker: only when the ratio is high AND the absolute load is
+  // RISING AND TSB isn't already negative (else it's redundant with the TSB ambers above, or fires on noise).
+  if (recentLoadRising(ctx)) {
+    if (acwr != null && acwr > R.acwr_amber && tsb != null && tsb >= R.tsb_amber) return "amber";
+    const ctlN = m?.ctl_neuromuscular, atlN = m?.atl_neuromuscular;
+    if (ctlN != null && ctlN >= R.ctl_neuro_floor && atlN != null && tsbN != null
+        && tsbN >= R.tsb_neuro_amber && atlN / ctlN > R.acwr_neuro_amber) return "amber";
+  }
+
   return "green";
 }
 
@@ -131,6 +142,16 @@ function heatRisk(ctx: any): boolean {
   const acclim = ctx.environment?.heat_acclimation_pct;
   const soonHot = (ctx.weather ?? []).slice(0, 3).some((w: any) => w?.hot);
   return !!soonHot && acclim != null && acclim < R.heat_acclim_low;
+}
+
+/** Absolute load trending UP: last-7-d sum > prior-7-d sum (from daily_load_21d). Used to qualify the
+ *  ACWR amber so it never fires on a high-but-stable or decaying ratio — the ACWR is a DESCRIPTIVE signal,
+ *  not a deterministic gate (Impellizzeri 2020, Lolli 2019). Inert (false) without ≥14 d of daily load. */
+function recentLoadRising(ctx: any): boolean {
+  const dl = (ctx.daily_load_21d ?? []) as any[];
+  if (dl.length < 14) return false;
+  const sum = (arr: any[]) => arr.reduce((s, d) => s + Number(d?.load || 0), 0);
+  return sum(dl.slice(-7)) > sum(dl.slice(-14, -7));
 }
 
 // ── Recent-load helpers (spacing of hard days) ──────────────────────────────────────────────────
@@ -176,9 +197,13 @@ function taperState(ctx: any): { active: boolean; factor: number; daysTo: number
   }
   if (!best) return { active: false, factor: 1, daysTo: Infinity, hardCap: 2, title: "" };
   const win = best.primary ? 14 : 7;
-  const factor = clamp(0.5 + 0.5 * (best.daysTo / win), 0.5, 1);
-  const hardCap = best.daysTo <= 4 ? 0 : 1; // nearer the goal → fewer / no hard days (sharpen, don't dig)
-  return { active: true, factor, daysTo: best.daysTo, hardCap, title: best.title };
+  // EXPONENTIAL taper (Bosquet 2007, Mujika 2003): front-loaded volume cut held low, NOT a linear ramp.
+  // factor ≈ 1.0 at the taper's start → ~0.5 on the goal day (−50 %, in the 41-60 % evidence band).
+  const daysIn = win - best.daysTo;
+  const factor = clamp(0.45 + 0.55 * Math.exp(-2.3 * daysIn / win), 0.5, 1);
+  // hardCap = 1 (NOT 0): MAINTAIN intensity — keep ONE short, volume-scaled quality reminder through the
+  // taper rather than killing all intensity near the goal. (The eccentric/neuro cut happens in buildWeekPlan.)
+  return { active: true, factor, daysTo: best.daysTo, hardCap: 1, title: best.title };
 }
 
 function zoneBand(ctx: any, zoneName: string | null): { low: number; high: number } | null {
@@ -216,7 +241,11 @@ function anchorFocus(a: Anchor): string {
 // ── The 7-day plan ──────────────────────────────────────────────────────────────────────────────
 export function buildWeekPlan(ctx: any, readiness: Readiness, anchors: Map<number, Anchor> = anchorsByOffset(ctx)): WeekDay[] {
   const noHard = new Set<string>((ctx.athlete_constraints?.no_hard_days ?? []).map((d: string) => String(d).toLowerCase()));
-  const fav = (ctx.favourite_sports ?? [])[0] ?? "running";
+  // Prefer the PRIMARY GOAL's sport for generated days — a trail-goal athlete shouldn't get an all-rando
+  // week just because base-phase volume is logged as hiking. Fall back to the most-frequent sport, then
+  // running. (Full multi-sport allocation — goal sport on key days + rotation on easy days — is the
+  // discipline-profile layer J; this is the minimal quick-win.)
+  const fav = ctx.primary_goal?.sport ?? (ctx.favourite_sports ?? [])[0] ?? "running";
   // Taper is driven by GOALS, never by declared events (events are anchored + planned around, not tapered for).
   const taper = taperState(ctx);
   const hardCap = taper.hardCap;
@@ -257,6 +286,12 @@ export function buildWeekPlan(ctx: any, readiness: Readiness, anchors: Map<numbe
       if (canHard(wd, noHard, sinceHard, hardCount, hardCap)) tag = altHard(lastSys);
       else if (!restPlaced && sinceHard >= 1 && off >= 4) tag = "rest"; // one rest day later in the week
       else tag = sinceHard === 0 ? "recovery" : "easy"; // recovery the day after a hard day
+    }
+
+    // F4 taper (≤14 d to a goal): keep the quality AEROBIC — cut GENERATED eccentric/structural work so
+    // legs/tendons arrive fresh (intensity maintained, not killed). Anchors are returned above, never retagged.
+    if (taper.active && taper.daysTo <= 14 && (tag === "hard_neuromuscular" || tag === "hard_structural")) {
+      tag = "hard_aerobic";
     }
 
     days.push({
@@ -400,6 +435,8 @@ function buildFlag(ctx: any, readiness: Readiness): string | null {
   if (rec && rec.available === false) return "Données Garmin du matin absentes — rafraîchis Garmin pour une lecture fiable de ta récupération.";
   if (m?.acwr != null && m.acwr > R.acwr_red) return `Charge aiguë élevée (ACWR ${round(m.acwr * 100) / 100}) : risque de surcharge, prudence sur l'intensité.`;
   if (m?.tsb_neuromuscular != null && m.tsb_neuromuscular < R.tsb_neuro_red) return "Fatigue neuromusculaire marquée (descentes / force) — protège les jambes même si la récup cardio semble bonne.";
+  if (m?.acwr != null && m.acwr > R.acwr_amber && m?.tsb != null && m.tsb >= R.tsb_amber && recentLoadRising(ctx))
+    return `Charge aiguë en hausse (ACWR ${round(m.acwr * 100) / 100}) : signal de prudence, on garde de la marge cette semaine.`;
   if (heatRisk(ctx)) return "Chaleur annoncée + acclimatation faible : la FC montera pour le même effort, pilote à la sensation.";
   return null;
 }

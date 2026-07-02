@@ -37,6 +37,10 @@ function ctx(over: Record<string, any> = {}): any {
 const isHard = (t: SystemTag) => t.startsWith("hard");
 const fam = (t: SystemTag) => (t === "hard_aerobic" ? "aerobic" : t === "hard_neuromuscular" || t === "hard_structural" ? "neuro" : null);
 
+// daily_load_21d fixtures for the F5 ACWR-rising condition (chronological; element = { date, load }).
+const RISING = Array.from({ length: 21 }, (_, i) => ({ date: `d${i}`, load: i < 14 ? 30 : 60 })); // last 7 d heavier
+const FLAT = Array.from({ length: 21 }, (_, i) => ({ date: `d${i}`, load: 40 }));                  // no trend
+
 test("readiness: green when fresh + good recovery", () => {
   assert.equal(computeReadiness(ctx()), "green");
 });
@@ -101,16 +105,66 @@ test("week plan: declared event is anchored (not overwritten), and does NOT trig
   assert.equal(w[5].target_load, 350); // event keeps its estimated load (never tapered/rescaled)
 });
 
-test("taper: a primary GOAL within 14 d lightens the week (events don't, goals do)", () => {
+test("taper (F4): a primary GOAL within 14 d lightens volume but KEEPS one short aerobic quality", () => {
   const hard = (w: WeekDay[]) => w.filter((d) => d.system_tag.startsWith("hard")).length;
   const base = buildWeekPlan(ctx(), "green");                                              // no goal
   const near = buildWeekPlan(ctx({ goals: [{ title: "Course A", rank: 1, days_to: 3 }] }), "green"); // J-3
   assert.ok(hard(base) >= 1, "without a goal, the week has a quality day");
-  assert.equal(hard(near), 0, "primary goal in 3 days → no hard days this week (taper)");
-  // Volume is scaled down too (factor < 1) on the non-anchored days.
+  // Intensity maintained: at most ONE quality day in the taper (hardCap=1), and it's AEROBIC (eccentric cut).
+  assert.ok(hard(near) <= 1, "taper keeps at most one quality day");
+  assert.ok(!near.some((d) => d.system_tag === "hard_neuromuscular" || d.system_tag === "hard_structural"),
+    "taper cuts generated eccentric/structural work so legs/tendons arrive fresh");
+  // Volume is scaled down (exponential factor < 1) on the non-anchored days.
   const easyBase = base.find((d) => d.system_tag === "easy");
   const easyNear = near.find((d) => d.system_tag === "easy");
   if (easyBase && easyNear) assert.ok(easyNear.target_load < easyBase.target_load, "taper lowers easy-day load");
+});
+
+test("taper (F4): exponential — earlier / larger volume cut than the old linear ramp", () => {
+  const easyLoad = (daysTo: number | null) => {
+    const w = daysTo == null ? buildWeekPlan(ctx(), "green")
+      : buildWeekPlan(ctx({ goals: [{ title: "G", rank: 1, days_to: daysTo }] }), "green");
+    const e = w.find((d) => d.system_tag === "easy");
+    return e ? e.target_load : null;
+  };
+  const base = easyLoad(null)!, j10 = easyLoad(10)!, j3 = easyLoad(3)!;
+  assert.ok(j10 < base && j3 < j10, "volume drops with proximity (front-loaded)");
+  // Exponential factor at J-10 ≈ 0.74 (vs old linear 0.86) → easy load ≈ 0.74×base.
+  assert.ok(Math.abs(j10 / base - 0.735) < 0.05, `J-10 factor ~0.74, got ${(j10 / base).toFixed(2)}`);
+});
+
+test("readiness (F5): ACWR amber only when high AND load rising AND TSB not negative", () => {
+  // Fresh form (tsb +2), ACWR 1.38, load rising → orthogonal vigilance → AMBER (old logic = green).
+  assert.equal(computeReadiness(ctx({
+    fitness_model_latest: { ctl: 50, atl: 60, tsb: 2, tsb_neuromuscular: 1, acwr: 1.38 }, daily_load_21d: RISING,
+  })), "amber");
+  // Same ratio but load NOT rising → stays green (no flicker on a stable 1.38).
+  assert.equal(computeReadiness(ctx({
+    fitness_model_latest: { ctl: 50, atl: 60, tsb: 2, tsb_neuromuscular: 1, acwr: 1.38 }, daily_load_21d: FLAT,
+  })), "green");
+  // Neuro ACWR IGNORED when ctl_neuromuscular is below the reliability floor (small-denominator noise).
+  assert.equal(computeReadiness(ctx({
+    fitness_model_latest: { ctl: 50, tsb: 2, tsb_neuromuscular: 1, ctl_neuromuscular: 5, atl_neuromuscular: 20, acwr: 1.0 },
+    daily_load_21d: RISING,
+  })), "green");
+  // Neuro ACWR ARMED when ctl_neuromuscular ≥ floor and ratio > 1.3 + rising.
+  assert.equal(computeReadiness(ctx({
+    fitness_model_latest: { ctl: 50, tsb: 2, tsb_neuromuscular: 1, ctl_neuromuscular: 15, atl_neuromuscular: 22, acwr: 1.0 },
+    daily_load_21d: RISING,
+  })), "amber");
+});
+
+test("sport (#1 quick-win): generated days follow the PRIMARY GOAL's sport, not the most-frequent", () => {
+  // Base-phase volume is rando (hiking most frequent) but the goal is trail → generated days = trail.
+  const w = buildWeekPlan(ctx({
+    favourite_sports: ["hiking", "running"],
+    primary_goal: { sport: "trail_running", rank: 1 },
+  }), "green");
+  const gen = w.filter((d) => !d.anchors_event_ref);
+  assert.ok(gen.every((d) => d.sport_code === "trail_running"), "generated days use the goal sport (trail), not hiking");
+  // Fallback when the goal carries no sport → most-frequent sport.
+  const w2 = buildWeekPlan(ctx({ favourite_sports: ["hiking"], primary_goal: { rank: 1 } }), "green");
+  assert.ok(w2.every((d) => d.sport_code === "hiking"), "no goal sport → falls back to most-frequent");
 });
 
 test("targetLoadFor: default when no history, personalised baseline when present", () => {
