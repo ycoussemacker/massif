@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
 import { setRpe } from "@/app/actions";
 
 /** Foster CR10 session-RPE verbal anchors (FR), per docs/research/descent-neuromuscular-rpe.md (part B).
@@ -27,9 +28,12 @@ const CHANNELS = [
 ] as const;
 type ChannelKey = (typeof CHANNELS)[number]["key"];
 
-/** Inline RPE picker for needs_manual_rpe sessions (climbing / strength / surf…).
- *  Global Foster CR10 (one tap = log), with an optional "préciser par système" panel that captures the
- *  differential sub-scores (souffle / jambes / avant-bras) → a perception-derived aerobic/neuro split. */
+/** RPE picker for needs_manual_rpe sessions (climbing / strength / surf…), en VRAIE MODALE :
+ *  bottom-sheet plein écran sur mobile (l'ancienne popover ancrée débordait/se faisait couper dans les
+ *  listes), centrée sur desktop — même patron que ActivityFlag. Global Foster CR10 (one tap = log) +
+ *  panneau optionnel "préciser par système" (souffle / jambes / avant-bras) → split aéro/neuro perçu.
+ *  L'action serveur recalcule la charge PUIS le rollup daily_metrics : les graphs de l'accueil bougent
+ *  dès l'enregistrement (router.refresh en sortie). */
 export function RpeControl(
   { activityId, value, differential }: {
     activityId: string;
@@ -37,6 +41,7 @@ export function RpeControl(
     differential?: { cardio: number | null; legs: number | null; grip: number | null };
   },
 ) {
+  const router = useRouter();
   const initSub = (): Record<ChannelKey, number | null> => ({
     cardio: differential?.cardio ?? null, legs: differential?.legs ?? null, grip: differential?.grip ?? null,
   });
@@ -50,20 +55,37 @@ export function RpeControl(
   const reset = () => { setDiff(hasDiff); setGlobal(value); setSub(initSub()); };
   const close = () => { setOpen(false); reset(); };
 
+  // Verrou du scroll page tant que la modale est ouverte (comme help.tsx / activity-edit-modal) —
+  // désarme aussi le pull-to-refresh, qui sinon se déclenchait en scrollant le contenu de la feuille.
+  useEffect(() => {
+    if (!open) return;
+    document.body.style.overflow = "hidden";
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && close();
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.body.style.overflow = "";
+      document.removeEventListener("keydown", onKey);
+    };
+    // close est stable pour une ouverture donnée (recréé au render mais sans état capturé mutable).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  const saved = () => { setOpen(false); router.refresh(); };
+
   // One-tap global log (fast path) when the differential panel is closed.
   const logGlobal = (n: number) =>
-    start(async () => { await setRpe(activityId, n); close(); });
+    start(async () => { await setRpe(activityId, n); saved(); });
 
   // Submit global + differential together.
   const submitDiff = () =>
     start(async () => {
       if (global == null) return;
       await setRpe(activityId, global, sub);
-      close();
+      saved();
     });
 
   return (
-    <span className="relative inline-block align-middle">
+    <>
       <button
         type="button"
         onClick={() => (open ? close() : setOpen(true))}
@@ -77,19 +99,31 @@ export function RpeControl(
       </button>
 
       {open && (
-        <>
-          <button type="button" aria-label="Fermer" onClick={close} className="fixed inset-0 z-40 cursor-default" />
+        <div
+          className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 backdrop-blur-[1px] sm:items-center sm:p-4"
+          onClick={() => !pending && close()}
+        >
           <div
             role="dialog"
-            className="absolute left-0 top-full z-50 mt-1 w-72 rounded-lg border border-stone-200 bg-page p-3 text-left shadow-sm dark:border-stone-700 dark:bg-stone-900"
+            aria-modal="true"
+            aria-label="Effort perçu de la séance"
+            className="max-h-[88vh] w-full overflow-y-auto rounded-t-2xl border border-stone-200 bg-page p-4 pb-[calc(1rem+env(safe-area-inset-bottom))] text-left dark:border-stone-800 sm:max-w-md sm:rounded-2xl sm:pb-4"
+            onClick={(e) => e.stopPropagation()}
           >
-            <p className="text-xs font-medium text-ink dark:text-stone-100">
-              Globalement, à quel point cette séance était-elle difficile&nbsp;?
-            </p>
-            <p className="mt-0.5 text-[11px] leading-snug text-stone-500 dark:text-stone-400">
+            <div className="flex items-start justify-between gap-3">
+              <p className="text-sm font-semibold text-ink dark:text-stone-100">
+                Globalement, à quel point cette séance était-elle difficile&nbsp;?
+              </p>
+              <button type="button" onClick={close} className="text-stone-400 hover:text-stone-600" aria-label="Fermer">
+                ✕
+              </button>
+            </div>
+            <p className="mt-1 text-xs leading-snug text-stone-500 dark:text-stone-400">
               Pense à toute la séance, pas seulement à la fin. Idéalement 20–30&nbsp;min après.
             </p>
-            <div className="mt-2 flex flex-wrap gap-1">
+
+            {/* Grille 5×2 pleine largeur — cibles tactiles ≥ 44 px, fini la popover coupée sur mobile. */}
+            <div className="mt-3 grid grid-cols-5 gap-1.5">
               {Array.from({ length: 10 }, (_, i) => i + 1).map((n) => (
                 <button
                   key={n}
@@ -97,7 +131,7 @@ export function RpeControl(
                   disabled={pending}
                   onClick={() => (diff ? setGlobal(n) : logGlobal(n))}
                   title={`${n} — ${ANCHORS[n]}`}
-                  className={`h-7 w-7 rounded border text-xs tabular-nums transition-colors disabled:opacity-40 ${
+                  className={`h-11 rounded-lg border text-sm font-medium tabular-nums transition-colors disabled:opacity-40 ${
                     n === global
                       ? "border-alpine-500 bg-alpine-500 text-white"
                       : "border-stone-300 hover:bg-alpine-100 dark:border-stone-600 dark:hover:bg-alpine-900/40"
@@ -117,24 +151,24 @@ export function RpeControl(
             <button
               type="button"
               onClick={() => setDiff((d) => !d)}
-              className="mt-2 text-[11px] text-stone-500 underline-offset-2 hover:underline dark:text-stone-400"
+              className="mt-3 text-xs text-stone-500 underline-offset-2 hover:underline dark:text-stone-400"
             >
               {diff ? "▾" : "▸"} Préciser par système (optionnel)
             </button>
             {diff && (
-              <div className="mt-2 space-y-1.5 border-t border-stone-200 pt-2 dark:border-stone-700">
+              <div className="mt-2 space-y-2 border-t border-stone-200 pt-2 dark:border-stone-700">
                 <p className="text-[11px] leading-snug text-stone-500 dark:text-stone-400">
                   Effort ressenti par système (0–10). On en répartit la charge aéro/neuro.
                 </p>
                 {CHANNELS.map((ch) => (
                   <label key={ch.key} className="flex items-center justify-between gap-2">
-                    <span className={`text-[11px] font-medium ${ch.tint}`}>{ch.label}</span>
+                    <span className={`text-xs font-medium ${ch.tint}`}>{ch.label}</span>
                     <select
                       value={sub[ch.key] ?? ""}
                       disabled={pending}
                       onChange={(e) =>
                         setSub((s) => ({ ...s, [ch.key]: e.target.value === "" ? null : Number(e.target.value) }))}
-                      className="rounded border border-stone-300 bg-page px-1.5 py-0.5 text-xs tabular-nums dark:border-stone-600 dark:bg-stone-900"
+                      className="rounded border border-stone-300 bg-page px-2 py-1 text-sm tabular-nums dark:border-stone-600 dark:bg-stone-900"
                     >
                       <option value="">—</option>
                       {Array.from({ length: 11 }, (_, i) => i).map((n) => (
@@ -147,15 +181,19 @@ export function RpeControl(
                   type="button"
                   disabled={pending || global == null}
                   onClick={submitDiff}
-                  className="mt-1 w-full rounded border border-alpine-500 bg-alpine-500 px-2 py-1 text-xs font-medium text-white transition-colors hover:bg-alpine-600 disabled:opacity-40"
+                  className="mt-1 w-full rounded-lg border border-alpine-500 bg-alpine-500 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-alpine-600 disabled:opacity-40"
                 >
-                  {pending ? "…" : global == null ? "Choisis le RPE global" : "Valider"}
+                  {pending ? "Recalcul de la charge…" : global == null ? "Choisis le RPE global" : "Valider"}
                 </button>
               </div>
             )}
+
+            {pending && !diff && (
+              <p className="mt-3 text-xs text-stone-500 dark:text-stone-400">Recalcul de la charge et des graphs…</p>
+            )}
           </div>
-        </>
+        </div>
       )}
-    </span>
+    </>
   );
 }

@@ -69,6 +69,13 @@ export type Activity = {
   vertical_loss_m: number | null;
   carried_load_kg: number | null;
   avg_hr: number | null;
+  max_hr: number | null;
+  avg_power_w: number | null;
+  np_power_w: number | null;
+  avg_altitude_m: number | null;
+  // Corrections manuelles de l'athlète (champ→valeur + sport_code), ré-appliquées à chaque re-sync.
+  // Non-null ⇒ activité corrigée ; la modale d'édition marque ces champs comme tels.
+  user_overrides: Record<string, number | string> | null;
   perceived_rpe: number | null;
   rpe_source: string | null;
   rpe_cardio: number | null; // differential RPE (Phase 2): souffle → aérobie
@@ -92,7 +99,8 @@ export type Activity = {
 /** Column list for an activities select that yields a full Activity (after enrichment). */
 export const ACTIVITY_COLS =
   "id,local_date,started_at,source,source_activity_id,sport_id,training_load,aerobic_load,neuromuscular_load," +
-  "load_method_used,duration_s,moving_s,distance_m,vertical_gain_m,vertical_loss_m,carried_load_kg,avg_hr," +
+  "load_method_used,duration_s,moving_s,distance_m,vertical_gain_m,vertical_loss_m,carried_load_kg,avg_hr,max_hr," +
+  "avg_power_w,np_power_w,avg_altitude_m,user_overrides," +
   "perceived_rpe,rpe_source,rpe_cardio,rpe_legs,rpe_grip,avg_temp_c,max_altitude_m,time_high_altitude_s,effective_days,needs_review," +
   "strava_name:sport_specific->>strava_name";
 

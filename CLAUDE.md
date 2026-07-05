@@ -345,3 +345,25 @@ Migration `…0005_rpe_differential_channels` adds the 3 nullable `smallint 0..1
 are SELECTed unconditionally — push `…0004` + `…0005` (`supabase db push`) BEFORE this code runs/deploys**
 (else PostgREST 42703 breaks recompute/sync/coach-context), then apply the ladder-fix re-score with
 `--recompute-loads`. Adversarial multi-agent verify clean; pytest 71 green; web tsc clean.
+
+**USER-EDITS SURVIVE + PROPAGATE (shipped 2026-07-05).** Five coupled fixes from real use. (1) **Every
+activity recompute now propagates to the graphs**: `setRpe`, `reassignActivitySport` and the new
+`updateActivityData` all run `rollupDailyMetrics` inline then revalidate all surfaces
+(`revalidateActivitySurfaces`) — before, daily_metrics/CTL/ATL froze until the next sync (observed live:
+stale by 20+ pts). (2) **Any load-relevant field is editable**: `activities.user_overrides` (jsonb,
+migration `…20260705000001`, ALREADY PUSHED to cloud) stores field→value corrections + `sport_code`;
+`web/src/lib/activity-edit.ts` = shared core (EDITABLE_FIELDS bounds, `applyFieldOverrides`,
+`recomputeActivityLoad` — full model context: ladder + dated thresholds + load params + descent
+familiarity, parity with the Python recompute); UI = `activity-edit-modal.tsx` (séance page "Données"
+row + the ⚠ flag sheet). (3) **Syncs NEVER clobber user edits**: both syncs re-apply `user_overrides`
+AFTER rebuilding the provider row and BEFORE compute_load (sport override resolved BY CODE, pace
+re-derived when distance/moving corrected) — `strava-sync.ts` ↔ `strava.py` `_apply_field_overrides`/
+`OVERRIDABLE_FIELDS` + `db.load_user_overrides` (KEEP IN SYNC, like the RPE maps). (4) **RPE is a real
+modal** (`rpe.tsx`): mobile bottom-sheet / desktop centered (the old anchored popover clipped in lists),
+body-scroll lock (also disarms pull-to-refresh), 44px targets, `router.refresh()` on save. (5) **Busy
+dimming**: `regen-provider.tsx` now exposes busy scopes (`regen`/`sync`/`garmin`; producers = SyncRefresh,
+StravaAutoRefresh, GarminRefresh, regenerate) and `<Dim on=…>` (`busy.tsx`) veils the affected dashboard
+sections (coach card, week pills, charts, recovery, activities) with grey+backdrop-blur — a VEIL, not a
+`filter` on content (a filter would break `fixed` child modals). `ACTIVITY_COLS`/`Activity` gained
+`max_hr, avg_power_w, np_power_w, avg_altitude_m, user_overrides`. E2E verified on real data (D− edit →
+recompute → rollup → revert, byte-consistent). pytest 74, engine tests 22, web build + lint 0 errors.

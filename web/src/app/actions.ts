@@ -6,8 +6,7 @@ import { createServiceClient } from "@/lib/supabase/server";
 import { listActivities } from "@/lib/activities";
 import type { DailyMetric, Activity } from "@/lib/data";
 import {
-  sessionRpeLoad, scoredDuration, activitySpanDays, needsReview, computeLoad, descentFamiliarityRatios,
-  type LoadActivity, type LoadSport, type LoadProfile,
+  sessionRpeLoad, scoredDuration, activitySpanDays, needsReview, descentFamiliarityRatios,
 } from "@/lib/load";
 import { generateCoachReply, COACH_MODEL, type ChatTurn } from "@/lib/coach-chat";
 import { todayLocal, whenLabelFr, dateMinusDays } from "@/lib/coach-context";
@@ -25,6 +24,22 @@ import {
   type ProposalOperations, type SessionPayload, type EventPayload,
   type DeletePayload, type ActivityEditPayload,
 } from "@/lib/coach-proposals";
+import {
+  sanitizeEdits, derivedPace, recomputeActivityLoad,
+  type ActivityEdits, type UserOverrides,
+} from "@/lib/activity-edit";
+
+/** Toutes les surfaces qui affichent la charge d'une activité ou les agrégats qui en découlent
+ *  (graphs CTL/ATL/TSB, tuiles, listes). Appelé après CHAQUE recalcul de charge pour que la
+ *  modification se propage partout — pas seulement sur la page où le geste a eu lieu. */
+function revalidateActivitySurfaces(activityId?: string): void {
+  revalidatePath("/");
+  revalidatePath("/activites");
+  revalidatePath("/analyse");
+  revalidatePath("/calendrier");
+  revalidatePath("/coach");
+  if (activityId) revalidatePath(`/seance/${activityId}`);
+}
 
 /** Load an OLDER window of the Forme history on demand (dashboard infinite-scroll-back). Returns the
  *  `months` of daily_metrics + activities ending the day BEFORE `beforeDate` (the current oldest day
@@ -70,7 +85,8 @@ export type DifferentialRpe = { cardio?: number | null; legs?: number | null; gr
 
 /** Log a post-session RPE (global CR10 1–10, + optional differential sub-scores) and recompute the load
  *  via session_rpe. Writes the two channels (never the generated total) + rpe_source='user' so the next
- *  sync keeps it. daily_metrics (CTL/ATL/charts) recompute on the next rollup/nightly run. */
+ *  sync keeps it. Then ROLLS UP daily_metrics inline (CTL/ATL/TSB/graphs reflect the new load
+ *  immediately — before, they froze until the next sync) and revalidates every surface. */
 export async function setRpe(activityId: string, rpe: number, differential?: DifferentialRpe): Promise<void> {
   if (!Number.isInteger(rpe) || rpe < 1 || rpe > 10) throw new Error("RPE doit être un entier 1–10");
   const cardio = differential?.cardio ?? null, legs = differential?.legs ?? null, grip = differential?.grip ?? null;
@@ -139,8 +155,10 @@ export async function setRpe(activityId: string, rpe: number, differential?: Dif
   }).eq("id", activityId);
   if (upErr) throw new Error(upErr.message);
 
-  revalidatePath("/");
-  revalidatePath("/coach");
+  // Propage le recalcul aux graphs de l'accueil : sans ce rollup, daily_metrics (CTL/ATL/TSB, courbes
+  // de charge) restait figé jusqu'à la prochaine sync et le RPE semblait "ne rien faire".
+  await rollupDailyMetrics(sb);
+  revalidateActivitySurfaces(activityId);
 }
 
 /** Log (or clear, with null) this morning's OPTIONAL leg-soreness self-report (1 fresh – 5 cooked).
@@ -660,34 +678,23 @@ async function resolveSportId(sb: SupabaseClient, code: string | null | undefine
  *  reflect the new category immediately (an alpinism/grande-voie day logged as a hike was scored on elapsed
  *  time → its aerobic load was inflated; the new ladder + the mostly-stopped moving-time correction fix it).
  *  The single owner of this write — used by the athlete-initiated reassignment and the accepted coach
- *  proposal alike. Mirrors the Python recompute (load.py is the source of truth on the next sync). */
+ *  proposal alike. The reclassification is REMEMBERED in user_overrides.sport_code so the next Strava
+ *  re-sync keeps it (before, every sync silently reverted the athlete's correction). The recompute goes
+ *  through the shared recomputeActivityLoad (full model context — parity with the Python recompute).
+ *  Callers own the daily_metrics rollup + revalidation. */
 async function applySportReassignment(sb: SupabaseClient, activityId: string, sportCode: string): Promise<void> {
   const sportId = await resolveSportId(sb, sportCode);
   if (!sportId) throw new Error(`Sport « ${sportCode} » inconnu.`);
-  const { data: sport } = await sb.from("sports")
-    .select("taxonomy_group,load_method_ladder").eq("id", sportId).single();
-  if (!sport) throw new Error(`Sport « ${sportCode} » inconnu.`);
 
   const { data: act, error } = await sb.from("activities")
-    .select("started_at,duration_s,moving_s,avg_hr,np_power_w,avg_power_w,avg_pace_s_per_km," +
-            "vertical_gain_m,vertical_loss_m,carried_load_kg,avg_altitude_m,perceived_rpe,rpe_source")
-    .eq("id", activityId).single();
+    .select("id,user_overrides").eq("id", activityId).single();
   if (error || !act) throw new Error("Activité introuvable");
+  const overrides: UserOverrides = { ...((act.user_overrides ?? {}) as UserOverrides), sport_code: sportCode };
 
-  const { data: profile } = await sb.from("athlete_profile")
-    .select("ftp_watts,resting_hr,max_hr,lthr,threshold_pace_s_per_km,weight_kg").limit(1).single();
-
-  const load = computeLoad(act as LoadActivity, sport as LoadSport, (profile ?? {}) as LoadProfile);
-  const { error: upErr } = await sb.from("activities").update({
-    sport_id: sportId,
-    aerobic_load: load.aerobic_load,
-    neuromuscular_load: load.neuromuscular_load,
-    load_method_used: load.load_method_used,
-    intensity_factor: load.intensity_factor,
-    effective_days: load.effective_days,
-    needs_review: load.needs_review,
-  }).eq("id", activityId);
+  const { error: upErr } = await sb.from("activities")
+    .update({ sport_id: sportId, user_overrides: overrides }).eq("id", activityId);
   if (upErr) throw new Error(upErr.message);
+  await recomputeActivityLoad(sb, activityId);
 }
 
 /** All sports (code + FR-friendly display + taxonomy) for the activity reclassification picker, ordered by
@@ -702,17 +709,55 @@ export async function listSportsForReassign(): Promise<
 }
 
 /** Athlete-initiated reclassification of a logged activity's sport (the ⚠️ flag panel / séance page).
- *  Recomputes the load and refreshes every surface that shows it. daily_metrics (CTL/ATL) refresh on the
- *  next rollup/nightly run, like the RPE path. */
+ *  Recomputes the load, ROLLS UP daily_metrics inline (the home graphs move immediately) and refreshes
+ *  every surface. The new category is remembered across re-syncs (user_overrides.sport_code). */
 export async function reassignActivitySport(activityId: string, sportCode: string): Promise<void> {
   if (!activityId || !sportCode) throw new Error("Activité ou sport manquant.");
   const sb = await createServiceClient();
   await applySportReassignment(sb, activityId, sportCode);
-  revalidatePath("/");
-  revalidatePath("/activites");
-  revalidatePath(`/seance/${activityId}`);
-  revalidatePath("/coach");
-  revalidatePath("/calendrier");
+  await rollupDailyMetrics(sb);
+  revalidateActivitySurfaces(activityId);
+}
+
+/** Édition des données d'une activité synchronisée (P: le provider se trompe — ex. D− aberrant sur un
+ *  canyoning — et l'athlète doit pouvoir corriger TOUT champ utile au calcul des impacts aéro/neuro).
+ *  Écrit les colonnes corrigées + les mémorise dans user_overrides (survit aux re-syncs, comme les RPE),
+ *  recalcule la charge avec le contexte complet du modèle, puis ROLLUP daily_metrics + revalidation —
+ *  les graphs de l'accueil reflètent la correction immédiatement. Retourne les nouveaux canaux pour le
+ *  feedback UI. */
+export async function updateActivityData(
+  activityId: string,
+  edits: Record<string, number>,
+): Promise<{ aerobic: number; neuro: number; method: string }> {
+  if (!activityId) throw new Error("Activité introuvable.");
+  const clean: ActivityEdits = sanitizeEdits(edits);
+  if (!Object.keys(clean).length) throw new Error("Aucune modification à enregistrer.");
+
+  const sb = await createServiceClient();
+  const { data: act, error } = await sb.from("activities")
+    .select("id,duration_s,moving_s,distance_m,user_overrides").eq("id", activityId).single();
+  if (error || !act) throw new Error("Activité introuvable");
+
+  // Cohérence temps : le temps en mouvement ne peut pas dépasser la durée totale (valeurs finales).
+  const finalDuration = clean.duration_s ?? (act.duration_s as number | null);
+  const finalMoving = clean.moving_s ?? (act.moving_s as number | null);
+  if (finalDuration != null && finalMoving != null && finalMoving > finalDuration)
+    throw new Error("Le temps en mouvement ne peut pas dépasser la durée totale.");
+
+  const overrides: UserOverrides = { ...((act.user_overrides ?? {}) as UserOverrides), ...clean };
+  const update: Record<string, unknown> = { ...clean, user_overrides: overrides };
+  // L'allure moyenne est dérivée de distance/moving — la recalculer quand l'un des deux change
+  // (le rtss la lit ; les deux syncs font pareil après ré-application des overrides).
+  if (clean.distance_m !== undefined || clean.moving_s !== undefined) {
+    update.avg_pace_s_per_km = derivedPace(clean.distance_m ?? (act.distance_m as number | null), finalMoving);
+  }
+  const { error: upErr } = await sb.from("activities").update(update).eq("id", activityId);
+  if (upErr) throw new Error(upErr.message);
+
+  const res = await recomputeActivityLoad(sb, activityId);
+  await rollupDailyMetrics(sb);
+  revalidateActivitySurfaces(activityId);
+  return { aerobic: res.aerobic_load, neuro: res.neuromuscular_load, method: res.load_method_used };
 }
 
 /** Light cost/abuse guard on accepts (a leaked password could otherwise spam writes). Shared DB state. */
@@ -789,9 +834,11 @@ export async function acceptCoachProposal(proposalId: string): Promise<AcceptRes
     } else if (prop.kind === "activity_edit") {
       const p = ops.payload as ActivityEditPayload;
       // Reassign the sport first (recomputes the load with the new ladder), THEN apply any RPE so it
-      // scores against the new sport's taxonomy — not the old one left stale.
+      // scores against the new sport's taxonomy — not the old one left stale. setRpe rolls up
+      // daily_metrics itself; a sport-only edit needs the rollup here to reach the graphs.
       if (p.sport_code) await applySportReassignment(sb, p.activity_id, p.sport_code);
       if (p.perceived_rpe != null) await setRpe(p.activity_id, p.perceived_rpe);
+      else if (p.sport_code) await rollupDailyMetrics(sb);
       committedId = p.activity_id;
     }
   } catch (e) {

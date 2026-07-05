@@ -9,6 +9,7 @@
 import { useEffect, useState, useTransition } from "react";
 import { reassignActivitySport, listSportsForReassign } from "@/app/actions";
 import { RpeControl } from "./rpe";
+import { ActivityEditButton } from "./activity-edit-modal";
 import { sportIcon, TAXONOMY_FR, TAXONOMY_ORDER } from "@/lib/labels";
 import { dur } from "@/lib/format";
 import { REVIEW_STOP_RATIO, REVIEW_MIN_ELAPSED_S } from "@/lib/load";
@@ -101,16 +102,16 @@ export function ActivityFlag({ a, alwaysOffer = false }: { a: Activity; alwaysOf
             <p className="mt-2 text-sm text-stone-600 dark:text-stone-300">
               {flagged && mostlyStopped && stoppedS != null ? (
                 <>
-                  Environ <span className="font-medium tabular-nums">{dur(stoppedS)}</span> à l'arrêt sur{" "}
+                  Environ <span className="font-medium tabular-nums">{dur(stoppedS)}</span> à l&apos;arrêt sur{" "}
                   <span className="tabular-nums">{dur(durS)}</span> (relais, approche, pauses ?). Notée sur le temps
                   écoulé, sa charge aérobie est probablement sur-estimée.
                 </>
               ) : flagged ? (
                 <>La charge repose sur une donnée douteuse (capteur FC ou intensité). Affine-la avec un RPE.</>
               ) : sugg ? (
-                <>D'après son titre, cette sortie ressemble plutôt à&nbsp;: {sugg.label}. Son type actuel sur-estime peut-être la charge.</>
+                <>D&apos;après son titre, cette sortie ressemble plutôt à&nbsp;: {sugg.label}. Son type actuel sur-estime peut-être la charge.</>
               ) : (
-                <>Si la catégorie n'est pas la bonne, choisis le sport adéquat — la charge sera recalculée.</>
+                <>Si la catégorie n&apos;est pas la bonne, choisis le sport adéquat — la charge sera recalculée.</>
               )}
             </p>
 
@@ -167,6 +168,13 @@ export function ActivityFlag({ a, alwaysOffer = false }: { a: Activity; alwaysOf
             <div className="mt-3 flex items-center justify-between border-t border-stone-200 pt-3 dark:border-stone-800">
               <span className="text-xs text-stone-500">Effort perçu :</span>
               <RpeControl activityId={a.id} value={a.perceived_rpe} />
+            </div>
+
+            {/* Corriger les DONNÉES (D− aberrant, FC fantôme, durée…) — ferme ce panneau et ouvre la
+                modale d'édition ; la correction survit aux re-syncs (user_overrides). */}
+            <div className="mt-2 flex items-center justify-between">
+              <span className="text-xs text-stone-500">Données erronées&nbsp;?</span>
+              <ActivityEditButton a={a} onOpen={() => setOpen(false)} label="Corriger (D−, FC, durée…) ▾" />
             </div>
 
             <a

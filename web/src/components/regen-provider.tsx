@@ -12,13 +12,24 @@ import { useRouter } from "next/navigation";
  *  source of the mobile timeout). Strava is refreshed by pull-to-refresh and Garmin by its own button;
  *  if this morning's Garmin recovery is missing, the briefing simply flags it (computeReadiness) rather
  *  than waiting on a cloud pull. */
+/** Scopes d'occupation exposés à toute l'app pour GRISER les surfaces en cours de mise à jour (P5) :
+ *  'regen'  = régénération du briefing/plan → carte coach + plan de la semaine ;
+ *  'sync'   = sync Strava + recalcul du modèle (bouton / pull-to-refresh / auto-sync à l'ouverture)
+ *             → graphs CTL/ATL/TSB, activités récentes, verdict du jour ;
+ *  'garmin' = rechargement manuel Garmin → carte récupération.
+ *  Producteurs : regenerate() (ici), SyncRefresh/StravaAutoRefresh, GarminRefresh via setBusy().
+ *  Consommateur : <Dim on=…> (busy.tsx). */
+export type BusyScope = "regen" | "sync" | "garmin";
+
 type RegenCtx = {
   regenerating: boolean;
   regenerate: () => void;
+  busy: (scope: BusyScope) => boolean;
+  setBusy: (scope: "sync" | "garmin", on: boolean) => void;
 };
 
 const Ctx = createContext<RegenCtx | null>(null);
-const FALLBACK: RegenCtx = { regenerating: false, regenerate: () => {} };
+const FALLBACK: RegenCtx = { regenerating: false, regenerate: () => {}, busy: () => false, setBusy: () => {} };
 
 export function useRegen(): RegenCtx {
   return useContext(Ctx) ?? FALLBACK;
@@ -29,6 +40,11 @@ export function RegenProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<"idle" | "running" | "done" | "error">("idle");
   const [msg, setMsg] = useState<string | null>(null);
   const running = useRef(false);
+  // Compteurs (pas des booléens) : l'auto-sync à l'ouverture et un pull-to-refresh peuvent se chevaucher.
+  const [busyCount, setBusyCount] = useState<{ sync: number; garmin: number }>({ sync: 0, garmin: 0 });
+  const setBusy = useCallback((scope: "sync" | "garmin", on: boolean) => {
+    setBusyCount((c) => ({ ...c, [scope]: Math.max(0, c[scope] + (on ? 1 : -1)) }));
+  }, []);
 
   const regenerate = useCallback(() => {
     if (running.current) return;
@@ -61,8 +77,15 @@ export function RegenProvider({ children }: { children: ReactNode }) {
     })();
   }, [router]);
 
+  const regenerating = state === "running";
+  const busy = useCallback(
+    (scope: BusyScope) =>
+      scope === "regen" ? regenerating : busyCount[scope] > 0,
+    [regenerating, busyCount],
+  );
+
   return (
-    <Ctx.Provider value={{ regenerating: state === "running", regenerate }}>
+    <Ctx.Provider value={{ regenerating, regenerate, busy, setBusy }}>
       {children}
       {state !== "idle" && (
         <div className="pointer-events-none fixed inset-x-0 bottom-[calc(env(safe-area-inset-bottom)+5rem)] z-[70] flex justify-center px-4 md:bottom-4">

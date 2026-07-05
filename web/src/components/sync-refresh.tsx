@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { syncNow } from "@/app/actions";
+import { useRegen } from "./regen-provider";
 
 /** On-demand sync control, mounted once (in Nav). Triggers a TS Strava pull + model recompute via the
  *  syncNow() server action, then refreshes the route. Two affordances:
@@ -13,6 +14,7 @@ import { syncNow } from "@/app/actions";
  *  fitness model only; the nightly cron refreshes Garmin. */
 export function SyncRefresh() {
   const router = useRouter();
+  const { setBusy } = useRegen();
   const [pending, startTransition] = useTransition();
   const [toast, setToast] = useState<string | null>(null);
   const running = useRef(false);
@@ -21,6 +23,7 @@ export function SyncRefresh() {
     if (running.current) return;
     running.current = true;
     setToast(null);
+    setBusy("sync", true); // grise les surfaces de données (graphs, activités) le temps du recalcul
     startTransition(async () => {
       try {
         const res = await syncNow();
@@ -29,6 +32,7 @@ export function SyncRefresh() {
       } catch (e) {
         setToast((e as Error)?.message ?? "Échec de la synchronisation");
       } finally {
+        setBusy("sync", false);
         running.current = false;
         window.setTimeout(() => setToast(null), 4000);
       }

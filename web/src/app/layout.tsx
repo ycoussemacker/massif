@@ -52,11 +52,15 @@ export default function RootLayout({
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col">
-        <RegenProvider>{children}</RegenProvider>
-        {/* On app open (background, no UI): pull Garmin recovery if this morning's isn't in yet, and
-            refresh Strava activities + the load model so the graphs are current without a manual gesture. */}
-        <GarminAutoRefresh />
-        <StravaAutoRefresh />
+        {/* Les auto-refresh vivent DANS le provider : l'auto-sync Strava signale son état 'sync' au
+            contexte pour que les surfaces concernées se grisent aussi sur le chemin automatique. */}
+        <RegenProvider>
+          {children}
+          {/* On app open (background, no UI): pull Garmin recovery if this morning's isn't in yet, and
+              refresh Strava activities + the load model so the graphs are current without a manual gesture. */}
+          <GarminAutoRefresh />
+          <StravaAutoRefresh />
+        </RegenProvider>
       </body>
     </html>
   );

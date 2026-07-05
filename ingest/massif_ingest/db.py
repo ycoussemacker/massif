@@ -151,6 +151,28 @@ def load_user_differential_rpes(source: str) -> dict[str, dict]:
     return out
 
 
+def load_user_overrides(source: str) -> dict[str, dict]:
+    """{source_activity_id: user_overrides} pour les activités corrigées à la main dans le web
+    (sport reclassé via 'sport_code', champs numériques D−/FC/durée…). Ré-appliquées par la sync
+    APRÈS reconstruction de la ligne provider et AVANT compute_load — même contrat que les RPE user :
+    un re-pull n'écrase jamais une correction de l'athlète. Tolérant à la colonne absente
+    (pré-migration) → {}."""
+    try:
+        rows = (
+            client()
+            .table("activities")
+            .select("source_activity_id,user_overrides")
+            .eq("source", source)
+            .not_.is_("user_overrides", "null")
+            .execute()
+            .data
+        )
+    except Exception:
+        return {}
+    return {r["source_activity_id"]: r["user_overrides"]
+            for r in rows if r.get("source_activity_id") and r.get("user_overrides")}
+
+
 def slugify_sport(raw_type: str) -> str:
     """Provider sport string -> a sports.code slug. 'Surfing'->'surfing', 'GravelRide'->'gravel_ride'."""
     s = re.sub(r"(?<!^)(?=[A-Z])", "_", raw_type)   # split camel/Pascal case

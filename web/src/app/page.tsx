@@ -11,6 +11,7 @@ import { GarminRefresh } from "@/components/garmin-refresh";
 import { SorenessInput } from "@/components/soreness-input";
 import { WeekPlanPills } from "@/components/week-plan-pills";
 import { AddActivityButton } from "@/components/add-activity-button";
+import { Dim } from "@/components/busy";
 import { getSports } from "@/lib/activities";
 import { todayLocal } from "@/lib/coach-context";
 import { fmt, avgLoadRecent } from "@/lib/format";
@@ -125,10 +126,11 @@ async function DashboardBody() {
             )}
           </div>
 
-          {/* 2. Pastilles des entraînements & événements à 7 jours */}
-          <div className="mt-3">
+          {/* 2. Pastilles des entraînements & événements à 7 jours — grisées pendant une régénération
+              du plan (le coach réécrit ces séances) ou une sync (le réalisé se lie au plan). */}
+          <Dim on={["regen", "sync"]} rounded="rounded-lg" className="mt-3">
             <WeekPlanPills days={weekPlan} />
-          </div>
+          </Dim>
 
           {/* 3. Call to action — consulter les objectifs (secondaire) + ajouter une activité (primaire, modale) */}
           <div className="mt-4 flex flex-col gap-2 border-t border-stone-100 pt-4 dark:border-stone-800 sm:flex-row sm:items-center sm:justify-end">
@@ -143,21 +145,26 @@ async function DashboardBody() {
         </section>
 
         {/* Le coach prend la parole — verdict du jour en tête, briefing repliable dessous, CTA unique.
-            `tsbNeuro` alimente la puce "jambes chargées" (fraîcheur du canal neuromusculaire). */}
-        <CoachHero briefing={briefing} verdict={verdict} todayActivities={todayActivities} tsbNeuro={latest?.tsb_neuromuscular ?? null} />
+            `tsbNeuro` alimente la puce "jambes chargées". Grisé pendant la régénération (les textes du
+            brief se réécrivent) ET pendant une sync (le verdict/les activités du jour bougent). */}
+        <Dim on={["regen", "sync"]} label="Mise à jour…">
+          <CoachHero briefing={briefing} verdict={verdict} todayActivities={todayActivities} tsbNeuro={latest?.tsb_neuromuscular ?? null} />
+        </Dim>
 
-        {/* Indicateurs clés — CTL/ATL/TSB interactifs (sélection = scrubber) + indicateurs du jour. */}
+        {/* Indicateurs clés — CTL/ATL/TSB interactifs (sélection = scrubber) + indicateurs du jour.
+            Grisés pendant la sync : c'est exactement ce que le recalcul (rollup) va réécrire. */}
         {metrics.length > 1 ? (
-          <div className="mb-6">
+          <Dim on="sync" label="Recalcul du modèle…" className="mb-6">
             <ChartsSection key={`${metrics.length}-${latest?.local_date ?? ""}-${latest?.ctl ?? ""}-${latest?.tsb ?? ""}`} metrics={metrics} activities={allActivities} projection={projection} />
-          </div>
+          </Dim>
         ) : (
           <p className="mb-6 text-sm text-stone-500">Pas encore assez de jours de données pour les indicateurs.</p>
         )}
 
-        {/* Récupération */}
+        {/* Récupération — grisée pendant le rechargement Garmin manuel (le job cloud va réécrire ces tuiles). */}
         {rec && (
-          <section className="mb-6 rounded-2xl border border-stone-200 bg-white p-5 dark:border-stone-800 dark:bg-stone-900">
+          <Dim on="garmin" label="Synchro Garmin…" className="mb-6">
+          <section className="rounded-2xl border border-stone-200 bg-white p-5 dark:border-stone-800 dark:bg-stone-900">
             <div className="mb-3 flex items-center justify-between gap-3">
               <h2 className="text-sm font-medium text-stone-700 dark:text-stone-300">
                 Récupération (Garmin) — {rec.local_date}
@@ -201,6 +208,7 @@ async function DashboardBody() {
               </div>
             )}
           </section>
+          </Dim>
         )}
 
         {/* Courbatures — auto-évaluation neuromusculaire facultative (la VFC n'y voit rien) */}
@@ -208,7 +216,8 @@ async function DashboardBody() {
           <SorenessInput initial={todaySoreness} />
         </div>
 
-        {/* Activités récentes */}
+        {/* Activités récentes — grisées pendant la sync (la liste + les charges vont se réécrire). */}
+        <Dim on="sync" label="Synchronisation…">
         <section className="rounded-2xl border border-stone-200 bg-white p-5 dark:border-stone-800 dark:bg-stone-900">
           <div className="mb-3 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
             <h2 className="text-sm font-medium text-stone-700 dark:text-stone-300">Activités récentes</h2>
@@ -252,6 +261,7 @@ async function DashboardBody() {
             </Link>
           </div>
         </section>
+        </Dim>
 
         <footer className="mt-8 text-center text-xs text-stone-400">
           Massif · indicateurs sur {Math.round(DASHBOARD_WINDOW_DAYS / 7)} semaines ({metrics.length} jours) · historique complet dans Analyse

@@ -91,6 +91,33 @@ def test_user_rpe_drives_session_rpe():
     assert row["neuromuscular_load"] > row["aerobic_load"]
 
 
+def test_user_override_sport_code_wins_over_provider():
+    # L'athlète a reclassé la sortie (ex. un canyoning que Strava classe Rando) : le sport_code
+    # mémorisé dans user_overrides gagne sur la classification provider à CHAQUE re-sync.
+    row, sport = strava._build_activity_row(
+        _summary(), SPORT_MAP, {}, user_overrides={"sport_code": "rock_climbing"})
+    assert sport["code"] == "rock_climbing"
+    assert row["sport_id"] == 13
+
+
+def test_user_override_fields_survive_and_drive_load():
+    # D− provider aberrant (2000 m) corrigé à 150 m : la valeur corrigée est écrite ET la charge
+    # neuromusculaire est calculée dessus (pas sur la valeur provider).
+    base_kwargs = dict(sport_map=SPORT_MAP, profile={"weight_kg": 64})
+    wrong, _ = strava._build_activity_row(_summary(), descent_m=2000.0, **base_kwargs)
+    fixed, _ = strava._build_activity_row(
+        _summary(), descent_m=2000.0, user_overrides={"vertical_loss_m": 150.0}, **base_kwargs)
+    assert fixed["vertical_loss_m"] == 150.0
+    assert fixed["neuromuscular_load"] < wrong["neuromuscular_load"]
+
+
+def test_user_override_distance_recomputes_pace():
+    row, _ = strava._build_activity_row(
+        _summary(), SPORT_MAP, {}, user_overrides={"distance_m": 5000.0})
+    assert row["distance_m"] == 5000.0
+    assert row["avg_pace_s_per_km"] == 660.0  # 3300 s / 5 km — l'allure suit la correction
+
+
 def test_local_date_uses_athlete_tz_across_midnight():
     # 23:30 UTC on 2026-06-10 is 01:30 on 2026-06-11 in Europe/Paris (UTC+2 in summer).
     row, _ = strava._build_activity_row(

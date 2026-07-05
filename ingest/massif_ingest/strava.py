@@ -222,6 +222,36 @@ def altitude_stats(
     return mx, avg, time_high
 
 
+# Champs numériques que l'athlète peut corriger dans le web (activities.user_overrides) — mirror de
+# EDITABLE_FIELDS dans web/src/lib/activity-edit.ts. Appliqués APRÈS la reconstruction provider et
+# AVANT compute_load, pour que la charge se calcule sur les valeurs corrigées et qu'un re-sync
+# n'écrase jamais une correction. (+ la clé 'sport_code' = reclassement, gérée à part.)
+OVERRIDABLE_FIELDS = (
+    "duration_s", "moving_s", "distance_m", "vertical_gain_m", "vertical_loss_m",
+    "avg_hr", "max_hr", "avg_power_w", "np_power_w", "carried_load_kg",
+    "avg_altitude_m", "avg_temp_c",
+)
+
+
+def _apply_field_overrides(row: dict, overrides: dict | None) -> dict:
+    """Ré-applique les corrections numériques de l'athlète sur une ligne provider reconstruite.
+    Recalcule l'allure dérivée quand distance/moving changent (le rtss la lit). Mutation en place."""
+    if not overrides:
+        return row
+    pace_touched = False
+    for k in OVERRIDABLE_FIELDS:
+        v = overrides.get(k)
+        if v is None:
+            continue
+        row[k] = v
+        if k in ("distance_m", "moving_s"):
+            pace_touched = True
+    if pace_touched:
+        d, m = row.get("distance_m"), row.get("moving_s")
+        row["avg_pace_s_per_km"] = round(m / (d / 1000.0), 2) if d and m and d > 0 else None
+    return row
+
+
 def _build_activity_row(
     act: dict, sport_map: dict[str, dict], profile: dict, tz: str = "Europe/Paris",
     user_rpe: int | None = None, descent_m: float | None = None, params: dict | None = None,
@@ -229,6 +259,7 @@ def _build_activity_row(
     alt_stats: tuple[float | None, float | None, int | None] | None = None,
     fam_ratios: dict[str, float] | None = None,
     differential_rpe: dict | None = None,
+    user_overrides: dict | None = None,
 ) -> tuple[dict, dict]:
     """Pure (no I/O): turn a Strava summary activity into an `activities` row + its sport row.
 
@@ -236,7 +267,8 @@ def _build_activity_row(
     road/trail to 'Run'). Unmatched sport strings route to the 'unknown' sport (flagged, not lost).
     `threshold_history` (athlete_thresholds) resolves the thresholds as-of the activity's date; `alt_stats`
     = (max_m, avg_m, time_high_s) from the altitude stream — heat/altitude context + the avg the tss/rtss
-    altitude correction reads. Both optional → today's behaviour when absent.
+    altitude correction reads. Both optional → today's behaviour when absent. `user_overrides` = les
+    corrections manuelles de l'athlète (web), ré-appliquées ici pour survivre au re-sync.
     """
     sport_type = act.get("sport_type") or act.get("type") or "Workout"
     sport = sport_map.get(sport_type) or sport_map["unknown"]
@@ -244,6 +276,13 @@ def _build_activity_row(
     # Climbing: split bloc / voie salle / falaise from the activity text (description fetched in sync).
     if sport.get("taxonomy_group") == "technical_strength":
         sport = sport_map.get(_climbing_sport_code(sport_type, act.get("name"), act.get("description"))) or sport
+
+    # Le sport RECLASSÉ par l'athlète gagne sur la classification provider (mirror strava-sync.ts).
+    # Résolution par CODE (scan des valeurs) et non par clé : les clés de sport_map sont des alias
+    # provider et un alias pourrait masquer un code.
+    if user_overrides and user_overrides.get("sport_code"):
+        code = user_overrides["sport_code"]
+        sport = next((s for s in sport_map.values() if s.get("code") == code), sport)
 
     moving_s = act.get("moving_time")
     distance_m = act.get("distance")
@@ -313,6 +352,10 @@ def _build_activity_row(
             if differential_rpe.get(k) is not None:
                 row[k] = differential_rpe[k]
 
+    # Corrections manuelles champ-par-champ (D−, FC, durée…) — appliquées en dernier, AVANT
+    # compute_load : la charge se calcule sur les valeurs corrigées et l'upsert ne les écrase pas.
+    _apply_field_overrides(row, user_overrides)
+
     # Resolve thresholds as-of this activity's date (rec 2): empty history → the base profile unchanged.
     eff_profile = load.resolve_profile(profile, threshold_history, local_date)
     result = load.compute_load({**row, "descent_familiarity": fam}, sport, eff_profile, params)
@@ -352,6 +395,7 @@ def sync(after_days: int = 30, stream_days: int | None = None) -> int:
     threshold_history = db.load_threshold_history()  # effective-dated thresholds (empty → base profile)
     user_rpes = db.load_user_rpes("strava")  # re-apply RPEs the user logged in the web app
     user_diff_rpes = db.load_user_differential_rpes("strava")  # + their differential sub-scores (Phase 2)
+    user_overrides = db.load_user_overrides("strava")  # + les corrections manuelles (sport, D−, FC…)
 
     # Descent-familiarity ratios from the stored daily D- series (sum of vertical_loss_m per local_date).
     # The recent pull stamps each row from this; --recompute-loads later re-derives it across all history
@@ -398,6 +442,7 @@ def sync(after_days: int = 30, stream_days: int | None = None) -> int:
             act, sport_map, profile, tz=s.timezone, user_rpe=user_rpes.get(str(act["id"])),
             descent_m=descent_m, params=params, threshold_history=threshold_history, alt_stats=alt_stats,
             fam_ratios=fam_ratios, differential_rpe=user_diff_rpes.get(str(act["id"])),
+            user_overrides=user_overrides.get(str(act["id"])),
         )
         row["has_streams"] = bool(streams)
 

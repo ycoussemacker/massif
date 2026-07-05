@@ -12,6 +12,7 @@ import {
   computeLoad, resolveProfile, descentFamiliarityRatios, ALT_HYPOXIA_THRESHOLD_M,
   type LoadProfile, type LoadParams, type ThresholdRow,
 } from "./load";
+import { applyFieldOverrides, type UserOverrides } from "./activity-edit";
 
 const API = "https://www.strava.com/api/v3";
 const TOKEN_URL = "https://www.strava.com/oauth/token";
@@ -184,12 +185,15 @@ export async function syncStrava(sb: SupabaseClient, afterDays = 21): Promise<St
   const summaries = await fetchActivities(token, afterEpoch);
   if (!summaries.length) return { pulled: 0, newest: null };
 
-  const [{ data: sportsRows }, { data: profileRow }, { data: rpeRows }, { data: paramRows }, { data: thresholdRows }] = await Promise.all([
+  const [{ data: sportsRows }, { data: profileRow }, { data: rpeRows }, { data: paramRows }, { data: thresholdRows }, { data: overrideRows }] = await Promise.all([
     sb.from("sports").select("id,code,taxonomy_group,load_method_ladder,uses_distance,uses_hr,needs_manual_rpe,source_aliases"),
     sb.from("athlete_profile").select("max_hr,resting_hr,lthr,ftp_watts,threshold_pace_s_per_km,weight_kg,timezone").limit(1).maybeSingle(),
     sb.from("activities").select("source_activity_id,perceived_rpe,rpe_cardio,rpe_legs,rpe_grip").eq("source", "strava").eq("rpe_source", "user"),
     sb.from("athlete_load_params").select("param,value"),
     sb.from("athlete_thresholds").select("*").order("effective_date", { ascending: true }),
+    // Corrections manuelles de l'athlète (sport reclassé, D− corrigé…) — ré-appliquées à chaque
+    // re-sync, comme les RPE user, pour que le pull ne les écrase jamais (mirror strava.py).
+    sb.from("activities").select("source_activity_id,user_overrides").eq("source", "strava").not("user_overrides", "is", null),
   ]);
   // Personalized load coefficients (empty → population defaults; mirror of db.load_load_params).
   const loadParams: LoadParams = Object.fromEntries(
@@ -199,13 +203,19 @@ export async function syncStrava(sb: SupabaseClient, afterDays = 21): Promise<St
   const thresholdHistory = (thresholdRows ?? []) as ThresholdRow[];
 
   const sportMap = new Map<string, Sport>();
+  const sportByCode = new Map<string, Sport>(); // résolution SÛRE d'un override sport_code (un alias provider pourrait masquer un code dans sportMap)
   for (const s of (sportsRows ?? []) as Sport[]) {
     sportMap.set(s.code, s);
+    sportByCode.set(s.code, s);
     for (const alias of s.source_aliases ?? []) sportMap.set(alias, s);
   }
   const unknown = sportMap.get("unknown");
   const profile = (profileRow ?? {}) as LoadProfile & { timezone?: string };
   const tz = profileRow?.timezone || "Europe/Paris";
+  const userOverrides = new Map<string, UserOverrides>();
+  for (const r of (overrideRows ?? []) as { source_activity_id: string | null; user_overrides: UserOverrides | null }[]) {
+    if (r.source_activity_id && r.user_overrides) userOverrides.set(r.source_activity_id, r.user_overrides);
+  }
   const userRpe = new Map<string, number>();
   const userDiff = new Map<string, { rpe_cardio: number | null; rpe_legs: number | null; rpe_grip: number | null }>();
   for (const r of (rpeRows ?? []) as any[]) {
@@ -240,6 +250,11 @@ export async function syncStrava(sb: SupabaseClient, afterDays = 21): Promise<St
       const description = await fetchDescription(token, act.id);
       sport = sportMap.get(climbingSportCode(sportType, act.name, description)) || sport;
     }
+
+    // Le sport RECLASSÉ par l'athlète gagne sur la classification provider — sinon chaque re-sync
+    // annulait sa correction (canyoning re-devenu rando, etc.). Mirror strava.py.
+    const overrides = userOverrides.get(String(act.id));
+    if (overrides?.sport_code) sport = sportByCode.get(overrides.sport_code) || sport;
 
     // D- from the altitude stream (Strava summaries lack descent), for HR/distance sports. The same
     // stream also yields heat/altitude context + the avg the tss/rtss altitude correction reads.
@@ -305,6 +320,11 @@ export async function syncStrava(sb: SupabaseClient, afterDays = 21): Promise<St
       row.rpe_legs = diff.rpe_legs;
       row.rpe_grip = diff.rpe_grip;
     }
+
+    // Corrections manuelles champ-par-champ (D−, FC, durée…) — appliquées APRÈS la reconstruction
+    // provider et AVANT computeLoad, pour que la charge se calcule sur les valeurs corrigées et que
+    // l'upsert n'écrase jamais une correction. Recalcule aussi l'allure dérivée si besoin.
+    if (overrides) applyFieldOverrides(row, overrides);
 
     // Resolve thresholds as-of this activity's date (rec 2); empty history → base profile unchanged.
     const effProfile = resolveProfile(profile, thresholdHistory, row.local_date as string);

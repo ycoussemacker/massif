@@ -3,6 +3,7 @@
 import { useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { refreshGarmin, latestDailyUpdate } from "@/app/actions";
+import { useRegen } from "./regen-provider";
 
 /** "Recharger" control on the dashboard recovery card. Garmin has no JS API (Python-only, MFA-gated),
  *  so unlike the Strava "Synchroniser" button this can't pull in-process — it fires the cloud
@@ -18,6 +19,7 @@ const advanced = (latest: string | null, since: string | null) =>
 
 export function GarminRefresh() {
   const router = useRouter();
+  const { setBusy } = useRegen();
   const [pending, startTransition] = useTransition();
   const [toast, setToast] = useState<string | null>(null);
   const running = useRef(false);
@@ -25,6 +27,7 @@ export function GarminRefresh() {
   function run() {
     if (running.current) return;
     running.current = true;
+    setBusy("garmin", true); // grise la carte récupération pendant que le job cloud écrit
     startTransition(async () => {
       try {
         const { status, since } = await refreshGarmin();
@@ -45,6 +48,7 @@ export function GarminRefresh() {
       } catch (e) {
         setToast((e as Error)?.message ?? "Échec de la synchro Garmin");
       } finally {
+        setBusy("garmin", false);
         running.current = false;
         window.setTimeout(() => setToast(null), 5000);
       }

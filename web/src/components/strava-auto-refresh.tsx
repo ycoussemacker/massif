@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { syncNow } from "@/app/actions";
+import { useRegen } from "./regen-provider";
 
 /** Keeps Strava activities + the load model (CTL/ATL/TSB) current WITHOUT a manual pull-to-refresh.
  *  Mounted once in the root layout, it fires once per app load: unless a sync ran on this device within the
@@ -17,6 +18,7 @@ const KEY = "massif:strava-autosync-at";
 
 export function StravaAutoRefresh() {
   const router = useRouter();
+  const { setBusy } = useRegen();
   const pathname = usePathname();
   const ran = useRef(false);
 
@@ -26,17 +28,20 @@ export function StravaAutoRefresh() {
     ran.current = true;
 
     (async () => {
+      const last = Number(localStorage.getItem(KEY) || 0);
+      if (Number.isFinite(last) && Date.now() - last < THROTTLE_MS) return; // synced recently on this device
+      localStorage.setItem(KEY, String(Date.now())); // optimistic: don't stack a second concurrent run
+      setBusy("sync", true); // grise les surfaces de données pendant que la sync d'ouverture tourne
       try {
-        const last = Number(localStorage.getItem(KEY) || 0);
-        if (Number.isFinite(last) && Date.now() - last < THROTTLE_MS) return; // synced recently on this device
-        localStorage.setItem(KEY, String(Date.now())); // optimistic: don't stack a second concurrent run
         await syncNow(); // recent-window Strava pull + rollup (revalidates "/" and "/coach" server-side)
         router.refresh(); // reflect any new activity on the graphs (they read the rolled-up daily_metrics)
       } catch {
         /* best-effort background sync — never surface an error for the auto path */
+      } finally {
+        setBusy("sync", false);
       }
     })();
-  }, [pathname, router]);
+  }, [pathname, router, setBusy]);
 
   return null;
 }

@@ -8,6 +8,7 @@ import { VIZ } from "@/lib/theme";
 import { StravaLink } from "@/components/brand";
 import { BackButton } from "@/components/back-button";
 import { ActivityFlag } from "@/components/activity-flag";
+import { ActivityEditButton } from "@/components/activity-edit-modal";
 import { EventEdit } from "@/components/event-edit";
 import { getSports } from "@/lib/activities";
 import { daysBetween, todayLocal } from "@/lib/coach-context";
@@ -195,6 +196,17 @@ function RealisedColumn({ v }: { v: SessionView }) {
       <div className="mt-2 flex items-center justify-between gap-2 border-t border-stone-100 pt-2 dark:border-stone-800">
         <span className="text-xs text-stone-500 dark:text-stone-400">Catégorie</span>
         <ActivityFlag a={a} alwaysOffer />
+      </div>
+      {/* Correction des données (D−, FC, durée…) — la charge est recalculée et la correction survit aux
+          re-syncs (user_overrides). */}
+      <div className="mt-2 flex items-center justify-between gap-2">
+        <span className="text-xs text-stone-500 dark:text-stone-400">
+          Données
+          {a.user_overrides != null && Object.keys(a.user_overrides).length > 0 && (
+            <span className="ml-1.5 text-[10px] text-summit-700 dark:text-summit-400">corrigées</span>
+          )}
+        </span>
+        <ActivityEditButton a={a} />
       </div>
       <div className="mt-2 flex items-center justify-between">
         <span className="text-[11px] text-stone-400">méthode {a.load_method_used ?? "—"}</span>
