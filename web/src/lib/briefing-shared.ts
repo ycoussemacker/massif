@@ -13,6 +13,52 @@ export function frWeekday(dateISO: string): string {
     .toLowerCase();
 }
 
+/** « mar. 7 » — étiquette courte d'un jour pour le diff de plan. */
+function shortDayFr(dateISO: string): string {
+  return new Intl.DateTimeFormat("fr-FR", { weekday: "short", day: "numeric", timeZone: "UTC" })
+    .format(new Date(dateISO + "T00:00:00Z"));
+}
+
+/** Diff lisible entre l'ancien plan coach de la semaine et le nouveau (régénération). Une ligne FR par
+ *  jour modifié ; [] si rien n'a bougé (mêmes données → moteur déterministe → même plan : c'est NORMAL,
+ *  et on l'affiche pour que l'athlète sache que le coach a bien réévalué, pas qu'il a ignoré). Pure. */
+export function diffPlanRows(
+  prior: { planned_date: string; system_tag: string | null; target_load: number | null; title: string | null }[],
+  next: Record<string, unknown>[],
+): string[] {
+  const byDate = (rows: any[]) => {
+    const m = new Map<string, { tag: string | null; load: number | null; title: string | null }>();
+    for (const r of rows) {
+      const d = String(r.planned_date);
+      if (!m.has(d)) {
+        m.set(d, {
+          tag: (r.system_tag as string) ?? null,
+          load: r.target_load != null ? Number(r.target_load) : null,
+          title: (r.title as string) ?? null,
+        });
+      }
+    }
+    return m;
+  };
+  const a = byDate(prior);
+  const b = byDate(next);
+  const out: string[] = [];
+  for (const d of [...new Set([...a.keys(), ...b.keys()])].sort()) {
+    const p = a.get(d), n = b.get(d);
+    const day = shortDayFr(d);
+    if (p && !n) { out.push(`${day} : « ${p.title ?? p.tag} » retirée (jour désormais porté par ton événement/ta séance)`); continue; }
+    if (!p && n) { out.push(`${day} : + ${n.title ?? n.tag}${n.load ? ` (${Math.round(n.load)} pts)` : ""}`); continue; }
+    if (!p || !n) continue;
+    if ((p.tag ?? "") !== (n.tag ?? "")) {
+      out.push(`${day} : ${p.title ?? p.tag} → ${n.title ?? n.tag}`);
+    } else if (p.load != null && n.load != null && Math.abs(n.load - p.load) >= Math.max(8, 0.2 * p.load)) {
+      // Même type de séance mais volume sensiblement revu (≥ 20 % et ≥ 8 pts — pas de bruit d'arrondi).
+      out.push(`${day} : ${n.title ?? n.tag} ${Math.round(p.load)} → ${Math.round(n.load)} pts`);
+    }
+  }
+  return out;
+}
+
 /** The day-0 session/sport derived from the briefing (today's detailed session if any, else the plan). */
 export function deriveToday(briefing: any): { session: string | null; sport: string | null } {
   const det = (briefing.detailed_sessions ?? []).find((s: any) => s.day_offset === 0) ?? null;

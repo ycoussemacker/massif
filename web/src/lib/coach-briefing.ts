@@ -12,7 +12,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { assembleCoachContext, dateMinusDays } from "./coach-context";
 import { loadCoachSettings, buildPersonaInstructions, type CoachSettings } from "./coach-settings";
 import { COACH_MODEL } from "./coach-chat";
-import { buildForwardPlanRows, deriveToday } from "./briefing-shared";
+import { buildForwardPlanRows, deriveToday, diffPlanRows } from "./briefing-shared";
 import { buildAlgorithmicBriefing, type AlgoBriefing } from "./briefing-algo";
 
 export interface BriefingResult {
@@ -20,6 +20,11 @@ export interface BriefingResult {
   today_session: string | null;
   why: string;
   mode: "free" | "ai";
+  /** Ce que la régénération a CHANGÉ dans le plan coach de la semaine (diff lisible, une ligne/jour).
+   *  [] = plan identique (mêmes données → moteur déterministe) — affiché tel quel, pour que l'athlète
+   *  sache que le coach a réévalué et confirmé, pas ignoré. Tes événements/séances validées ne sont
+   *  jamais touchés (hors périmètre du diff). */
+  changes: string[];
 }
 
 /** Generate today's briefing from the current DB picture and persist it (coach_briefings + the forward
@@ -55,6 +60,14 @@ export async function generateBriefing(sb: SupabaseClient): Promise<BriefingResu
   );
   const rows = buildForwardPlanRows(today, briefing, sportIdByCode, noHardDays, briefing.why, pinnedDates);
   const horizonEnd = dateMinusDays(today, -6);
+  // Snapshot de l'ANCIEN plan coach (même périmètre que le delete) pour dire à l'athlète ce que la
+  // régénération a changé — sinon un plan réécrit à l'identique (déterminisme) ressemble à un coach
+  // qui n'a rien regardé. Les lignes user (événements/épinglées) et liées sont hors périmètre : jamais touchées.
+  const { data: priorRows } = await sb.from("planned_sessions")
+    .select("planned_date,system_tag,target_load,title")
+    .gte("planned_date", today).lte("planned_date", horizonEnd)
+    .eq("modified_by", "coach").eq("status", "planned").is("linked_activity_id", null);
+  const changes = diffPlanRows((priorRows ?? []) as any[], rows);
   const del = await sb.from("planned_sessions").delete()
     .gte("planned_date", today).lte("planned_date", horizonEnd)
     .eq("modified_by", "coach").eq("status", "planned").is("linked_activity_id", null);
@@ -74,7 +87,13 @@ export async function generateBriefing(sb: SupabaseClient): Promise<BriefingResu
     readiness: briefing.readiness,
     today_session: todaySession,
     why: briefing.why,
-    changed: null,
+    // Diff lisible du plan coach vs la génération précédente (text) — null si première génération du
+    // périmètre ; chaîne explicite si le plan est confirmé à l'identique.
+    changed: (priorRows ?? []).length === 0
+      ? null
+      : changes.length
+        ? changes.join(" · ")
+        : "Plan confirmé à l'identique (mêmes données que la génération précédente).",
     week_skeleton: briefing.week_plan,
     flag: briefing.flag,
     reasoning: briefing.state_assessment,
@@ -96,6 +115,7 @@ export async function generateBriefing(sb: SupabaseClient): Promise<BriefingResu
     today_session: todaySession,
     why: briefing.why,
     mode: settings.briefing_mode,
+    changes,
   };
 }
 

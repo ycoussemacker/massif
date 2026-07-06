@@ -19,7 +19,12 @@ export async function POST() {
     revalidatePath("/");
     revalidatePath("/coach");
     revalidatePath("/calendrier");
-    return NextResponse.json({ ok: true, readiness: briefing.readiness, today_session: briefing.today_session, mode: briefing.mode });
+    return NextResponse.json({
+      ok: true, readiness: briefing.readiness, today_session: briefing.today_session, mode: briefing.mode,
+      // Diff du plan coach (une ligne FR par jour modifié ; [] = plan confirmé à l'identique) — le
+      // bandeau de régénération l'affiche pour montrer que le coach a bien réévalué la semaine.
+      changes: briefing.changes,
+    });
   } catch (e) {
     return NextResponse.json({ ok: false, error: (e as Error)?.message ?? "Échec de la régénération." }, { status: 429 });
   }

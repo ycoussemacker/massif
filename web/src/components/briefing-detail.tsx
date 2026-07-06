@@ -3,12 +3,13 @@
 import { useState } from "react";
 
 /** Collapsible "Afficher plus" under the briefing's one-sentence `why`: reveals the fuller state
- *  assessment (`reasoning`). Keeps the card minimal by default — the athlete pulls the detail only when
- *  they want it. The 7-day plan strip now lives at the top of the dashboard ("Ton plan d'entraînement"),
- *  so it's no longer duplicated here. (The ⚠️ flag stays always-visible in CoachHero — it's a warning.) */
-export function BriefingDetail({ reasoning }: { reasoning: string | null }) {
+ *  assessment (`reasoning`) + what the last regeneration CHANGED in the week plan (`changed` — one FR
+ *  line per adjusted day, or the explicit "plan confirmé à l'identique"). Keeps the card minimal by
+ *  default — the athlete pulls the detail only when they want it. (The ⚠️ flag stays always-visible in
+ *  CoachHero — it's a warning.) */
+export function BriefingDetail({ reasoning, changed }: { reasoning: string | null; changed?: string | null }) {
   const [open, setOpen] = useState(false);
-  if (!reasoning) return null;
+  if (!reasoning && !changed) return null;
 
   return (
     <div className="mt-2">
@@ -34,7 +35,19 @@ export function BriefingDetail({ reasoning }: { reasoning: string | null }) {
       </button>
 
       {open && (
-        <p className="mt-2 text-sm leading-relaxed text-stone-600 dark:text-stone-300">{reasoning}</p>
+        <div className="mt-2 space-y-2">
+          {reasoning && (
+            <p className="text-sm leading-relaxed text-stone-600 dark:text-stone-300">{reasoning}</p>
+          )}
+          {/* Ce que la dernière régénération a changé dans le plan de la semaine — transparence : un plan
+              réécrit à l'identique le dit explicitement (le coach a réévalué, pas ignoré). */}
+          {changed && (
+            <p className="border-t border-stone-100 pt-2 text-xs leading-relaxed text-stone-500 dark:border-stone-800 dark:text-stone-400">
+              <span className="font-medium text-stone-600 dark:text-stone-300">Dernière régénération :</span>{" "}
+              {changed}
+            </p>
+          )}
+        </div>
       )}
     </div>
   );

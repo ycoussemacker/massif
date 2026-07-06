@@ -132,6 +132,9 @@ export type Briefing = {
   why: string | null;
   flag: string | null;
   reasoning: string | null;
+  // Diff lisible du plan coach vs la génération précédente (« mar. 7 : seuil → côtes/force · … »),
+  // ou la mention explicite d'un plan confirmé à l'identique. Null sur une première génération.
+  changed: string | null;
   // The coach now stores the full 7-day `week_plan` in this (legacy-named) column: each item still has
   // day_offset/focus/system_tag (so old renderers keep working) PLUS sport_code/target_load/is_key and,
   // when the day IS a declared event, anchors_event_ref. day_offset is 0..6 (0 = today).

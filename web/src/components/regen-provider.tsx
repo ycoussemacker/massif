@@ -57,10 +57,16 @@ export function RegenProvider({ children }: { children: ReactNode }) {
         const d = await r.json().catch(() => ({}));
         if (!r.ok || !d?.ok) throw new Error(d?.error ?? "Échec de la régénération.");
         const dot = { green: "🟢", amber: "🟡", red: "🔴" }[d.readiness as string] ?? "•";
+        // Dire ce que la régénération a FAIT : n ajustements (le détail est sous « Afficher plus » de la
+        // carte coach), ou « réévalué, inchangé » — sinon un plan réécrit à l'identique (déterminisme :
+        // mêmes données → même plan) ressemble à un coach qui n'a rien regardé.
+        const n = Array.isArray(d.changes) ? d.changes.length : 0;
         setState("done");
-        setMsg(`${dot} Plan mis à jour`);
+        setMsg(n > 0
+          ? `${dot} Plan ajusté — ${n} changement${n > 1 ? "s" : ""} cette semaine`
+          : `${dot} Plan réévalué — inchangé (mêmes données)`);
         router.refresh();
-        window.setTimeout(() => { setState("idle"); setMsg(null); }, 6000);
+        window.setTimeout(() => { setState("idle"); setMsg(null); }, 8000);
       } catch (e) {
         setState("error");
         // A dropped/timed-out fetch rejects with a TypeError ("Load failed" on WebKit / "Failed to

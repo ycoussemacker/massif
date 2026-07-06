@@ -398,3 +398,13 @@ context carries `training_windows` (coach-context.ts ↔ coach/src/context.ts MI
 in coach/src/db.ts — keep in sync) + a CHAT_SYSTEM rule (invite the athlete to declare windows mentioned
 in chat). CRUD actions: create/update/deleteTrainingWindow (actions.ts). Backlog: propose_window chat tool,
 transition phase.
+
+**REGEN PLAN-DIFF (shipped 2026-07-06).** The athlete perceived «le coach ne change jamais une activité» —
+VERIFIED false: every regen deletes + recreates ALL coach-owned week rows (`modified_by='coach'`, unlinked,
+status planned; user events/pinned NEVER touched) — but the engine is DETERMINISTIC (same data → same plan)
+and nothing showed it. Now `generateBriefing` snapshots the prior coach rows, computes `diffPlanRows`
+(briefing-shared.ts, pure+tested: retag / volume ≥20 % & ≥8 pts / added / removed lines in FR) and
+(1) persists it to `coach_briefings.changed` (was always null; explicit «Plan confirmé à l'identique…»
+when the diff is empty), (2) returns `changes` through regen route → the RegenProvider banner says
+«Plan ajusté — N changements» or «Plan réévalué — inchangé (mêmes données)», (3) the briefing card's
+«Afficher plus» (BriefingDetail) shows the diff under `Dernière régénération :`. Engine tests 31/31.

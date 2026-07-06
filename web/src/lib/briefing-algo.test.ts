@@ -2,7 +2,7 @@
  *  Excluded from the Next build via tsconfig "exclude". Deterministic — this is the token-free verification. */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { frWeekday } from "./briefing-shared";
+import { frWeekday, diffPlanRows } from "./briefing-shared";
 import {
   buildAlgorithmicBriefing, computeReadiness, buildWeekPlan, targetLoadFor, phaseFromDaysTo,
   phaseSummaryFr, phaseMarkFr, PHASE_PARAMS, resolveWindowEffect, effectivePhase,
@@ -304,6 +304,27 @@ test("fenêtres: en semaine de charge, la rampe ne regonfle QUE les easy hors fe
   if (easyOut) assert.equal(easyOut.target_load, Math.round(42 * PHASE_PARAMS.ramp_scale_max), "hors fenêtre : rampe");
   if (easyIn) assert.equal(easyIn.target_load, Math.round(42 * PHASE_PARAMS.deload_factor), "dans la fenêtre : décharge");
   assert.ok(easyOut || easyIn, "au moins un jour easy à vérifier");
+});
+
+test("diff de plan (regen) : retag, volume, retrait, ajout — et [] quand identique", () => {
+  const prior = [
+    { planned_date: "2026-07-07", system_tag: "hard_aerobic", target_load: 72, title: "Séance seuil" },
+    { planned_date: "2026-07-09", system_tag: "easy", target_load: 42, title: "Endurance facile" },
+    { planned_date: "2026-07-10", system_tag: "rest", target_load: 0, title: "Repos" },
+  ];
+  const next = [
+    { planned_date: "2026-07-07", system_tag: "hard_neuromuscular", target_load: 62, title: "Côtes / force" },
+    { planned_date: "2026-07-09", system_tag: "easy", target_load: 27, title: "Endurance facile" },
+    { planned_date: "2026-07-11", system_tag: "easy", target_load: 38, title: "Endurance facile" },
+  ];
+  const d = diffPlanRows(prior, next);
+  assert.equal(d.length, 4);
+  assert.match(d[0], /Séance seuil → Côtes \/ force/);   // retag (mar. 7)
+  assert.match(d[1], /42 → 27 pts/);                      // volume revu (jeu. 9)
+  assert.match(d[2], /retirée/);                          // jour repris par un événement (ven. 10)
+  assert.match(d[3], /\+ Endurance facile \(38 pts\)/);   // nouveau jour (sam. 11)
+  assert.deepEqual(diffPlanRows(prior, prior as unknown as Record<string, unknown>[]), [],
+    "plan identique → diff vide (déterminisme assumé, affiché comme « confirmé »)");
 });
 
 test("targetLoadFor: default when no history, personalised baseline when present", () => {
