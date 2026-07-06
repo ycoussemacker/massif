@@ -187,7 +187,7 @@ Le coach propose un plan **7 jours** construit sur des principes simples et déf
 
 ---
 
-### 5.2 Découper l'objectif en phases (périodisation) — *cadre de référence, pas encore implémenté*
+### 5.2 Découper l'objectif en phases (périodisation) — *implémenté v1 (Upgrade 9)*
 
 Au-delà du plan de 7 jours, un objectif lointain se prépare en **phases** (vocabulaire : macrocycle =
 la saison ; mésocycles = blocs de 3-6 semaines ; microcycles = semaines). Les phases canoniques et
@@ -214,8 +214,14 @@ Deux garde-fous chiffrés pour **progresser sans se blesser**, à terme **par ca
 
 > Ces valeurs sont des **points de départ sourcés** (détail + références dans
 > [`research/periodisation-phases-seances-cles.md`](research/periodisation-phases-seances-cles.md)).
-> Massif **ne découpe pas encore la saison en phases** ni ne borne la vitesse de montée du CTL (le plan
-> est une fenêtre glissante de 7 jours) — c'est l'objet des questions Q15-Q18.
+> **Implémenté v1 (Upgrade 9, `MODEL_UPGRADES.md`)** : les phases sont rétro-comptées depuis l'objectif
+> principal daté (`phaseFromDaysTo` — affûtage ≤ 14 j · peak S−3..S−5 · build S−6..S−13 · base au-delà),
+> les mésocycles **2:1 (build) / 3:1 (base)** placent une **décharge** (volume ×0.65, une qualité
+> conservée) en fin de chaque bloc, et en semaine de charge une **rampe de CTL** vise +4 pts/sem en
+> gonflant les jours easy générés (borné ×1.35 ; les séances de qualité et les ancres ne bougent pas ;
+> la readiness quotidienne reste au-dessus). La phase est affichée sous l'objectif (dashboard), ouvre le
+> `state_assessment` du briefing et est fournie au chat (`training_phase`). **Pas encore** : rampe par
+> canal (le neuro reste protégé par les seuils quotidiens), phase transition post-objectif.
 
 ---
 
@@ -373,19 +379,21 @@ charge) — détail sourcé dans `research/periodisation-phases-seances-cles.md`
   d'endurance fondamentale ?
 
 ### Périodisation, phases & pilotage de la charge (recherche faite — `research/periodisation-phases-seances-cles.md`)
-- **Q15 — Découpage en phases & vitesse de montée du CTL.** On propose de découper un objectif en
-  base/build/peak/affûtage/transition (§5.2) et de **borner la montée du CTL à +3-5/sem (aérobie) /
-  +1-3/sem (neuromusculaire)**. Aujourd'hui Massif n'a **ni phases ni garde-fou de ramp-rate** (plan
-  glissant 7 j). Ces fourchettes (issues de la pratique TrainingPeaks/Friel — niveau de preuve = avis
-  d'expert, pas d'ECR) te semblent-elles justes pour un public montagne ?
+- **Q15 — ✅ Découpage en phases & vitesse de montée du CTL : implémenté v1 (Upgrade 9).** Phases
+  rétro-comptées depuis l'objectif principal daté (affûtage/peak/build/base, §5.2) + **rampe de CTL
+  +4 pts/sem** en semaine de charge (milieu de la fourchette +3-5, portée par les jours easy générés,
+  bornée ×1.35). *Reste ouvert :* la rampe **par canal** (+1-3 neuro) — aujourd'hui le neuro est protégé
+  par les seuils quotidiens (tsb_neuro, ACWR-neuro), pas par une rampe dédiée ; et la phase transition.
 - **Q16 — Seuil ACWR & sa controverse.** On code aujourd'hui un seuil unique ~1,5 (rouge). La
   littérature propose une **bande 0,8-1,3** (vigilance au-delà de 1,3, alerte >1,5) **mais critique
   fortement l'ACWR** (couplage mathématique, pas de preuve causale — Impellizzeri 2020, Lolli 2019) :
   à lire comme **signal descriptif** + charge absolue, pas comme feu rouge automatique. Faut-il ajouter
   l'orange à 1,3 et un ACWR **par canal** (surtout neuromusculaire) ?
-- **Q17 — Cadence de décharge (deload).** Proposée : **3:1** en base, **2:1** en bloc neuromusculaire,
-  **−30-50 %** de volume (intensité conservée). Non implémentée. Bonne cadence pour la montagne (où un
-  « jour facile » est souvent une rando de 3-4 h) ?
+- **Q17 — ✅ Cadence de décharge (deload) : implémentée (Upgrade 9).** **3:1** en base, **2:1** en build,
+  **−35 %** de volume (dans la bande −30/−50 %), **une** qualité conservée (intensité maintenue). Les
+  mésocycles sont ancrés sur la **fin de phase** : la dernière semaine avant la phase suivante est une
+  décharge (on encaisse le bloc avant d'intensifier). *Reste ouvert :* la question montagne (un « jour
+  facile » = rando 3-4 h) — la décharge scale les cibles, pas la durée réelle des sorties de l'athlète.
 - **Q18 — Forme de l'affûtage & événements.** La recherche (Bosquet, Mujika, Wang) penche pour une
   décroissance **exponentielle** avec **intensité maintenue** et un **canal neuro coupé plus tôt**
   (J-10 à J-14) ; notre affûtage actuel est **linéaire** et coupe l'intensité près de J (`hardCap=0`).

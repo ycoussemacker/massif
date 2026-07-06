@@ -380,6 +380,39 @@ Summit) and the `rpe.tsx` picker pre-fills + auto-expands them on re-edit (`data
 `Activity` type carry the 3 columns). **Backlog:** the coach-chat/proposal tool schemas still carry only the
 global RPE (they read `perceived_rpe`, unaffected) — extend to differential if the coach should reason on it.
 
+## 2026-07-06 · Upgrade 9 — Périodisation : phases + rampe de CTL + décharges (Q15/Q17)
+
+**Problème.** Le plan 7 jours était une fenêtre glissante sans mémoire : après un gros bloc il ramenait
+toujours vers la semaine « type » (maintenance), rien ne poussait une **surcharge progressive** vers
+l'objectif, et rien ne cadençait les semaines de décharge. L'athlète (à juste titre) s'interrogeait :
+« viser CTL > ATL, est-ce vraiment ce qui fait progresser ? » — non : la progression vit en TSB légèrement
+négatif, la fraîcheur se réserve pour la course (MODELE §5.2, research/periodisation-phases-seances-cles.md).
+
+**Modèle.** `phaseFromDaysTo(days_to)` (briefing-algo.ts, pur + testé) rétro-compte les phases depuis
+l'objectif PRINCIPAL daté (rank 1) : **affûtage** ≤ 14 j (inchangé, exponentiel) · **pré-compétition**
+S−3..S−5 (volume ×0.85, intensité maintenue) · **build** S−6..S−13 (mésocycles **2:1**) · **base** au-delà
+(mésocycles **3:1**, 1 seule qualité générée/sem). Les mésocycles sont **ancrés sur la fin de phase** : la
+dernière semaine de chaque bloc est une **décharge** (volume ×0.65, une qualité conservée) — on encaisse
+avant d'intensifier. En semaine de **charge** (base/build), la **rampe de CTL** vise `+4 pts/sem`
+(borne sourcée +3-5 aéro) en gonflant les jours **easy** générés uniquement (le volume est le levier ;
+une séance de qualité reste une séance de qualité), borné ×1.35, dérivation EWMA :
+```
+ΔCTL_sem = (L_quotidien − CTL)·(1−e^(−7/42))  ⇒  L_quotidien = CTL + 6.51·ΔCTL_cible
+cible hebdo = 7·(CTL + 6.51·4) ;  scale_easy = clamp((cible − reste_semaine)/Σeasy, 1, 1.35)
+```
+**Garde-fous** : les ancres (événements/sessions épinglées) ne sont jamais rescalées ; la readiness
+(rouge/ambre, seuils TSB/ACWR par canal) reste le gate quotidien au-dessus de la phase ; **inerte sans
+objectif daté** (phase "none" → comportement byte-identique, verrouillé par tests) ; l'affûtage de
+n'importe quel objectif ≤ fenêtre prime sur la phase.
+
+**Surfaces.** PhaseChip sous l'objectif principal du dashboard (« Phase build · S−8 · semaine 1/3 du bloc —
+on charge », aide ⁉ pédagogique) ; `state_assessment` du briefing ouvre par la phase ; le chat reçoit
+`training_phase` + une consigne (ne jamais pousser vers un TSB positif hors affûtage). **Pas de rampe
+par canal encore** (le neuro reste protégé par les seuils tsb_neuro/ACWR-neuro quotidiens) — backlog.
+
+**Vérification.** 6 nouveaux tests (bornes de phases, cadence 2:1/3:1 end-anchored, facteur décharge,
+rampe bornée easy-only à qualité constante, base_hard_cap, texte briefing) ; 25/25 engine, zéro régression.
+
 ## Backlog (candidate upgrades, not yet built)
 
 - **Neuromuscular calibration** (the 3c payoff) — once the soreness log has data, fit

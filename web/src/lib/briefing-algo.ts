@@ -94,6 +94,84 @@ const CHANNEL_BAND = 0.4; // ±40 % bounds around each channel target (verdict b
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 const round = (n: number) => Math.round(n);
 
+// ── Périodisation : phases + rampe de CTL + décharges (Q15/Q17 — MODELE_ENTRAINEMENT §5.2) ────────
+/** Phases dérivées de la date de l'objectif PRINCIPAL (rank 1 daté). Bornes rétro-comptées depuis le
+ *  jour J, donc un horizon court « compresse » naturellement (objectif à 30 j → on est déjà en peak).
+ *  Sans objectif daté → "none" : le moteur se comporte exactement comme avant (inertie garantie). */
+export type Phase = "base" | "build" | "peak" | "taper" | "none";
+export type PhaseState = {
+  phase: Phase;
+  daysTo: number | null;   // jours jusqu'à l'objectif principal (null si non daté)
+  weeksTo: number | null;  // ceil(daysTo/7) — S−N
+  isDeload: boolean;       // semaine de décharge (Q17 : 3:1 en base, 2:1 en build)
+  cycleLen: 3 | 4 | null;  // longueur du mésocycle (3 = 2:1 build, 4 = 3:1 base)
+  weekInCycle: number | null; // 1..cycleLen (cycleLen = la semaine de décharge)
+  goalTitle: string | null;
+};
+
+export const PHASE_PARAMS = {
+  taper_days: 14,        // fenêtre d'affûtage objectif principal (alignée sur taperState)
+  peak_weeks_to: 5,      // peak = S−3..S−5 (15-35 j ; table §5.2 : 1-4 sem)
+  build_weeks_to: 13,    // build = S−6..S−13 (36-91 j ; table : 3-8 sem) ; au-delà = base
+  deload_factor: 0.65,   // décharge : −35 % de volume (bande sourcée −30/−50 %), intensité conservée
+  peak_factor: 0.85,     // peak : volume ↓, intensité-clé maintenue
+  ramp_ctl_per_week: 4,  // cible de montée du CTL en semaine de charge (+3-5/sem aéro — point de départ)
+  ramp_scale_max: 1.35,  // borne : ne jamais gonfler un jour easy de plus de +35 %
+  base_hard_cap: 1,      // base = volume ↑, intensité basse → 1 seule séance dure générée / sem
+};
+/** Facteur EWMA τ=42 : ΔCTL_semaine = (L_quotidien − CTL)·(1−e^(−7/42)) ⇒ L = CTL + 6.51·ΔCTL. */
+const CTL_WEEKLY_GAIN_FACTOR = 1 / (1 - Math.exp(-7 / 42)); // ≈ 6.51
+
+export function phaseFromDaysTo(daysTo: number | null | undefined, goalTitle?: string | null): PhaseState {
+  const none: PhaseState = { phase: "none", daysTo: null, weeksTo: null, isDeload: false, cycleLen: null, weekInCycle: null, goalTitle: null };
+  if (daysTo == null || daysTo < 0) return none;
+  const weeksTo = Math.max(1, Math.ceil(daysTo / 7));
+  const common = { daysTo, weeksTo, goalTitle: goalTitle ?? null };
+  if (daysTo <= PHASE_PARAMS.taper_days)
+    return { ...common, phase: "taper", isDeload: false, cycleLen: null, weekInCycle: null };
+  if (weeksTo <= PHASE_PARAMS.peak_weeks_to)
+    return { ...common, phase: "peak", isDeload: false, cycleLen: null, weekInCycle: null };
+  // Mésocycles ANCRÉS SUR LA FIN de la phase : la dernière semaine avant la phase suivante est une
+  // décharge (on encaisse le bloc avant d'affûter/intensifier), puis on rétro-compte 2:1 ou 3:1.
+  if (weeksTo <= PHASE_PARAMS.build_weeks_to) {
+    const pos = weeksTo - (PHASE_PARAMS.peak_weeks_to + 1); // 0 = dernière semaine de build
+    return { ...common, phase: "build", cycleLen: 3, isDeload: pos % 3 === 0, weekInCycle: 3 - (pos % 3) };
+  }
+  const pos = weeksTo - (PHASE_PARAMS.build_weeks_to + 1); // 0 = dernière semaine de base
+  return { ...common, phase: "base", cycleLen: 4, isDeload: pos % 4 === 0, weekInCycle: 4 - (pos % 4) };
+}
+
+/** PhaseState depuis le contexte assemblé : l'objectif PRINCIPAL (rank 1) daté pilote les phases.
+ *  (Les objectifs secondaires gardent leur mini-affûtage via taperState, mais ne périodisent pas.) */
+export function derivePhaseState(ctx: any): PhaseState {
+  const g = (ctx?.goals ?? []).find((x: any) => x?.rank === 1 && x?.days_to != null && x.days_to >= 0);
+  return phaseFromDaysTo(g?.days_to ?? null, g?.title ?? null);
+}
+
+export const PHASE_FR: Record<Phase, string> = {
+  base: "base", build: "build", peak: "pré-compétition", taper: "affûtage", none: "",
+};
+
+/** Rampe de charge (Q15) — UNIQUEMENT en semaine de charge base/build : on vise +ramp_ctl_per_week de
+ *  CTL en gonflant les jours EASY générés (le volume est le levier ; une séance de qualité reste une
+ *  séance de qualité). Bornée (≤ +35 %/jour easy), inerte sans CTL connu, jamais à la baisse (les
+ *  baisses passent par décharge/peak/taper), et jamais si la semaine dépasse déjà la cible (grosses
+ *  ancres). Mutation en place des jours easy non ancrés. */
+function applyRampTarget(days: WeekDay[], ctx: any, phase: PhaseState, anchors: Map<number, Anchor>): void {
+  if ((phase.phase !== "base" && phase.phase !== "build") || phase.isDeload) return;
+  const ctl = ctx.fitness_model_latest?.ctl;
+  if (ctl == null) return;
+  // L_quotidien = CTL + 6.51·ΔCTL_cible (dérivation EWMA ci-dessus) → cible hebdo = 7·L_quotidien.
+  const weeklyTarget = 7 * (Number(ctl) + CTL_WEEKLY_GAIN_FACTOR * PHASE_PARAMS.ramp_ctl_per_week);
+  const total = days.reduce((s, d) => s + d.target_load, 0);
+  if (total >= weeklyTarget) return;
+  const easies = days.filter((d) => d.system_tag === "easy" && !anchors.has(d.day_offset));
+  const easySum = easies.reduce((s, d) => s + d.target_load, 0);
+  if (easySum <= 0) return;
+  const scale = clamp((weeklyTarget - (total - easySum)) / easySum, 1, PHASE_PARAMS.ramp_scale_max);
+  for (const d of easies) d.target_load = round(d.target_load * scale);
+}
+
 /** Deterministic, content-stable variant index (no Math.random → no flicker). Mirror of coach-voice.ts. */
 function pickIndex(seed: string, n: number): number {
   let h = 0;
@@ -261,8 +339,17 @@ export function buildWeekPlan(ctx: any, readiness: Readiness, anchors: Map<numbe
   const fav = ctx.primary_goal?.sport ?? (ctx.favourite_sports ?? [])[0] ?? "running";
   // Taper is driven by GOALS, never by declared events (events are anchored + planned around, not tapered for).
   const taper = taperState(ctx);
-  const hardCap = taper.hardCap;
-  const loadMul = taper.active ? taper.factor : 1;
+  // Périodisation (Q15/Q17) : la phase module les jours GÉNÉRÉS (jamais les ancres, jamais la readiness).
+  // Priorités : affûtage actif (n'importe quel objectif ≤ fenêtre) > décharge/peak > semaine de charge.
+  const phase = derivePhaseState(ctx);
+  const hardCap = taper.active ? taper.hardCap
+    : phase.isDeload ? 1                                  // décharge : volume −35 %, UNE qualité conservée
+    : phase.phase === "base" ? PHASE_PARAMS.base_hard_cap // base : volume ↑, intensité basse
+    : 2;
+  const loadMul = taper.active ? taper.factor
+    : phase.isDeload ? PHASE_PARAMS.deload_factor
+    : phase.phase === "peak" ? PHASE_PARAMS.peak_factor
+    : 1;
 
   const { daysSince, system } = lastHard(ctx);
   let sinceHard = daysSince;
@@ -315,6 +402,11 @@ export function buildWeekPlan(ctx: any, readiness: Readiness, anchors: Map<numbe
     if (isHard(tag)) { sinceHard = 0; lastSys = systemFamily(tag); hardCount++; }
     else { sinceHard++; if (tag === "rest") restPlaced = true; }
   }
+
+  // Rampe de CTL (Q15) — semaines de charge base/build uniquement : gonfle les jours easy générés
+  // (borné) pour viser +ramp_ctl_per_week de CTL, au lieu de retomber sur la semaine « type » qui ne
+  // fait que maintenir. Inerte sans objectif daté / sans CTL / en décharge / peak / taper.
+  if (!taper.active) applyRampTarget(days, ctx, phase, anchors);
   return days;
 }
 
@@ -414,6 +506,19 @@ function buildWhy(today: WeekDay, ctx: any, anchor: Anchor | null = null): strin
   return pick(WHY_BY_TAG[today.system_tag], ctx.today + ":why");
 }
 
+/** Résumé FR de la phase (partagé moteur ↔ UI PhaseChip). null quand pas d'objectif daté. */
+export function phaseSummaryFr(ps: PhaseState): { name: string; detail: string } | null {
+  if (ps.phase === "none") return null;
+  if (ps.phase === "taper")
+    return { name: "affûtage", detail: `J−${ps.daysTo} · on évacue la fatigue, l'intensité reste` };
+  if (ps.phase === "peak")
+    return { name: "pré-compétition", detail: `S−${ps.weeksTo} · volume réduit, intensité-clé maintenue` };
+  const bloc = ps.isDeload
+    ? "semaine de décharge — on encaisse le bloc"
+    : `semaine ${ps.weekInCycle}/${ps.cycleLen} du bloc — on charge`;
+  return { name: PHASE_FR[ps.phase], detail: `S−${ps.weeksTo} · ${bloc}` };
+}
+
 function tsbWord(tsb: number | null | undefined): string {
   if (tsb == null) return "stable";
   if (tsb > 8) return "fraîche";
@@ -439,7 +544,10 @@ function buildStateAssessment(ctx: any, readiness: Readiness, week: WeekDay[]): 
   const weekTxt = nextEvent
     ? `Cette semaine : ${hardN} séance(s) de qualité, organisées autour de « ${nextEvent.title} ».`
     : `Cette semaine : ${hardN} séance(s) de qualité, le reste en endurance pour construire le fond.`;
-  return `${formeTxt} ${recTxt} ${weekTxt}`;
+  // Phase de périodisation (Q15) — situe la semaine dans la préparation de l'objectif principal.
+  const phase = phaseSummaryFr(derivePhaseState(ctx));
+  const phaseTxt = phase ? `Phase ${phase.name} (${phase.detail}). ` : "";
+  return `${phaseTxt}${formeTxt} ${recTxt} ${weekTxt}`;
 }
 
 function buildFlag(ctx: any, readiness: Readiness): string | null {

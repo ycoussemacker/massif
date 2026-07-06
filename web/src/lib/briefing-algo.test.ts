@@ -4,7 +4,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { frWeekday } from "./briefing-shared";
 import {
-  buildAlgorithmicBriefing, computeReadiness, buildWeekPlan, targetLoadFor, type SystemTag, type WeekDay,
+  buildAlgorithmicBriefing, computeReadiness, buildWeekPlan, targetLoadFor, phaseFromDaysTo,
+  phaseSummaryFr, PHASE_PARAMS, type SystemTag, type WeekDay,
 } from "./briefing-algo";
 
 const ZONES = [
@@ -173,6 +174,71 @@ test("sport (#1): quality = goal sport, easy/recovery = base run, rest = no spor
   // …but easy/recovery still read as a flat run, and rest still has no sport.
   assert.ok(w2.filter((d) => d.system_tag === "easy" || d.system_tag === "recovery").every((d) => d.sport_code === "running"));
   assert.ok(w2.filter((d) => d.system_tag === "rest").every((d) => d.sport_code === ""));
+});
+
+// ── Périodisation (Q15/Q17) ───────────────────────────────────────────────────────────────────────
+test("phases: bornes rétro-comptées depuis l'objectif (taper/peak/build/base), inertes sans date", () => {
+  assert.equal(phaseFromDaysTo(null).phase, "none");
+  assert.equal(phaseFromDaysTo(-1).phase, "none");
+  assert.equal(phaseFromDaysTo(10).phase, "taper");   // ≤14 j
+  assert.equal(phaseFromDaysTo(20).phase, "peak");    // S−3
+  assert.equal(phaseFromDaysTo(35).phase, "peak");    // S−5 (dernière semaine de peak)
+  assert.equal(phaseFromDaysTo(36).phase, "build");   // S−6 (première semaine côté course du build)
+  assert.equal(phaseFromDaysTo(91).phase, "build");   // S−13 (build max 8 sem)
+  assert.equal(phaseFromDaysTo(92).phase, "base");    // S−14 → base
+});
+
+test("phases: cadence de décharge — 2:1 en build (S−6, S−9 déchargées), 3:1 en base (S−14, S−18)", () => {
+  // Build : la DERNIÈRE semaine du bloc (avant peak) est une décharge, puis rétro-compte 2 charges/1 décharge.
+  assert.equal(phaseFromDaysTo(36).isDeload, true);   // S−6 → décharge (on encaisse avant d'affûter)
+  assert.equal(phaseFromDaysTo(43).isDeload, false);  // S−7 → charge (semaine 2/3)
+  assert.equal(phaseFromDaysTo(50).isDeload, false);  // S−8 → charge (semaine 1/3)
+  assert.equal(phaseFromDaysTo(57).isDeload, true);   // S−9 → décharge
+  assert.equal(phaseFromDaysTo(50).weekInCycle, 1);
+  assert.equal(phaseFromDaysTo(43).weekInCycle, 2);
+  assert.equal(phaseFromDaysTo(36).weekInCycle, 3);
+  // Base : 3:1.
+  assert.equal(phaseFromDaysTo(92).isDeload, true);    // S−14 (dernière de base)
+  assert.equal(phaseFromDaysTo(99).isDeload, false);   // S−15
+  assert.equal(phaseFromDaysTo(120).isDeload, true);   // S−18
+});
+
+test("phases: semaine de décharge → volume −35 % sur les jours générés + une seule qualité", () => {
+  const charge = buildWeekPlan(ctx({ goals: [{ title: "G", rank: 1, days_to: 50 }] }), "green"); // S−8 charge
+  const deload = buildWeekPlan(ctx({ goals: [{ title: "G", rank: 1, days_to: 57 }] }), "green"); // S−9 décharge
+  assert.ok(deload.filter((d) => isHard(d.system_tag)).length <= 1, "décharge : au plus 1 séance dure");
+  const easyDeload = deload.find((d) => d.system_tag === "easy");
+  assert.ok(easyDeload && easyDeload.target_load === Math.round(42 * PHASE_PARAMS.deload_factor),
+    `easy déchargé = 42×${PHASE_PARAMS.deload_factor}, obtenu ${easyDeload?.target_load}`);
+  // Et la rampe ne s'applique PAS en décharge (les easy ne sont jamais regonflés).
+  const easyCharge = charge.find((d) => d.system_tag === "easy");
+  assert.ok(easyCharge && easyDeload && easyDeload.target_load < easyCharge.target_load);
+});
+
+test("phases: rampe de CTL en semaine de charge — les jours easy montent (bornés), la qualité ne bouge pas", () => {
+  const none = buildWeekPlan(ctx(), "green");                                                    // pas d'objectif
+  const charge = buildWeekPlan(ctx({ goals: [{ title: "G", rank: 1, days_to: 50 }] }), "green"); // build charge
+  const easyNone = none.find((d) => d.system_tag === "easy")!;
+  const easyCharge = charge.find((d) => d.system_tag === "easy")!;
+  // ctl 45 → cible hebdo ≈ 7×(45+6.51×4) ≈ 497 ≫ semaine type → facteur borné à +35 %.
+  assert.equal(easyCharge.target_load, Math.round(42 * PHASE_PARAMS.ramp_scale_max));
+  assert.ok(easyCharge.target_load > easyNone.target_load, "la charge passe par le volume easy");
+  const hardLoads = (w: WeekDay[]) => w.filter((d) => isHard(d.system_tag)).map((d) => d.target_load);
+  assert.deepEqual(hardLoads(charge), hardLoads(none), "une séance de qualité reste une séance de qualité");
+});
+
+test("phases: base = volume, 1 seule séance dure générée par semaine", () => {
+  const w = buildWeekPlan(ctx({ goals: [{ title: "G", rank: 1, days_to: 99 }] }), "green"); // base, charge
+  assert.equal(w.filter((d) => isHard(d.system_tag)).length, PHASE_PARAMS.base_hard_cap);
+});
+
+test("phases: le briefing situe la semaine (state_assessment) et l'étiquette FR est cohérente", () => {
+  const b = buildAlgorithmicBriefing(ctx({ goals: [{ title: "Roubion", rank: 1, days_to: 50 }] }));
+  assert.match(b.state_assessment, /^Phase build \(S−8 · semaine 1\/3 du bloc — on charge\)\./);
+  const s = phaseSummaryFr(phaseFromDaysTo(36));
+  assert.equal(s?.name, "build");
+  assert.match(s!.detail, /décharge/);
+  assert.equal(phaseSummaryFr(phaseFromDaysTo(null)), null);
 });
 
 test("targetLoadFor: default when no history, personalised baseline when present", () => {

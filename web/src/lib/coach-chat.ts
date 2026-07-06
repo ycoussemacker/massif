@@ -4,6 +4,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { assembleCoachContext, loadTodayBriefing, todayLocal, dateMinusDays } from "./coach-context";
+import { derivePhaseState, phaseSummaryFr } from "./briefing-algo";
 import { loadCoachSettings, buildPersonaInstructions } from "./coach-settings";
 import { estimateForDeclared } from "./estimate-server";
 import { simulateForChat } from "./coach-simulate";
@@ -50,6 +51,13 @@ it mean for recovery and the next days? Be specific and practical. The athlete's
 RANKED list (goals[], most important first); reason about them in that order, give richer sport-specific
 feedback when a session matches a goal's sport (goals[].sport), and weight goals with a nearer deadline
 (goals[].days_to) more — some goals carry only a fuzzy horizon (goals[].horizon) and no date.
+
+PHASE DE PÉRIODISATION — \`training_phase\` situe la semaine dans la préparation de l'objectif principal
+(base / build / pré-compétition / affûtage, semaine de charge ou de DÉCHARGE, S−N). Raisonne AVEC :
+en semaine de charge la forme (TSB) doit rester légèrement négative (≈ −5 à −20, c'est la surcharge
+productive — ne pousse PAS l'athlète vers un TSB positif hors affûtage) ; en décharge on encaisse
+(volume réduit, intensité conservée) ; l'affûtage vise TSB 0/+10 le jour J. Si l'athlète s'inquiète
+d'un TSB négatif en pleine phase de charge, explique que c'est voulu et borné par la readiness.
 
 ZONES FC : quand tu prescris ou commentes une zone d'effort / intensité de course, appuie-toi sur
 \`hr_zones\` — les zones FC RÉELLES de l'athlète en bpm (issues de sa montre Garmin, ou calculées depuis ses
@@ -487,7 +495,13 @@ export async function generateCoachReply(opts: {
   ]);
   // Sport codes the coach may use when proposing a session/event (the propose_* tools resolve them).
   const availableSports = (sportsRes.data ?? []).map((s: any) => s.code);
-  const fullContext = { ...context, today_briefing: todayBriefing, available_sports: availableSports };
+  // Phase de périodisation courante (Q15) — dérivée des goals déjà assemblés, pour que le chat tienne
+  // le même discours que le briefing (charge/décharge/affûtage) sans toucher au mirror du contexte.
+  const phaseSum = phaseSummaryFr(derivePhaseState(context));
+  const fullContext = {
+    ...context, today_briefing: todayBriefing, available_sports: availableSports,
+    training_phase: phaseSum ? `${phaseSum.name} — ${phaseSum.detail}` : null,
+  };
   const client = new Anthropic();
   const proposalIds: string[] = [];
 

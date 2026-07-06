@@ -5,6 +5,9 @@ import { ChartsSection } from "@/components/charts-section";
 import { ActivityCard, ActivityRow, ActivityTableHead } from "@/components/activity-row";
 import { Nav } from "@/components/nav";
 import { GoalBadge } from "@/components/goal-badge";
+import { PhaseChip } from "@/components/phase-chip";
+import { phaseFromDaysTo } from "@/lib/briefing-algo";
+import { daysTo } from "@/lib/profile-types";
 import { CoachHero } from "@/components/coach-hero";
 import { assembleVerdict } from "@/lib/day-verdict";
 import { GarminRefresh } from "@/components/garmin-refresh";
@@ -117,10 +120,14 @@ async function DashboardBody() {
         <section className="mb-6 rounded-2xl border border-stone-200 bg-white p-4 dark:border-stone-800 dark:bg-stone-900 sm:p-5">
           <h2 className="text-xs font-semibold uppercase tracking-wide text-stone-400">Ton plan d&apos;entraînement</h2>
 
-          {/* 1. Objectif principal — une ligne */}
+          {/* 1. Objectif principal — une ligne, + la PHASE de préparation en cours (base / build /
+              pré-compétition / affûtage, semaine de charge ou de décharge) dérivée de sa date. */}
           <div className="mt-2">
             {topGoal ? (
-              <GoalBadge goal={topGoal} />
+              <>
+                <GoalBadge goal={topGoal} />
+                <PhaseChip phase={phaseFromDaysTo(daysTo(topGoal.target_date), topGoal.title)} />
+              </>
             ) : (
               <p className="text-sm text-stone-500 dark:text-stone-400">Aucun objectif défini pour l&apos;instant.</p>
             )}

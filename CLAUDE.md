@@ -367,3 +367,17 @@ sections (coach card, week pills, charts, recovery, activities) with grey+backdr
 `filter` on content (a filter would break `fixed` child modals). `ACTIVITY_COLS`/`Activity` gained
 `max_hr, avg_power_w, np_power_w, avg_altitude_m, user_overrides`. E2E verified on real data (D− edit →
 recompute → rollup → revert, byte-consistent). pytest 74, engine tests 22, web build + lint 0 errors.
+
+**PERIODIZATION v1 (Upgrade 9, shipped 2026-07-06) — phases + CTL ramp + deloads (Q15/Q17).** The 7-day
+plan was memory-less (always steered back to the "typical" week = maintenance). Now `briefing-algo.ts`
+derives the current PHASE from the PRIMARY dated goal (`phaseFromDaysTo`, pure + tested): **taper** ≤14 d
+(existing exponential) · **peak** S−3..S−5 (×0.85, intensity kept) · **build** S−6..S−13 (**2:1**
+mesocycles) · **base** beyond (**3:1**, 1 generated hard/wk). Mesocycles are END-ANCHORED: the last week
+of each block is a **deload** (×0.65, one quality kept). In charge weeks a **CTL ramp** targets +4 pts/wk
+(sourced band +3-5) by inflating GENERATED easy days only (bounded ×1.35; quality sessions + anchors
+never rescaled; daily readiness gates stay above phase). **Inert without a dated goal** (phase "none" →
+byte-identical, test-locked). Surfaced: `PhaseChip` under the dashboard's main goal (+ ⁉ help),
+`state_assessment` opens with the phase, chat gets `training_phase` + a system rule (never push positive
+TSB outside taper — mild negative TSB is the productive zone). Docs: MODELE §5.2 + Q15/Q17 ✅,
+MODEL_UPGRADES Upgrade 9. NOT yet: per-channel neuro ramp (+1-3/wk — daily tsb_neuro/ACWR-neuro thresholds
+protect instead), transition phase. Engine tests 25/25.
