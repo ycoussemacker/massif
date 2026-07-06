@@ -114,6 +114,17 @@ export async function loadWeather(fromDate: string): Promise<any[]> {
   return data ?? [];
 }
 
+/** Fenêtres de contrainte (Upgrade 10) : actives, à venir, ou terminées depuis ≤ 7 j (grâce
+ *  post-décharge). Lenient : [] si table absente (pré-migration). Mirror de coach-context.ts. */
+export async function loadTrainingWindows(today: string, graceFrom: string): Promise<any[]> {
+  const { data, error } = await db
+    .from("training_windows")
+    .select("id,starts_on,ends_on,label,effect,no_mountains,limited_hills,reduced_volume,notes")
+    .gte("ends_on", graceFrom).order("starts_on", { ascending: true }).limit(20);
+  if (error) return [];
+  return data ?? [];
+}
+
 /** Personalized neuromuscular acute τ (athlete_load_params.neuro_atl_days) or null → projection default. */
 export async function loadNeuroAtlDays(): Promise<number | null> {
   const { data } = await db.from("athlete_load_params").select("value").eq("param", "neuro_atl_days").maybeSingle();

@@ -1,9 +1,10 @@
 import Link from "next/link";
 import { Nav } from "@/components/nav";
 import { CalendarGrid } from "@/components/calendar-grid";
-import { getCalendar } from "@/lib/calendar";
+import { getCalendar, type CalWindow } from "@/lib/calendar";
 import { getSports } from "@/lib/activities";
-import { todayLocal } from "@/lib/coach-context";
+import { todayLocal, daysBetween } from "@/lib/coach-context";
+import { effectivePhase, phaseMarkFr } from "@/lib/briefing-algo";
 
 export const dynamic = "force-dynamic";
 
@@ -51,7 +52,18 @@ export default async function CalendrierPage({ searchParams }: { searchParams: P
   const anchor = sp.d && DATE_RE.test(sp.d) ? sp.d : today;
 
   const range = view === "month" ? monthRange(anchor) : { start: mondayOf(anchor), end: addDays(mondayOf(anchor), 6) };
-  const [{ days }, sports] = await Promise.all([getCalendar(range.start, range.end), getSports()]);
+  const [{ days, windows, topGoal }, sports] = await Promise.all([getCalendar(range.start, range.end), getSports()]);
+
+  // Marqueur de phase SOBRE en début de semaine (lundi) : phase effective évaluée À CE lundi-là
+  // (objectif principal + fenêtres de contrainte) — « build · S−8 · charge 1/3 », « décharge »…
+  const weekMarks: Record<string, string | null> = {};
+  for (let m = range.start; m <= range.end; m = addDays(m, 7)) {
+    weekMarks[m] = phaseMarkFr(effectivePhase({
+      today: m,
+      goals: topGoal ? [{ rank: 1, title: topGoal.title, days_to: daysBetween(m, topGoal.target_date) }] : [],
+      training_windows: windows as CalWindow[],
+    }));
+  }
 
   const prevAnchor = view === "month" ? addMonths(anchor.slice(0, 8) + "01", -1) : addDays(mondayOf(anchor), -7);
   const nextAnchor = view === "month" ? addMonths(anchor.slice(0, 8) + "01", 1) : addDays(mondayOf(anchor), 7);
@@ -95,6 +107,8 @@ export default async function CalendrierPage({ searchParams }: { searchParams: P
           today={today}
           days={days}
           sports={sports}
+          windows={windows}
+          weekMarks={weekMarks}
         />
 
         <p className="mt-6 text-center text-xs text-stone-400">

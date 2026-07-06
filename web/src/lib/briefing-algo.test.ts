@@ -5,7 +5,8 @@ import assert from "node:assert/strict";
 import { frWeekday } from "./briefing-shared";
 import {
   buildAlgorithmicBriefing, computeReadiness, buildWeekPlan, targetLoadFor, phaseFromDaysTo,
-  phaseSummaryFr, PHASE_PARAMS, type SystemTag, type WeekDay,
+  phaseSummaryFr, phaseMarkFr, PHASE_PARAMS, resolveWindowEffect, effectivePhase,
+  type SystemTag, type WeekDay, type TrainingWindow,
 } from "./briefing-algo";
 
 const ZONES = [
@@ -239,6 +240,70 @@ test("phases: le briefing situe la semaine (state_assessment) et l'étiquette FR
   assert.equal(s?.name, "build");
   assert.match(s!.detail, /décharge/);
   assert.equal(phaseSummaryFr(phaseFromDaysTo(null)), null);
+});
+
+// ── Fenêtres de contrainte (Upgrade 10) — la vraie vie re-cadre les phases ───────────────────────
+// ctx.today = 2026-06-25 (jeudi). Fenêtre « Bordeaux » : cas réel de l'athlète (déplacement, plat).
+const BX = (over: Partial<TrainingWindow> = {}): TrainingWindow => ({
+  starts_on: "2026-06-28", ends_on: "2026-07-10", label: "Déplacement Bordeaux",
+  effect: "auto", no_mountains: true, ...over,
+});
+
+test("fenêtres: effet auto = décharge si capacité réduite ≥ 5 j, sinon entretien ; l'explicite gagne", () => {
+  assert.equal(resolveWindowEffect(BX()), "deload");                                    // plat, 13 j
+  assert.equal(resolveWindowEffect(BX({ ends_on: "2026-06-30" })), "maintain");         // plat mais court (3 j)
+  assert.equal(resolveWindowEffect(BX({ no_mountains: false })), "maintain");           // long mais sans contrainte
+  assert.equal(resolveWindowEffect(BX({ effect: "charge" })), "charge");                // intention explicite
+});
+
+test("fenêtres: la décharge calendaire est REPORTÉE sur une fenêtre décharge proche (on charge avant)", () => {
+  // days_to 36 → S−6 = semaine de décharge calendaire… mais une fenêtre décharge démarre dans 3 j.
+  const c = ctx({ goals: [{ title: "G", rank: 1, days_to: 36 }], training_windows: [BX()] });
+  const eff = effectivePhase(c);
+  assert.equal(eff.isDeload, false, "décharge calendaire annulée");
+  assert.equal(eff.deloadMovedTo, "Déplacement Bordeaux");
+  assert.match(phaseSummaryFr(eff)!.detail, /décharge reportée/);
+  assert.match(phaseMarkFr(eff)!, /décharge reportée/);
+  // Sans la fenêtre, la même semaine serait bien déchargée (sanity).
+  assert.equal(effectivePhase(ctx({ goals: [{ title: "G", rank: 1, days_to: 36 }] })).isDeload, true);
+});
+
+test("fenêtres: avant une fenêtre terrain plat, les qualités « mangent du D+ » ; pendant, seuil sur plat", () => {
+  const w = buildWeekPlan(ctx({ training_windows: [BX()] }), "green"); // fenêtre à J+3 (offsets 3..6 couverts)
+  const before = w.filter((d) => d.day_offset < 3 && isHard(d.system_tag));
+  const during = w.filter((d) => d.day_offset >= 3);
+  assert.ok(before.length >= 1, "au moins une qualité avant le départ");
+  assert.ok(before.every((d) => d.system_tag === "hard_neuromuscular"), "les qualités d'avant ciblent le dénivelé");
+  assert.ok(during.every((d) => d.system_tag !== "hard_neuromuscular" && d.system_tag !== "hard_structural"),
+    "aucune côtes/force générée dans la fenêtre");
+  assert.ok(during.filter((d) => isHard(d.system_tag)).length <= 1, "une seule qualité max dans la fenêtre");
+  // Terrain plat : même la qualité se court sur le plat (running), pas le sport montagne.
+  assert.ok(during.filter((d) => d.system_tag !== "rest").every((d) => d.sport_code === "running"));
+  // Volume des jours easy dans la fenêtre : réduit (décharge ×0.65), pas regonflé par la rampe.
+  const easyIn = during.find((d) => d.system_tag === "easy");
+  if (easyIn) assert.equal(easyIn.target_load, Math.round(42 * PHASE_PARAMS.deload_factor));
+});
+
+test("fenêtres: aujourd'hui DANS la fenêtre → le chip/le bilan la nomment, même sans objectif daté", () => {
+  const c = ctx({ today: "2026-07-01", training_windows: [BX()] });
+  const eff = effectivePhase(c);
+  assert.equal(eff.window?.effect, "deload");
+  const s = phaseSummaryFr(eff)!;
+  assert.equal(s.name, "contrainte"); // pas d'objectif daté → la fenêtre porte seule le libellé
+  assert.match(s.detail, /Déplacement Bordeaux/);
+  assert.match(s.detail, /terrain plat/);
+  const b = buildAlgorithmicBriefing(c);
+  assert.match(b.state_assessment, /Déplacement Bordeaux/);
+});
+
+test("fenêtres: en semaine de charge, la rampe ne regonfle QUE les easy hors fenêtre", () => {
+  // Build charge (days_to 50) + fenêtre décharge couvrant la fin de semaine.
+  const w = buildWeekPlan(ctx({ goals: [{ title: "G", rank: 1, days_to: 50 }], training_windows: [BX()] }), "green");
+  const easyOut = w.find((d) => d.day_offset < 3 && d.system_tag === "easy");
+  const easyIn = w.find((d) => d.day_offset >= 3 && d.system_tag === "easy");
+  if (easyOut) assert.equal(easyOut.target_load, Math.round(42 * PHASE_PARAMS.ramp_scale_max), "hors fenêtre : rampe");
+  if (easyIn) assert.equal(easyIn.target_load, Math.round(42 * PHASE_PARAMS.deload_factor), "dans la fenêtre : décharge");
+  assert.ok(easyOut || easyIn, "au moins un jour easy à vérifier");
 });
 
 test("targetLoadFor: default when no history, personalised baseline when present", () => {

@@ -167,7 +167,7 @@ export async function assembleCoachContext(sb: SupabaseClient): Promise<{ today:
   const today = todayLocal();
   const since14 = dateMinusDays(today, 14);
 
-  const [pm, mm, am, sm, plm, gm, npm, wm, bm] = await Promise.all([
+  const [pm, mm, am, sm, plm, gm, npm, wm, bm, twm] = await Promise.all([
     sb.from("athlete_profile").select("*").limit(1).maybeSingle(),
     sb.from("daily_metrics").select("*").order("local_date", { ascending: false }).limit(21),
     sb.from("activities")
@@ -188,6 +188,10 @@ export async function assembleCoachContext(sb: SupabaseClient): Promise<{ today:
     // local_date+vertical_loss_m also feed the descent-model reliability alert (descentModelConfidence).
     sb.from("activities").select("training_load,aerobic_load,neuromuscular_load,intensity_factor,local_date,vertical_loss_m")
       .gte("local_date", dateMinusDays(today, 90)).order("local_date", { ascending: false }).limit(400),
+    // Fenêtres de contrainte (Upgrade 10) : actives, à venir, et terminées depuis ≤ 7 j (la grâce
+    // post-décharge du moteur en a besoin). Tolérant à la table absente pré-migration (→ []).
+    sb.from("training_windows").select("id,starts_on,ends_on,label,effect,no_mountains,limited_hills,reduced_volume,notes")
+      .gte("ends_on", dateMinusDays(today, 7)).order("starts_on", { ascending: true }).limit(20),
   ]);
 
   const profile: any = pm.data ?? {};
@@ -299,6 +303,14 @@ export async function assembleCoachContext(sb: SupabaseClient): Promise<{ today:
     // Sessions the athlete ACCEPTED from a coach proposal in chat — FIXED prescriptions: plan around them,
     // never overwrite them (set anchors_event_ref to their ref on their day, like a declared event).
     pinned_sessions,
+    // Fenêtres de contrainte déclarées (déplacement, terrain plat, temps réduit…) — le plan reporte les
+    // décharges dessus, charge le D+ avant une fenêtre sans montagne et adapte les séances pendant.
+    training_windows: ((twm.data ?? []) as any[]).map((w) => ({
+      starts_on: w.starts_on, ends_on: w.ends_on, label: w.label, effect: w.effect ?? "auto",
+      no_mountains: !!w.no_mountains, limited_hills: !!w.limited_hills, reduced_volume: !!w.reduced_volume,
+      notes: w.notes ?? null,
+      days_to_start: daysBetween(today, w.starts_on), days_to_end: daysBetween(today, w.ends_on),
+    })),
   };
 
   return { today, context };

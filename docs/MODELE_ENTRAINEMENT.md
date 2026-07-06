@@ -222,6 +222,14 @@ Deux garde-fous chiffrés pour **progresser sans se blesser**, à terme **par ca
 > la readiness quotidienne reste au-dessus). La phase est affichée sous l'objectif (dashboard), ouvre le
 > `state_assessment` du briefing et est fournie au chat (`training_phase`). **Pas encore** : rampe par
 > canal (le neuro reste protégé par les seuils quotidiens), phase transition post-objectif.
+>
+> **v2 (Upgrade 10) — fenêtres de contrainte** : l'athlète déclare dans l'agenda une période de vie
+> (« Déplacement Bordeaux », sans montagne / peu de côtes / temps réduit, intention décharge /
+> entretien / charge / auto) et le plan s'y adapte : **décharge calendaire reportée** sur la fenêtre
+> (« on charge avant, on encaisse pendant »), **D+ front-chargé** avant une fenêtre terrain-plat,
+> séances adaptées pendant (qualité → seuil sur plat, volume ×0.65/×0.85, une qualité max). Table
+> `training_windows` ; moteur `resolveWindowEffect`/`effectivePhase` (briefing-algo.ts, testé) ;
+> visible dans l'agenda (bandes + marqueur de phase en début de semaine) et sur le PhaseChip.
 
 ---
 

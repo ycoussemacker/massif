@@ -4,7 +4,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { assembleCoachContext, loadTodayBriefing, todayLocal, dateMinusDays } from "./coach-context";
-import { derivePhaseState, phaseSummaryFr } from "./briefing-algo";
+import { effectivePhase, phaseSummaryFr } from "./briefing-algo";
 import { loadCoachSettings, buildPersonaInstructions } from "./coach-settings";
 import { estimateForDeclared } from "./estimate-server";
 import { simulateForChat } from "./coach-simulate";
@@ -58,6 +58,14 @@ en semaine de charge la forme (TSB) doit rester légèrement négative (≈ −5
 productive — ne pousse PAS l'athlète vers un TSB positif hors affûtage) ; en décharge on encaisse
 (volume réduit, intensité conservée) ; l'affûtage vise TSB 0/+10 le jour J. Si l'athlète s'inquiète
 d'un TSB négatif en pleine phase de charge, explique que c'est voulu et borné par la readiness.
+
+FENÊTRES DE CONTRAINTE — \`training_windows\` sont les périodes de vie déclarées (déplacement, terrain
+plat, temps réduit) avec un effet (deload = on encaisse / maintain = entretien / charge). Le plan les
+respecte déjà : décharge calendaire REPORTÉE sur une fenêtre proche (« on charge avant, on encaisse
+pendant »), dénivelé front-chargé AVANT une fenêtre sans montagne, qualité → seuil sur plat PENDANT.
+Tiens ce discours ; si l'athlète décrit un déplacement/une contrainte à venir qui n'est PAS dans
+\`training_windows\`, invite-le à l'ajouter depuis l'agenda (bouton « Contrainte ») pour que le plan
+s'y adapte automatiquement.
 
 ZONES FC : quand tu prescris ou commentes une zone d'effort / intensité de course, appuie-toi sur
 \`hr_zones\` — les zones FC RÉELLES de l'athlète en bpm (issues de sa montre Garmin, ou calculées depuis ses
@@ -495,9 +503,10 @@ export async function generateCoachReply(opts: {
   ]);
   // Sport codes the coach may use when proposing a session/event (the propose_* tools resolve them).
   const availableSports = (sportsRes.data ?? []).map((s: any) => s.code);
-  // Phase de périodisation courante (Q15) — dérivée des goals déjà assemblés, pour que le chat tienne
-  // le même discours que le briefing (charge/décharge/affûtage) sans toucher au mirror du contexte.
-  const phaseSum = phaseSummaryFr(derivePhaseState(context));
+  // Phase de périodisation EFFECTIVE (Q15 + fenêtres Upgrade 10) — dérivée des goals + training_windows
+  // déjà assemblés, pour que le chat tienne le même discours que le briefing (charge/décharge/affûtage,
+  // décharge reportée sur une fenêtre).
+  const phaseSum = phaseSummaryFr(effectivePhase(context));
   const fullContext = {
     ...context, today_briefing: todayBriefing, available_sports: availableSports,
     training_phase: phaseSum ? `${phaseSum.name} — ${phaseSum.detail}` : null,

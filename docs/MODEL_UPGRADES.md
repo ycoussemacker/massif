@@ -413,6 +413,39 @@ par canal encore** (le neuro reste protégé par les seuils tsb_neuro/ACWR-neuro
 **Vérification.** 6 nouveaux tests (bornes de phases, cadence 2:1/3:1 end-anchored, facteur décharge,
 rampe bornée easy-only à qualité constante, base_hard_cap, texte briefing) ; 25/25 engine, zéro régression.
 
+## 2026-07-06 · Upgrade 10 — Fenêtres de contrainte : la vraie vie re-cadre les phases
+
+**Problème.** Les phases (Upgrade 9) sont ancrées sur la date de course — mais la vie réelle (déplacement
+2 semaines à Bordeaux sans montagne, semaine chargée au boulot) doit pouvoir **reporter une décharge,
+prolonger une charge, adapter le terrain**. Cas fondateur : « d'ici mercredi je veux *manger du D+*,
+puis récupérer pendant le déplacement ».
+
+**Modèle.** Table **`training_windows`** (migration `…20260706000001`, appliquée) : période datée +
+`label` + intention `effect` (`auto`/`deload`/`maintain`/`charge`) + drapeaux de capacité
+(`no_mountains`, `limited_hills`, `reduced_volume`). `effect=auto` → décharge si capacité réduite sur
+≥ 5 j, sinon entretien (`resolveWindowEffect`). Trois règles dans le moteur (briefing-algo.ts, pur + testé) :
+1. **Décharge reportée** (`effectivePhase`) : une fenêtre décharge qui démarre d'ici ≤ 21 j ABSORBE la
+   décharge calendaire (on charge avant, on encaisse pendant) ; une décharge calendaire ≤ 7 j après la
+   fin d'une fenêtre décharge est aussi supprimée (déjà encaissé).
+2. **Biais D+ avant** : les qualités générées avant une fenêtre terrain-plat qui démarre dans la semaine
+   deviennent `hard_neuromuscular` (on front-charge la qualité qui sera indisponible).
+3. **Adaptation pendant** : modulation PAR JOUR (une semaine coupée en deux se module jour par jour) —
+   décharge ×0.65 / entretien ×0.85, une seule qualité max (aérobie), jamais de côtes/force générées sur
+   terrain plat (qualité → seuil, sport → running), la rampe ne regonfle jamais un jour en fenêtre.
+   Les ancres (événements déclarés / sessions épinglées) ne sont JAMAIS modifiées ; la readiness reste au-dessus.
+
+**Surfaces.** Agenda : bouton « + Contrainte » (modale label/dates/effet/drapeaux), jours couverts en
+fond grisé sobre (+ légende), fiche du jour = contrainte modifiable/supprimable, **marqueur de phase en
+début de semaine uniquement** (`phaseMarkFr` : « build · S−8 · charge 1/3 », « Déplacement Bordeaux ·
+on encaisse »). Dashboard : le PhaseChip passe à la **phase effective** (« décharge reportée sur … »).
+Chat : `training_windows` dans le contexte (web + mirror coach/) + consigne (inviter à déclarer une
+contrainte évoquée en chat mais absente). Briefing : le `state_assessment` nomme la fenêtre / le report.
+
+**Vérification.** 5 nouveaux tests engine (effet auto, report de décharge + sanity sans fenêtre, biais
+D+ avant/seuil-plat pendant/une qualité max/×0.65, libellés, rampe hors-fenêtre seulement) ; 30/30,
+zéro régression ; build + lint 0 erreur ; coach tsc clean. **Backlog** : proposition de fenêtre PAR le
+coach depuis le chat (tool propose_window), phase transition post-objectif, rampe neuro par canal.
+
 ## Backlog (candidate upgrades, not yet built)
 
 - **Neuromuscular calibration** (the 3c payoff) — once the soreness log has data, fit

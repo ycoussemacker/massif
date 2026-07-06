@@ -658,6 +658,78 @@ export async function deletePlannedEvent(id: string): Promise<void> {
   revalidatePath("/coach");
 }
 
+// ── Fenêtres de contrainte (périodisation personnalisée — Upgrade 10) ────────────────────────────
+
+export type TrainingWindowInput = {
+  starts_on: string;
+  ends_on: string;
+  label: string;
+  effect?: "auto" | "deload" | "maintain" | "charge";
+  no_mountains?: boolean;
+  limited_hills?: boolean;
+  reduced_volume?: boolean;
+  notes?: string | null;
+};
+
+const WINDOW_EFFECTS = new Set(["auto", "deload", "maintain", "charge"]);
+
+function cleanWindowInput(input: TrainingWindowInput) {
+  if (!ISO_DATE.test(input.starts_on ?? "") || !ISO_DATE.test(input.ends_on ?? ""))
+    throw new Error("Dates invalides (AAAA-MM-JJ).");
+  if (input.ends_on < input.starts_on) throw new Error("La fin doit être après le début.");
+  const label = (input.label ?? "").trim();
+  if (!label) throw new Error("Donne un nom à la contrainte (ex. « Déplacement Bordeaux »).");
+  const effect = input.effect && WINDOW_EFFECTS.has(input.effect) ? input.effect : "auto";
+  return {
+    starts_on: input.starts_on,
+    ends_on: input.ends_on,
+    label: label.slice(0, 120),
+    effect,
+    no_mountains: !!input.no_mountains,
+    limited_hills: !!input.limited_hills,
+    reduced_volume: !!input.reduced_volume,
+    notes: (input.notes ?? "")?.toString().trim().slice(0, 500) || null,
+  };
+}
+
+/** Les surfaces qui affichent phases/plan/fenêtres. Le plan de la semaine n'est PAS régénéré ici —
+ *  la fenêtre entre dans le contexte et le prochain briefing (ou une régénération) la prend en compte. */
+function revalidateWindowSurfaces(): void {
+  revalidatePath("/");
+  revalidatePath("/calendrier");
+  revalidatePath("/coach");
+}
+
+/** Déclare une fenêtre de contrainte (déplacement, terrain plat…). Le moteur de plan s'y adapte :
+ *  décharge reportée dessus, D+ chargé avant une fenêtre sans montagne, séances adaptées pendant. */
+export async function createTrainingWindow(input: TrainingWindowInput): Promise<{ id: string }> {
+  const c = cleanWindowInput(input);
+  const sb = await createServiceClient();
+  const ins = await sb.from("training_windows").insert(c).select("id").single();
+  if (ins.error) throw new Error(ins.error.message);
+  revalidateWindowSurfaces();
+  return { id: (ins.data as { id: string }).id };
+}
+
+/** Modifie une fenêtre (reporter/prolonger : changer les dates suffit). */
+export async function updateTrainingWindow(id: string, input: TrainingWindowInput): Promise<void> {
+  if (!id) throw new Error("Contrainte introuvable.");
+  const c = cleanWindowInput(input);
+  const sb = await createServiceClient();
+  const upd = await sb.from("training_windows")
+    .update({ ...c, updated_at: new Date().toISOString() }).eq("id", id);
+  if (upd.error) throw new Error(upd.error.message);
+  revalidateWindowSurfaces();
+}
+
+export async function deleteTrainingWindow(id: string): Promise<void> {
+  if (!id) throw new Error("Contrainte introuvable.");
+  const sb = await createServiceClient();
+  const del = await sb.from("training_windows").delete().eq("id", id);
+  if (del.error) throw new Error(del.error.message);
+  revalidateWindowSurfaces();
+}
+
 // ── Coach proposals (the coach proposes a plan/activity change → the athlete validates → we write) ─
 
 export type AcceptResult = {

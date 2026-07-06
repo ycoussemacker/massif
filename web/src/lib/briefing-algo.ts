@@ -152,6 +152,74 @@ export const PHASE_FR: Record<Phase, string> = {
   base: "base", build: "build", peak: "pré-compétition", taper: "affûtage", none: "",
 };
 
+// ── Fenêtres de contrainte (Upgrade 10) — la vraie vie re-cadre les phases ──────────────────────
+/** Période déclarée par l'athlète (table training_windows) : déplacement, terrain plat, temps réduit…
+ *  Le plan s'y adapte : décharge calendaire REPORTÉE dessus, D+ chargé AVANT une fenêtre sans montagne,
+ *  séances adaptées PENDANT (qualité → seuil sur plat, volume réduit). */
+export type TrainingWindow = {
+  id?: string;
+  starts_on: string;
+  ends_on: string;
+  label: string;
+  effect: "auto" | "deload" | "maintain" | "charge";
+  no_mountains?: boolean | null;
+  limited_hills?: boolean | null;
+  reduced_volume?: boolean | null;
+};
+export type WindowEffect = "deload" | "maintain" | "charge";
+
+export const WINDOW_PARAMS = {
+  deload_snap_days: 21,   // une fenêtre décharge qui démarre d'ici ≤ N j ABSORBE la décharge calendaire (on charge avant)
+  post_deload_grace_d: 7, // décharge calendaire ≤ N j après une fenêtre décharge → supprimée (déjà encaissé)
+  auto_deload_min_d: 5,   // effet auto : capacité réduite ET ≥ N j → décharge, sinon entretien
+  maintain_factor: 0.85,  // entretien : volume légèrement réduit, pas de rampe
+};
+
+/** Effet résolu d'une fenêtre : l'intention explicite gagne ; `auto` = décharge si la capacité est
+ *  réduite (terrain/temps) sur une période assez longue pour encaisser, sinon simple entretien. */
+export function resolveWindowEffect(w: TrainingWindow): WindowEffect {
+  if (w.effect && w.effect !== "auto") return w.effect;
+  const constrained = !!(w.no_mountains || w.limited_hills || w.reduced_volume);
+  const days = daysBetween(w.starts_on, w.ends_on) + 1;
+  return constrained && days >= WINDOW_PARAMS.auto_deload_min_d ? "deload" : "maintain";
+}
+
+const flatTerrain = (w: TrainingWindow | null): boolean => !!(w && (w.no_mountains || w.limited_hills));
+
+/** Phase EFFECTIVE = phase calendaire (objectif) ajustée par les fenêtres de contrainte :
+ *  - aujourd'hui DANS une fenêtre → son effet s'applique (la fenêtre prime sur le calendrier) ;
+ *  - une fenêtre décharge démarre d'ici ≤ deload_snap_days → la décharge calendaire de cette semaine
+ *    est REPORTÉE dessus (deloadMovedTo) : on charge avant, on encaisse pendant ;
+ *  - décharge calendaire juste APRÈS une fenêtre décharge → supprimée (on vient d'encaisser). */
+export type EffectivePhase = PhaseState & {
+  window: { label: string; effect: WindowEffect; flat: boolean } | null;
+  deloadMovedTo: string | null;
+};
+export function effectivePhase(ctx: any): EffectivePhase {
+  const cal = derivePhaseState(ctx);
+  const wins = (ctx?.training_windows ?? []) as TrainingWindow[];
+  const today = ctx?.today as string;
+  const todayWin = wins.find((w) => w.starts_on <= today && today <= w.ends_on) ?? null;
+
+  let st: PhaseState = cal;
+  let deloadMovedTo: string | null = null;
+  if (cal.isDeload && !todayWin) {
+    const upcoming = wins.find((w) =>
+      w.starts_on > today && daysBetween(today, w.starts_on) <= WINDOW_PARAMS.deload_snap_days &&
+      resolveWindowEffect(w) === "deload");
+    const justAfter = wins.find((w) =>
+      w.ends_on < today && daysBetween(w.ends_on, today) <= WINDOW_PARAMS.post_deload_grace_d &&
+      resolveWindowEffect(w) === "deload");
+    if (upcoming) { st = { ...cal, isDeload: false }; deloadMovedTo = upcoming.label; }
+    else if (justAfter) st = { ...cal, isDeload: false };
+  }
+  return {
+    ...st,
+    window: todayWin ? { label: todayWin.label, effect: resolveWindowEffect(todayWin), flat: flatTerrain(todayWin) } : null,
+    deloadMovedTo,
+  };
+}
+
 /** Rampe de charge (Q15) — UNIQUEMENT en semaine de charge base/build : on vise +ramp_ctl_per_week de
  *  CTL en gonflant les jours EASY générés (le volume est le levier ; une séance de qualité reste une
  *  séance de qualité). Bornée (≤ +35 %/jour easy), inerte sans CTL connu, jamais à la baisse (les
@@ -165,7 +233,15 @@ function applyRampTarget(days: WeekDay[], ctx: any, phase: PhaseState, anchors: 
   const weeklyTarget = 7 * (Number(ctl) + CTL_WEEKLY_GAIN_FACTOR * PHASE_PARAMS.ramp_ctl_per_week);
   const total = days.reduce((s, d) => s + d.target_load, 0);
   if (total >= weeklyTarget) return;
-  const easies = days.filter((d) => d.system_tag === "easy" && !anchors.has(d.day_offset));
+  // Jamais de rampe sur un jour couvert par une fenêtre décharge/entretien (Upgrade 10) : la fenêtre
+  // réduit délibérément le volume de CES jours, la rampe ne doit pas les regonfler.
+  const wins = (ctx.training_windows ?? []) as TrainingWindow[];
+  const inConstrainedWin = (off: number): boolean => {
+    const date = dateMinusDays(ctx.today, -off);
+    const w = wins.find((x) => x.starts_on <= date && date <= x.ends_on);
+    return !!w && resolveWindowEffect(w) !== "charge";
+  };
+  const easies = days.filter((d) => d.system_tag === "easy" && !anchors.has(d.day_offset) && !inConstrainedWin(d.day_offset));
   const easySum = easies.reduce((s, d) => s + d.target_load, 0);
   if (easySum <= 0) return;
   const scale = clamp((weeklyTarget - (total - easySum)) / easySum, 1, PHASE_PARAMS.ramp_scale_max);
@@ -341,7 +417,8 @@ export function buildWeekPlan(ctx: any, readiness: Readiness, anchors: Map<numbe
   const taper = taperState(ctx);
   // Périodisation (Q15/Q17) : la phase module les jours GÉNÉRÉS (jamais les ancres, jamais la readiness).
   // Priorités : affûtage actif (n'importe quel objectif ≤ fenêtre) > décharge/peak > semaine de charge.
-  const phase = derivePhaseState(ctx);
+  // La phase est l'EFFECTIVE (Upgrade 10) : les fenêtres de contrainte ont déjà déplacé la décharge.
+  const phase = effectivePhase(ctx);
   const hardCap = taper.active ? taper.hardCap
     : phase.isDeload ? 1                                  // décharge : volume −35 %, UNE qualité conservée
     : phase.phase === "base" ? PHASE_PARAMS.base_hard_cap // base : volume ↑, intensité basse
@@ -350,6 +427,18 @@ export function buildWeekPlan(ctx: any, readiness: Readiness, anchors: Map<numbe
     : phase.isDeload ? PHASE_PARAMS.deload_factor
     : phase.phase === "peak" ? PHASE_PARAMS.peak_factor
     : 1;
+
+  // Fenêtres de contrainte couvrant/encadrant la semaine du plan (Upgrade 10).
+  const wins = (ctx.training_windows ?? []) as TrainingWindow[];
+  const winAt = (date: string): TrainingWindow | null =>
+    wins.find((w) => w.starts_on <= date && date <= w.ends_on) ?? null;
+  // Fenêtre terrain-plat qui DÉMARRE dans la semaine → d'ici là, les qualités « mangent du D+ »
+  // (le dénivelé sera indisponible pendant ; on front-charge la qualité contrainte).
+  const flatSoon = wins.find((w) =>
+    w.starts_on > ctx.today && daysBetween(ctx.today, w.starts_on) <= 6 && flatTerrain(w)) ?? null;
+  const winMul = (e: WindowEffect): number =>
+    e === "deload" ? PHASE_PARAMS.deload_factor : e === "maintain" ? WINDOW_PARAMS.maintain_factor : 1;
+  let winHardUsed = false; // dans une fenêtre décharge/entretien : UNE seule qualité sur la semaine
 
   const { daysSince, system } = lastHard(ctx);
   let sinceHard = daysSince;
@@ -388,18 +477,36 @@ export function buildWeekPlan(ctx: any, readiness: Readiness, anchors: Map<numbe
       else tag = sinceHard === 0 ? "recovery" : "easy"; // recovery the day after a hard day
     }
 
+    // Fenêtres de contrainte (Upgrade 10) — trois règles, dans cet ordre :
+    const win = winAt(date);
+    const winEffect = win ? resolveWindowEffect(win) : null;
+    // 1) AVANT une fenêtre terrain-plat : les qualités restantes ciblent le dénivelé/la force
+    //    (« manger du D+ » tant que la montagne est disponible).
+    if (flatSoon && date < flatSoon.starts_on && isHard(tag)) tag = "hard_neuromuscular";
+    // 2) DANS une fenêtre décharge/entretien : une seule qualité sur la semaine, jamais plus.
+    if (win && winEffect !== "charge" && isHard(tag)) { tag = winHardUsed ? "easy" : "hard_aerobic"; }
+    // 3) Terrain plat : jamais de côtes/force générées dans la fenêtre — la qualité devient du seuil.
+    if (flatTerrain(win) && (tag === "hard_neuromuscular" || tag === "hard_structural")) tag = "hard_aerobic";
+
     // F4 taper (≤14 d to a goal): keep the quality AEROBIC — cut GENERATED eccentric/structural work so
     // legs/tendons arrive fresh (intensity maintained, not killed). Anchors are returned above, never retagged.
     if (taper.active && taper.daysTo <= 14 && (tag === "hard_neuromuscular" || tag === "hard_structural")) {
       tag = "hard_aerobic";
     }
 
+    // Multiplicateur du jour : la fenêtre couvrant CE jour prime sur le facteur de la semaine
+    // (une semaine coupée en deux — charge lun-mar, déplacement dès mercredi — se module jour par jour).
+    const dayMul = win ? winMul(winEffect!) : loadMul;
     days.push({
-      day_offset: off, sport_code: sportForDay(tag, fav), system_tag: tag, focus: focusFor(tag, null),
-      target_load: round(targetLoadFor(tag, ctx) * loadMul), is_key: false, anchors_event_ref: null,
+      day_offset: off,
+      // Terrain plat : même la qualité se court sur le plat (running), pas le sport montagne.
+      sport_code: flatTerrain(win) && tag !== "rest" ? baseSport(fav) : sportForDay(tag, fav),
+      system_tag: tag,
+      focus: focusFor(tag, null) + (flatTerrain(win) && isHard(tag) ? " — terrain plat" : ""),
+      target_load: round(targetLoadFor(tag, ctx) * dayMul), is_key: false, anchors_event_ref: null,
     });
 
-    if (isHard(tag)) { sinceHard = 0; lastSys = systemFamily(tag); hardCount++; }
+    if (isHard(tag)) { sinceHard = 0; lastSys = systemFamily(tag); hardCount++; if (win) winHardUsed = true; }
     else { sinceHard++; if (tag === "rest") restPlaced = true; }
   }
 
@@ -506,8 +613,24 @@ function buildWhy(today: WeekDay, ctx: any, anchor: Anchor | null = null): strin
   return pick(WHY_BY_TAG[today.system_tag], ctx.today + ":why");
 }
 
-/** Résumé FR de la phase (partagé moteur ↔ UI PhaseChip). null quand pas d'objectif daté. */
-export function phaseSummaryFr(ps: PhaseState): { name: string; detail: string } | null {
+/** Résumé FR de la phase (partagé moteur ↔ UI PhaseChip). null quand pas d'objectif daté NI fenêtre.
+ *  Accepte la phase EFFECTIVE : une fenêtre active ou une décharge reportée redessine le libellé. */
+export function phaseSummaryFr(
+  ps: PhaseState & Partial<Pick<EffectivePhase, "window" | "deloadMovedTo">>,
+): { name: string; detail: string } | null {
+  // Fenêtre couvrant aujourd'hui : elle prime sur le calendrier (c'est elle que vit l'athlète).
+  if (ps.window) {
+    const effFr: Record<WindowEffect, string> = {
+      deload: "on encaisse — volume réduit",
+      maintain: "entretien — on garde le moteur",
+      charge: "bloc de charge assumé",
+    };
+    const name = ps.phase === "none" ? "contrainte" : PHASE_FR[ps.phase];
+    return {
+      name,
+      detail: `« ${ps.window.label} » · ${effFr[ps.window.effect]}${ps.window.flat ? " · terrain plat" : ""}`,
+    };
+  }
   if (ps.phase === "none") return null;
   if (ps.phase === "taper")
     return { name: "affûtage", detail: `J−${ps.daysTo} · on évacue la fatigue, l'intensité reste` };
@@ -515,8 +638,33 @@ export function phaseSummaryFr(ps: PhaseState): { name: string; detail: string }
     return { name: "pré-compétition", detail: `S−${ps.weeksTo} · volume réduit, intensité-clé maintenue` };
   const bloc = ps.isDeload
     ? "semaine de décharge — on encaisse le bloc"
-    : `semaine ${ps.weekInCycle}/${ps.cycleLen} du bloc — on charge`;
+    : ps.deloadMovedTo
+      ? `on charge — décharge reportée sur « ${ps.deloadMovedTo} »`
+      // weekInCycle === cycleLen sans décharge = décharge calendaire supprimée (déjà encaissée dans
+      // une fenêtre qui vient de se terminer — grâce post-fenêtre) : le dire, sinon « 3/3 » intrigue.
+      : ps.weekInCycle === ps.cycleLen
+        ? "on charge — décharge déjà encaissée"
+        : `semaine ${ps.weekInCycle}/${ps.cycleLen} du bloc — on charge`;
   return { name: PHASE_FR[ps.phase], detail: `S−${ps.weeksTo} · ${bloc}` };
+}
+
+/** Marqueur COMPACT de la phase pour l'agenda (strip de début de semaine — sobre, une ligne).
+ *  null quand rien à dire (pas d'objectif daté ni fenêtre). */
+export function phaseMarkFr(
+  ps: PhaseState & Partial<Pick<EffectivePhase, "window" | "deloadMovedTo">>,
+): string | null {
+  if (ps.window) {
+    const eff = { deload: "on encaisse", maintain: "entretien", charge: "charge" }[ps.window.effect];
+    return `${truncate(ps.window.label, 22)} · ${eff}`;
+  }
+  if (ps.phase === "none") return null;
+  if (ps.phase === "taper") return `affûtage · J−${ps.daysTo}`;
+  if (ps.phase === "peak") return `pré-compét. · S−${ps.weeksTo}`;
+  const state = ps.isDeload ? "décharge"
+    : ps.deloadMovedTo ? "charge (décharge reportée)"
+    : ps.weekInCycle === ps.cycleLen ? "charge (décharge déjà prise)"
+    : `charge ${ps.weekInCycle}/${ps.cycleLen}`;
+  return `${PHASE_FR[ps.phase]} · S−${ps.weeksTo} · ${state}`;
 }
 
 function tsbWord(tsb: number | null | undefined): string {
@@ -544,10 +692,17 @@ function buildStateAssessment(ctx: any, readiness: Readiness, week: WeekDay[]): 
   const weekTxt = nextEvent
     ? `Cette semaine : ${hardN} séance(s) de qualité, organisées autour de « ${nextEvent.title} ».`
     : `Cette semaine : ${hardN} séance(s) de qualité, le reste en endurance pour construire le fond.`;
-  // Phase de périodisation (Q15) — situe la semaine dans la préparation de l'objectif principal.
-  const phase = phaseSummaryFr(derivePhaseState(ctx));
+  // Phase de périodisation EFFECTIVE (Q15 + fenêtres Upgrade 10) — situe la semaine dans la préparation.
+  const eff = effectivePhase(ctx);
+  const phase = phaseSummaryFr(eff);
   const phaseTxt = phase ? `Phase ${phase.name} (${phase.detail}). ` : "";
-  return `${phaseTxt}${formeTxt} ${recTxt} ${weekTxt}`;
+  // Fenêtre terrain-plat imminente : dire explicitement qu'on front-charge le dénivelé d'ici là.
+  const flatSoon = ((ctx.training_windows ?? []) as TrainingWindow[]).find((w) =>
+    w.starts_on > ctx.today && daysBetween(ctx.today, w.starts_on) <= 6 && flatTerrain(w));
+  const preTxt = flatSoon && !eff.window
+    ? `D'ici « ${flatSoon.label} » (J−${daysBetween(ctx.today, flatSoon.starts_on)}), on privilégie le dénivelé — il sera indisponible pendant. `
+    : "";
+  return `${phaseTxt}${preTxt}${formeTxt} ${recTxt} ${weekTxt}`;
 }
 
 function buildFlag(ctx: any, readiness: Readiness): string | null {

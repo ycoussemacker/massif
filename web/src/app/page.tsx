@@ -6,7 +6,7 @@ import { ActivityCard, ActivityRow, ActivityTableHead } from "@/components/activ
 import { Nav } from "@/components/nav";
 import { GoalBadge } from "@/components/goal-badge";
 import { PhaseChip } from "@/components/phase-chip";
-import { phaseFromDaysTo } from "@/lib/briefing-algo";
+import { effectivePhase } from "@/lib/briefing-algo";
 import { daysTo } from "@/lib/profile-types";
 import { CoachHero } from "@/components/coach-hero";
 import { assembleVerdict } from "@/lib/day-verdict";
@@ -91,7 +91,7 @@ export default function Dashboard() {
 }
 
 async function DashboardBody() {
-  const [{ profile, topGoal, metrics, briefing, activities, allActivities, todayPlan, projection, weekPlan }, sports] = await Promise.all([
+  const [{ profile, topGoal, metrics, briefing, activities, allActivities, todayPlan, projection, weekPlan, trainingWindows }, sports] = await Promise.all([
     getDashboard(),
     getSports(),
   ]);
@@ -120,13 +120,18 @@ async function DashboardBody() {
         <section className="mb-6 rounded-2xl border border-stone-200 bg-white p-4 dark:border-stone-800 dark:bg-stone-900 sm:p-5">
           <h2 className="text-xs font-semibold uppercase tracking-wide text-stone-400">Ton plan d&apos;entraînement</h2>
 
-          {/* 1. Objectif principal — une ligne, + la PHASE de préparation en cours (base / build /
-              pré-compétition / affûtage, semaine de charge ou de décharge) dérivée de sa date. */}
+          {/* 1. Objectif principal — une ligne, + la PHASE EFFECTIVE de préparation (base / build /
+              pré-compétition / affûtage, charge ou décharge — ajustée par les fenêtres de contrainte :
+              décharge reportée sur un déplacement, entretien pendant, etc.). */}
           <div className="mt-2">
             {topGoal ? (
               <>
                 <GoalBadge goal={topGoal} />
-                <PhaseChip phase={phaseFromDaysTo(daysTo(topGoal.target_date), topGoal.title)} />
+                <PhaseChip phase={effectivePhase({
+                  today,
+                  goals: [{ rank: 1, title: topGoal.title, days_to: daysTo(topGoal.target_date) }],
+                  training_windows: trainingWindows,
+                })} />
               </>
             ) : (
               <p className="text-sm text-stone-500 dark:text-stone-400">Aucun objectif défini pour l&apos;instant.</p>

@@ -6,6 +6,7 @@ import { buildPlanningView, buildPlannedLoads, splitByTag } from "./planning";
 import { projectFromMetrics } from "./project";
 import { weatherAlerts } from "./weather";
 import { suggestSport, type SportSuggestion } from "./sport-suggest";
+import type { TrainingWindow } from "./briefing-algo";
 
 /** Rolling window (in days) shown by the dashboard charts. Kept to 3 weeks so the homepage stays light
  *  AND the days are spread out wide enough to read the (now denser) forward-plan markers; deeper history
@@ -282,6 +283,8 @@ export type Dashboard = {
   todayPlan: TodayPlan;       // coach's recommended load for today
   projection: DashboardProjection | null; // all planned sessions ≤7 d (event/pinned/coach) + projected form
   weekPlan: WeekPlanDay[];    // today + next 6 days: coach focus + declared events (homepage strip)
+  // Fenêtres de contrainte actives/à venir (+ grâce 7 j) — alimentent la phase EFFECTIVE du PhaseChip.
+  trainingWindows: TrainingWindow[];
 };
 
 export async function getDashboard(): Promise<Dashboard> {
@@ -290,7 +293,7 @@ export async function getDashboard(): Promise<Dashboard> {
   // queries also stay under PostgREST's per-response row cap.
   const today = todayLocal();
   const windowStart = dateMinusDays(today, DASHBOARD_WINDOW_DAYS);
-  const [pm, mm, bm, chartActs, multiActs, recents, sm, gm, pl, up, npm, wx] = await Promise.all([
+  const [pm, mm, bm, chartActs, multiActs, recents, sm, gm, pl, up, npm, wx, twm] = await Promise.all([
     sb.from("athlete_profile").select("*").limit(1).maybeSingle(),
     sb.from("daily_metrics").select("*").gte("local_date", windowStart).order("local_date", { ascending: true }),
     sb.from("coach_briefings").select("*").order("created_at", { ascending: false }).limit(1).maybeSingle(),
@@ -319,6 +322,9 @@ export async function getDashboard(): Promise<Dashboard> {
     // Forecast for the 7-day plan strip (today..+6) — drives the sober per-day weather-alert glyph.
     sb.from("daily_weather").select("local_date,temp_min_c,temp_max_c,feels_max_c,precip_mm,wind_kmh,weather_code")
       .gte("local_date", today).lte("local_date", dateMinusDays(today, -6)),
+    // Fenêtres de contrainte (actives/à venir + grâce 7 j) — la phase effective du PhaseChip en dépend.
+    sb.from("training_windows").select("starts_on,ends_on,label,effect,no_mountains,limited_hills,reduced_volume")
+      .gte("ends_on", dateMinusDays(today, 7)).order("starts_on", { ascending: true }).limit(20),
   ]);
 
   const sportById = new Map<number, any>((sm.data ?? []).map((s: any) => [s.id, s]));
@@ -541,6 +547,7 @@ export async function getDashboard(): Promise<Dashboard> {
     todayPlan,
     projection,
     weekPlan,
+    trainingWindows: ((twm.data ?? []) as TrainingWindow[]),
   };
 }
 

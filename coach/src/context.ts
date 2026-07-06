@@ -2,7 +2,7 @@
 import {
   ATHLETE_TZ, todayLocal, nowLocal, daysBetween, dateMinusDays,
   loadProfile, loadSports, loadDailyMetrics, loadRecentActivities, loadUpcomingPlanned, loadGoals,
-  loadNeuroAtlDays, loadWeather,
+  loadNeuroAtlDays, loadWeather, loadTrainingWindows,
 } from "./db.js";
 import { buildPlanningView, favouriteSports, athleteConstraints } from "./planning.js";
 
@@ -123,8 +123,9 @@ function weatherView(rows: any[]): any[] {
 /** Read profile + 21d of daily metrics + 14d of activities + upcoming plan → one compact picture. */
 export async function assemblePicture(): Promise<Picture> {
   const today = todayLocal();
-  const [profile, sports, dm, goals, neuroAtlDays, weatherRows] = await Promise.all([
+  const [profile, sports, dm, goals, neuroAtlDays, weatherRows, trainingWindows] = await Promise.all([
     loadProfile(), loadSports(), loadDailyMetrics(21), loadGoals(), loadNeuroAtlDays(), loadWeather(today),
+    loadTrainingWindows(today, dateMinusDays(today, 7)),
   ]);
   const acts = await loadRecentActivities(dateMinusDays(today, 14));
   const upcoming = await loadUpcomingPlanned(today);
@@ -202,6 +203,15 @@ export async function assemblePicture(): Promise<Picture> {
     // Sessions the athlete ACCEPTED from a coach proposal in chat — FIXED prescriptions: plan around them,
     // never overwrite them (set anchors_event_ref to their ref on their day, like a declared event).
     pinned_sessions,
+    // Fenêtres de contrainte déclarées (déplacement, terrain plat, temps réduit…) — le plan reporte les
+    // décharges dessus, charge le D+ avant une fenêtre sans montagne et adapte les séances pendant.
+    // Mirror de coach-context.ts.
+    training_windows: trainingWindows.map((w: any) => ({
+      starts_on: w.starts_on, ends_on: w.ends_on, label: w.label, effect: w.effect ?? "auto",
+      no_mountains: !!w.no_mountains, limited_hills: !!w.limited_hills, reduced_volume: !!w.reduced_volume,
+      notes: w.notes ?? null,
+      days_to_start: daysBetween(today, w.starts_on), days_to_end: daysBetween(today, w.ends_on),
+    })),
   };
 
   return { today, sports, context };

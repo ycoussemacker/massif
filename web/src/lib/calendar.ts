@@ -38,7 +38,25 @@ export type CalDay = {
   weather: CalWeather | null;
 };
 
-export type CalendarData = { days: CalDay[] };
+/** Fenêtre de contrainte (Upgrade 10) visible dans la grille — dates + effet résolu pour l'affichage. */
+export type CalWindow = {
+  id: string;
+  starts_on: string;
+  ends_on: string;
+  label: string;
+  effect: "auto" | "deload" | "maintain" | "charge";
+  no_mountains: boolean;
+  limited_hills: boolean;
+  reduced_volume: boolean;
+  notes: string | null;
+};
+
+export type CalendarData = {
+  days: CalDay[];
+  windows: CalWindow[];
+  /** Objectif principal daté (rank 1) — sert au marqueur de phase des débuts de semaine. */
+  topGoal: { title: string; target_date: string } | null;
+};
 
 /** Read all calendar inputs for [from, to] (inclusive). Returns only days that carry something. */
 export async function getCalendar(from: string, to: string): Promise<CalendarData> {
@@ -51,7 +69,7 @@ export async function getCalendar(from: string, to: string): Promise<CalendarDat
   // same: future/today only — a past day shows what was realised, not a stale forecast.
   const planFrom = from > today ? from : today;
 
-  const [mm, planRes, goalRes, actPage, wxRes] = await Promise.all([
+  const [mm, planRes, goalRes, actPage, wxRes, winRes, topGoalRes] = await Promise.all([
     sb.from("daily_metrics").select("local_date,tsb,ctl").gte("local_date", from).lte("local_date", to),
     sb.from("planned_sessions")
       .select("id,planned_date,sport_id,title,is_key,is_event,is_pinned,system_tag,modified_by,status,linked_activity_id")
@@ -64,6 +82,13 @@ export async function getCalendar(from: string, to: string): Promise<CalendarDat
       ? sb.from("daily_weather").select("local_date,temp_max_c,temp_min_c,feels_max_c,precip_mm,wind_kmh,weather_code")
           .gte("local_date", planFrom).lte("local_date", to)
       : Promise.resolve({ data: [] as any[] }),
+    // Fenêtres de contrainte chevauchant la plage visible (bandes + fiche du jour + marqueurs de semaine).
+    sb.from("training_windows")
+      .select("id,starts_on,ends_on,label,effect,no_mountains,limited_hills,reduced_volume,notes")
+      .lte("starts_on", to).gte("ends_on", from).order("starts_on", { ascending: true }),
+    // Objectif principal daté — ancre du marqueur de phase en début de semaine.
+    sb.from("goals").select("title,target_date").eq("status", "active").not("target_date", "is", null)
+      .order("priority_rank", { ascending: true }).limit(1).maybeSingle(),
   ]);
 
   const byDate = new Map<string, CalDay>();
@@ -117,5 +142,17 @@ export async function getCalendar(from: string, to: string): Promise<CalendarDat
     };
   }
 
-  return { days: [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date)) };
+  const windows: CalWindow[] = ((winRes.data ?? []) as any[]).map((w) => ({
+    id: w.id, starts_on: w.starts_on, ends_on: w.ends_on, label: w.label,
+    effect: w.effect ?? "auto",
+    no_mountains: !!w.no_mountains, limited_hills: !!w.limited_hills, reduced_volume: !!w.reduced_volume,
+    notes: w.notes ?? null,
+  }));
+  const tg = topGoalRes.data as { title: string; target_date: string } | null;
+
+  return {
+    days: [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date)),
+    windows,
+    topGoal: tg?.target_date ? { title: tg.title, target_date: tg.target_date } : null,
+  };
 }

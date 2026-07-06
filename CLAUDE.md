@@ -381,3 +381,20 @@ byte-identical, test-locked). Surfaced: `PhaseChip` under the dashboard's main g
 TSB outside taper — mild negative TSB is the productive zone). Docs: MODELE §5.2 + Q15/Q17 ✅,
 MODEL_UPGRADES Upgrade 9. NOT yet: per-channel neuro ramp (+1-3/wk — daily tsb_neuro/ACWR-neuro thresholds
 protect instead), transition phase. Engine tests 25/25.
+
+**CONSTRAINT WINDOWS (Upgrade 10, shipped 2026-07-06) — real life re-frames the phases.** New table
+**`training_windows`** (migration `…20260706000001`, APPLIED to cloud): dated period + label + intent
+`effect` (`auto`/`deload`/`maintain`/`charge`) + capacity flags (`no_mountains`,`limited_hills`,
+`reduced_volume`); `auto` → deload if constrained ≥5 d else maintain (`resolveWindowEffect`). Engine
+(briefing-algo.ts, pure, 30/30 tests): (1) **`effectivePhase`** — a deload window starting ≤21 d ABSORBS
+the calendar deload («on charge avant, on encaisse pendant»; also suppressed ≤7 d after a deload window);
+(2) generated qualities BEFORE a flat-terrain window become `hard_neuromuscular` (front-load the D+);
+(3) PER-DAY modulation inside a window (deload ×0.65 / maintain ×0.85, max ONE quality and aerobic-only,
+never generated côtes/force on flat → seuil + running, ramp never re-inflates in-window days); anchors +
+readiness always above. Surfaced: agenda «+ Contrainte» button + modal (`training-window-modal.tsx`),
+grey day bands + editable window in the day sheet, **week-start-only phase marker** (`phaseMarkFr`) in
+`calendar-grid.tsx`; dashboard PhaseChip now shows the EFFECTIVE phase («décharge reportée sur …»);
+context carries `training_windows` (coach-context.ts ↔ coach/src/context.ts MIRROR + `loadTrainingWindows`
+in coach/src/db.ts — keep in sync) + a CHAT_SYSTEM rule (invite the athlete to declare windows mentioned
+in chat). CRUD actions: create/update/deleteTrainingWindow (actions.ts). Backlog: propose_window chat tool,
+transition phase.

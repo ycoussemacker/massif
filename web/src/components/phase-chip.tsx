@@ -2,8 +2,11 @@
  *  Server-compatible (pas de hooks ici) ; l'aide « ? » est le HelpButton client habituel. Neutre stone :
  *  la phase est un concept de plan, pas une physiologie (la couleur encode la physiologie, jamais la
  *  catégorie — design system). Rendu nul sans objectif daté. */
-import { phaseSummaryFr, type PhaseState } from "@/lib/briefing-algo";
+import { phaseSummaryFr, type EffectivePhase, type PhaseState } from "@/lib/briefing-algo";
 import { HelpButton, type HelpContent } from "@/components/help";
+
+/** Phase calendaire OU effective (fenêtres de contrainte) — la seconde redessine le libellé. */
+type ChipPhase = PhaseState & Partial<Pick<EffectivePhase, "window" | "deloadMovedTo">>;
 
 const PHASE_HELP: HelpContent = {
   title: "Phases d'entraînement (périodisation)",
@@ -21,6 +24,7 @@ const PHASE_HELP: HelpContent = {
         { k: "Semaine de charge", v: "on vise une montée de forme (CTL) d'environ +3 à +5 pts/semaine, portée par les jours d'endurance" },
         { k: "Semaine de décharge", v: "toutes les 3-4 sem (2:1 en build, 3:1 en base) : volume −35 %, l'intensité reste — c'est là que le corps encaisse" },
         { k: "Affûtage", v: "J−14 → J : volume −50 % en exponentiel, une qualité courte conservée, l'excentrique coupé plus tôt" },
+        { k: "Contraintes", v: "déclare un déplacement / une période sans montagne dans l'agenda : la décharge s'y reporte (« on charge avant, on encaisse pendant ») et les séances s'adaptent au terrain" },
       ],
     },
     {
@@ -30,7 +34,7 @@ const PHASE_HELP: HelpContent = {
   ],
 };
 
-export function PhaseChip({ phase }: { phase: PhaseState }) {
+export function PhaseChip({ phase }: { phase: ChipPhase }) {
   const s = phaseSummaryFr(phase);
   if (!s) return null;
   return (

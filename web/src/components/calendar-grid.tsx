@@ -1,18 +1,23 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { Fragment, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { QuickAddEvent } from "@/components/quick-add-event";
-import { deletePlannedEvent } from "@/app/actions";
+import { TrainingWindowModal } from "@/components/training-window-modal";
+import { deletePlannedEvent, deleteTrainingWindow } from "@/app/actions";
 import { useRegen } from "@/components/regen-provider";
 import { sportIcon, sportName } from "@/lib/labels";
 import { STATE } from "@/lib/theme";
 import { weatherIcon, weatherLabel, weatherTempBadge } from "@/lib/weather";
 import { fmt, longDateFr } from "@/lib/format";
 import { daysBetween } from "@/lib/coach-context";
-import type { CalDay } from "@/lib/calendar";
+import type { CalDay, CalWindow } from "@/lib/calendar";
 import type { SportOption } from "@/lib/activities";
+
+const WINDOW_EFFECT_FR: Record<CalWindow["effect"], string> = {
+  auto: "auto", deload: "on encaisse", maintain: "entretien", charge: "charge",
+};
 
 /** The interactive month/week grid. Day cells encode state by TEXTURE/SHAPE, never sport colour (design
  *  system): realised = solid stone glyph chip; planned = dashed-outline glyph chip; goal = 🏆 + glyph;
@@ -27,6 +32,8 @@ export function CalendarGrid({
   today,
   days,
   sports,
+  windows = [],
+  weekMarks = {},
 }: {
   view: "month" | "week";
   rangeStart: string;
@@ -35,6 +42,8 @@ export function CalendarGrid({
   today: string;
   days: CalDay[];
   sports: SportOption[];
+  windows?: CalWindow[];      // fenêtres de contrainte chevauchant la plage (bandes + fiche du jour)
+  weekMarks?: Record<string, string | null>; // lundi → marqueur de phase compact (calculé côté serveur)
 }) {
   const router = useRouter();
   const regen = useRegen();
@@ -43,8 +52,14 @@ export function CalendarGrid({
   const [deleting, startDelete] = useTransition();
   // After deleting an event in the next 7 days, offer to regenerate the week plan (background).
   const [askRegen, setAskRegen] = useState(false);
+  // Modale de contrainte : création (defaultStart = jour tapé / aujourd'hui) ou édition (initial).
+  const [winModal, setWinModal] = useState<{ open: boolean; initial: CalWindow | null; defaultStart?: string }>(
+    { open: false, initial: null },
+  );
 
   const byDate = new Map<string, CalDay>(days.map((d) => [d.date, d]));
+  const winAt = (date: string): CalWindow | null =>
+    windows.find((w) => w.starts_on <= date && date <= w.ends_on) ?? null;
 
   // Contiguous dates [rangeStart, rangeEnd].
   const cells: string[] = [];
@@ -82,7 +97,7 @@ export function CalendarGrid({
         {DOW.map((d) => (
           <div key={d} className="pb-1 text-center text-[11px] font-medium uppercase tracking-wide text-stone-400">{d}</div>
         ))}
-        {cells.map((date) => {
+        {cells.map((date, i) => {
           const c = byDate.get(date);
           const inMonth = anchorMonth == null || Number(date.slice(5, 7)) === anchorMonth;
           const isToday = date === today;
@@ -92,16 +107,30 @@ export function CalendarGrid({
           const wx = c?.weather && date >= today ? c.weather : null;
           // Temperature badge (🥵/🥶) shown ALONGSIDE the sky-condition icon — a stormy heatwave reads as ⛈️🥵.
           const wtemp = wx ? weatherTempBadge({ tempMaxC: wx.tempMaxC, tempMinC: wx.tempMinC, feelsMaxC: wx.feelsMaxC }) : null;
+          // Fenêtre de contrainte couvrant ce jour → fond légèrement grisé (bande continue, sobre).
+          const cw = winAt(date);
+          // Marqueur de phase — UNIQUEMENT en début de semaine (lundi), une fine ligne pleine largeur.
+          const mark = i % 7 === 0 ? weekMarks[date] : null;
           return (
+            <Fragment key={date}>
+            {mark && (
+              <div className="col-span-7 -mb-0.5 mt-1 px-1 text-[10px] font-medium uppercase tracking-wide text-stone-400 first:mt-0">
+                {mark}
+              </div>
+            )}
             <button
-              key={date}
               type="button"
               onClick={() => openCell(date)}
+              title={cw ? `${cw.label} (${WINDOW_EFFECT_FR[cw.effect]})` : undefined}
               className={`group flex flex-col rounded-lg border p-1.5 text-left transition-colors ${
                 view === "week" ? "min-h-28" : "min-h-20 sm:min-h-24"
               } ${
                 isToday ? "border-alpine-400 ring-1 ring-alpine-400" : "border-stone-200 dark:border-stone-800"
-              } ${inMonth ? "bg-white hover:bg-stone-50 dark:bg-stone-900 dark:hover:bg-stone-800/60" : "bg-stone-50/50 dark:bg-stone-900/40"}`}
+              } ${
+                cw
+                  ? "bg-stone-100/80 hover:bg-stone-100 dark:bg-stone-800/50 dark:hover:bg-stone-800/70"
+                  : inMonth ? "bg-white hover:bg-stone-50 dark:bg-stone-900 dark:hover:bg-stone-800/60" : "bg-stone-50/50 dark:bg-stone-900/40"
+              }`}
             >
               <div className="mb-1 flex items-center justify-between">
                 <span className={`text-xs tabular-nums ${inMonth ? "text-stone-600 dark:text-stone-300" : "text-stone-300 dark:text-stone-600"}`}>
@@ -133,24 +162,35 @@ export function CalendarGrid({
                     {sportIcon(p.sportCode)}
                   </span>
                 ))}
-                {c?.goals.map((g, i) => g.sportCode ? (
-                  <span key={`g${i}`} title={`Objectif : ${g.title}`}
+                {c?.goals.map((g, gi) => g.sportCode ? (
+                  <span key={`g${gi}`} title={`Objectif : ${g.title}`}
                     className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-dashed border-stone-300 text-sm dark:border-stone-600">
                     {sportIcon(g.sportCode)}
                   </span>
                 ) : null)}
               </div>
             </button>
+            </Fragment>
           );
         })}
       </div>
 
-      {/* Légende */}
-      <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-stone-400">
-        <span className="inline-flex items-center gap-1"><span className="inline-block h-3.5 w-3.5 rounded bg-stone-100 dark:bg-stone-800" /> réalisé</span>
-        <span className="inline-flex items-center gap-1"><span className="inline-block h-3.5 w-3.5 rounded border border-dashed border-stone-300 dark:border-stone-600" /> prévu</span>
-        <span className="inline-flex items-center gap-1">🏆 objectif</span>
-        <span className="inline-flex items-center gap-1"><span className="inline-block h-1.5 w-1.5 rounded-full" style={{ backgroundColor: STATE.ready }} /> disponibilité</span>
+      {/* Légende + déclaration d'une contrainte (déplacement, terrain plat…) */}
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-stone-400">
+          <span className="inline-flex items-center gap-1"><span className="inline-block h-3.5 w-3.5 rounded bg-stone-100 dark:bg-stone-800" /> réalisé</span>
+          <span className="inline-flex items-center gap-1"><span className="inline-block h-3.5 w-3.5 rounded border border-dashed border-stone-300 dark:border-stone-600" /> prévu</span>
+          <span className="inline-flex items-center gap-1">🏆 objectif</span>
+          <span className="inline-flex items-center gap-1"><span className="inline-block h-1.5 w-1.5 rounded-full" style={{ backgroundColor: STATE.ready }} /> disponibilité</span>
+          <span className="inline-flex items-center gap-1"><span className="inline-block h-3.5 w-3.5 rounded bg-stone-200/80 dark:bg-stone-700/60" /> contrainte</span>
+        </div>
+        <button
+          type="button"
+          onClick={() => setWinModal({ open: true, initial: null, defaultStart: today })}
+          className="rounded-lg border border-stone-200 px-3 py-1.5 text-xs font-medium text-stone-600 transition-colors hover:border-alpine-300 hover:text-alpine-700 dark:border-stone-700 dark:text-stone-300 dark:hover:border-alpine-700 dark:hover:text-alpine-300"
+        >
+          + Contrainte (déplacement, terrain plat…)
+        </button>
       </div>
 
       {/* Détail du jour — passé : consultation du réalisé ; aujourd'hui/futur : prévu + ajout. */}
@@ -202,6 +242,39 @@ export function CalendarGrid({
                 onSaved={() => { setAdding(false); router.refresh(); }} />
             ) : (
               <div className="space-y-4">
+                {/* Contrainte couvrant ce jour (déplacement, terrain plat…) — modifiable/supprimable ici. */}
+                {(() => {
+                  const cw = winAt(openDate);
+                  if (!cw) return null;
+                  return (
+                    <div>
+                      <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-stone-400">Contrainte</div>
+                      <div className="flex items-center gap-2">
+                        <div className="min-w-0 flex-1 rounded-lg bg-stone-100 px-3 py-2 text-sm text-stone-700 dark:bg-stone-800 dark:text-stone-200">
+                          <span className="font-medium">{cw.label}</span>
+                          <span className="text-stone-500 dark:text-stone-400">
+                            {" "}· {WINDOW_EFFECT_FR[cw.effect]}
+                            {(cw.no_mountains || cw.limited_hills) && " · terrain plat"}
+                            {cw.reduced_volume && " · temps réduit"}
+                          </span>
+                          <span className="block text-[11px] text-stone-400 tabular-nums">
+                            {cw.starts_on} → {cw.ends_on}
+                          </span>
+                        </div>
+                        <button type="button"
+                          onClick={() => { close(); setWinModal({ open: true, initial: cw }); }}
+                          className="shrink-0 text-xs font-medium text-alpine-700 hover:underline dark:text-alpine-300">
+                          Modifier
+                        </button>
+                        <button type="button" disabled={deleting}
+                          onClick={() => startDelete(async () => { try { await deleteTrainingWindow(cw.id); router.refresh(); } catch { /* surfaced by page */ } })}
+                          className="shrink-0 text-xs text-stone-400 transition hover:text-red-600 disabled:opacity-50" aria-label="Supprimer la contrainte">
+                          ✕
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })()}
                 {/* Objectif / Course — événement spécial (charge estimée + cible de forme sur la page séance) */}
                 {openDay && openDay.goals.length > 0 && (
                   <div>
@@ -290,6 +363,14 @@ export function CalendarGrid({
           </div>
         </div>
       )}
+
+      {/* Modale de contrainte — création (bouton légende) ou édition (fiche du jour). */}
+      <TrainingWindowModal
+        open={winModal.open}
+        initial={winModal.initial}
+        defaultStart={winModal.defaultStart}
+        onClose={() => setWinModal({ open: false, initial: null })}
+      />
     </>
   );
 }
