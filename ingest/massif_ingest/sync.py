@@ -13,9 +13,17 @@ from __future__ import annotations
 
 import argparse
 import math
-from datetime import date, timedelta
+import os
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from . import db, load, zones
+
+
+def _today_local() -> date:
+    """Athlete-local today. Mirror of web `todayLocal()` (coach-context.ts)."""
+    tz = os.environ.get("ATHLETE_TZ", "Europe/Paris")
+    return datetime.now(ZoneInfo(tz)).date()
 
 
 # The neuromuscular channel's ACUTE (fatigue) load decays on a SLOWER time constant than the aerobic
@@ -130,8 +138,11 @@ def rollup_daily_metrics(ctl_days: int = 42, atl_days: int = 7) -> int:
             bucket["vdn"] += vdn
             bucket["by_group"][group] = bucket["by_group"].get(group, 0.0) + aer + neu
 
-    # Contiguous date spine.
-    start, end = min(days), max(days)
+    # Contiguous date spine from the first activity to TODAY (athlete-local) — NOT just the last activity.
+    # An elapsed rest day still decays CTL/ATL, so the model must continue through empty days to the
+    # present instead of freezing at the last session. Mirror of web rollup.ts.
+    start = min(days)
+    end = max(max(days), _today_local())
     spine = [start + timedelta(days=i) for i in range((end - start).days + 1)]
     total = [days.get(d, {}).get("aer", 0.0) + days.get(d, {}).get("neu", 0.0) for d in spine]
     aerobic = [days.get(d, {}).get("aer", 0.0) for d in spine]

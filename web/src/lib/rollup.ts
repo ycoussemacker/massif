@@ -8,6 +8,7 @@
  *  Builds a CONTIGUOUS daily spine (zero-load rest days included) so the EWMAs have no gaps. */
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { descentFamiliarityRatios, descentRecoveryFactor, ewmaVariableTau } from "./load";
+import { todayLocal } from "./coach-context";
 
 const CTL_DAYS = 42;
 const ATL_DAYS = 7;
@@ -88,9 +89,13 @@ export async function rollupDailyMetrics(sb: SupabaseClient): Promise<number> {
     }
   }
 
-  // Contiguous spine min..max.
+  // Contiguous spine from the first activity to TODAY (athlete-local) — NOT just the last activity date.
+  // An elapsed day with no activity still decays CTL/ATL, so the model line must continue through rest
+  // days to the present instead of freezing at the last session. Mirror of sync.py.
   const allDates = [...days.keys()].sort();
-  const spine = dateSpine(allDates[0], allDates[allDates.length - 1]);
+  const lastAct = allDates[allDates.length - 1];
+  const today = todayLocal();
+  const spine = dateSpine(allDates[0], lastAct > today ? lastAct : today);
   const total = spine.map((d) => (days.get(d)?.aer ?? 0) + (days.get(d)?.neu ?? 0));
   const aerobic = spine.map((d) => days.get(d)?.aer ?? 0);
   const neuro = spine.map((d) => days.get(d)?.neu ?? 0);
