@@ -5,8 +5,9 @@
  *  KPI tile look (thin "mountain-ridge" curve, current/selected score, y-axis min/max). Selecting a day
  *  is a SCRUBBER: every indicator below (the 3 scores, Monotonie/ACWR/Disponibilité bars, Fraîcheur, and
  *  the day-detail panel) shows that day's value; with no selection everything shows today — flagged by
- *  the « (aujourd'hui) » → date label. Desktop: CTL · ATL · TSB side by side. Mobile: CTL+ATL fused, then
- *  TSB; movement always synchronised. Dependency-free SVG. */
+ *  the « (aujourd'hui) » → date label. CTL + ATL are OVERLAID in one chart with dual, independently-zoomed
+ *  y-axes (CTL blue/left, ATL orange/right) so the slow CTL trend stays legible; TSB sits alongside (desktop)
+ *  or below (mobile). Movement always synchronised. Dependency-free SVG. */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import type { DailyMetric, Activity, DashboardProjection, ProjectedPoint, PlannedMarker } from "@/lib/data";
@@ -37,20 +38,14 @@ const cxAt = (vi: number) => (vi + 0.5) * PX_PER_DAY;
 const shortDate = (iso: string) => new Date(iso + "T00:00:00").toLocaleDateString("fr-FR", { day: "numeric", month: "short" });
 
 // ── help popovers ────────────────────────────────────────────────────────────────────────────────
-const CTL_HELP: HelpContent = { title: "CTL · forme", blocks: [
-  { type: "p", text: "Ta forme de fond (« fitness ») : la charge d'entraînement moyenne lissée sur ~42 jours. Monte lentement, redescend au repos." },
-  { type: "formula", lines: ["CTL = moyenne expo ~42 j de la charge quotidienne"] },
+const CTL_ATL_HELP: HelpContent = { title: "CTL & ATL · forme et fatigue", blocks: [
+  { type: "p", text: "Deux lectures de ta charge d'entraînement, superposées. CTL (bleu) = ta forme de fond, lissée sur ~42 j — monte lentement, redescend au repos. ATL (orange) = ta fatigue récente, lissée sur ~7 j — monte et redescend en quelques jours." },
+  { type: "formula", lines: ["CTL = moyenne expo ~42 j de la charge quotidienne", "ATL = moyenne expo ~7 j de la charge quotidienne"] },
   { type: "dl", items: [
+    { k: "Deux échelles", v: "bleu à gauche (CTL), orange à droite (ATL) — chacune zoomée sur sa propre plage pour rendre la tendance lisible. Ne compare donc pas la hauteur d'une courbe à l'autre." },
     { k: "Unité", v: "points de charge (≈ TSS ; 100 pts ≈ 1 h à intensité seuil)." },
-    { k: "Lecture", v: "plus haut = plus en forme ; c'est la tendance qui compte." },
+    { k: "Accumuler / récupérer", v: "regarde plutôt le TSB (à droite) = CTL − ATL : positif = frais, négatif = fatigue." },
     { k: "Sélection", v: "clique un jour → tous les indicateurs passent sur ce jour ; sinon = aujourd'hui." },
-  ] } ] };
-const ATL_HELP: HelpContent = { title: "ATL · fatigue", blocks: [
-  { type: "p", text: "Ta fatigue récente : la même charge lissée sur ~7 jours. Monte vite, redescend en quelques jours." },
-  { type: "formula", lines: ["ATL = moyenne expo ~7 j de la charge quotidienne"] },
-  { type: "dl", items: [
-    { k: "Unité", v: "points de charge (même échelle que le CTL)." },
-    { k: "Repère", v: "la courbe claire en fond = ton CTL ; ATL au-dessus = tu accumules de la fatigue, en-dessous = tu récupères." },
   ] } ] };
 const TSB_HELP: HelpContent = { title: "TSB · forme (fraîcheur)", blocks: [
   { type: "p", text: "Ta fraîcheur : l'écart entre ta forme de fond et ta fatigue récente." },
@@ -152,7 +147,7 @@ function useIsNarrow(query = "(max-width: 1023px)"): boolean {
 /** Shared interactive shell: KPI header (label + help + score) over an interactive plot with a synced
  *  crosshair, visible-window scale, synced scroll and scroll-to-left-edge history. */
 function InteractiveChart({
-  label, help, score, unit, metrics, selected, onSelect, children, renderSelection, axis,
+  label, help, score, unit, metrics, selected, onSelect, children, renderSelection, axis, axisRight,
   register, onReachStart, loadingOlder = false, height = H, trailingPx = 0, renderTrailing, defaultDate = null,
 }: {
   label: React.ReactNode;
@@ -167,7 +162,10 @@ function InteractiveChart({
   defaultDate?: string | null;
   children: (vis: Vis) => React.ReactNode;
   renderSelection?: (i: number, vis: Vis) => React.ReactNode;
-  axis: (vis: Vis) => { min: number; max: number };
+  // Left y-axis labels (optionally coloured to its channel). `axisRight` adds a second, independently-scaled
+  // axis after the plot — used by the fused CTL/ATL chart (CTL left/blue, ATL right/orange).
+  axis: (vis: Vis) => { min: number; max: number; color?: string };
+  axisRight?: (vis: Vis) => { min: number; max: number; color?: string };
   register: RegisterScroll;
   onReachStart?: () => void;
   loadingOlder?: boolean;
@@ -237,6 +235,14 @@ function InteractiveChart({
   }, [selected]);
 
   const ax = axis(vis);
+  const axR = axisRight?.(vis) ?? null;
+  // Axis label column: 3 stops (max / mid / min). Coloured to its channel when a colour is given (dual-axis
+  // CTL/ATL), else muted stone. The right axis sits after the plot (left-aligned); the left is right-aligned.
+  const axisCol = (a: { min: number; max: number; color?: string }, side: "left" | "right") => (
+    <div className={`flex w-7 flex-col justify-between py-0.5 text-[10px] tabular-nums ${side === "right" ? "pl-1 text-left" : "text-right"} ${a.color ? "" : "text-stone-400"}`} style={{ height, color: a.color }}>
+      <span>{Math.round(a.max)}</span><span>{Math.round((a.min + a.max) / 2)}</span><span>{Math.round(a.min)}</span>
+    </div>
+  );
   // Weekly x-axis: one date every 7 days, on Mondays (shared across all time-series charts).
   const weekTicks = mondayTickIndices(dates).map((i) => ({ i, x: centerOf(i), label: axisDateLabel(dates[i]) }));
 
@@ -248,10 +254,8 @@ function InteractiveChart({
         </div>
         <div className="mt-0.5">{score}</div>
       </div>
-      <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-1.5">
-        <div className="flex w-7 flex-col justify-between py-0.5 text-right text-[10px] tabular-nums text-stone-400" style={{ height }}>
-          <span>{Math.round(ax.max)}</span><span>{Math.round((ax.min + ax.max) / 2)}</span><span>{Math.round(ax.min)}</span>
-        </div>
+      <div className={`grid gap-1.5 ${axR ? "grid-cols-[auto_minmax(0,1fr)_auto]" : "grid-cols-[auto_minmax(0,1fr)]"}`}>
+        {axisCol(ax, "left")}
         <div className="relative">
           {loadingOlder && (
             <div className="pointer-events-none absolute inset-y-0 left-0 z-10 flex items-center pl-1">
@@ -293,6 +297,7 @@ function InteractiveChart({
             </div>
           </div>
         </div>
+        {axR && axisCol(axR, "right")}
       </div>
       <div className="mt-1 pl-[34px] text-[10px] text-stone-400">{unit}</div>
     </div>
@@ -303,26 +308,15 @@ const fmtScore = (v: number | null | undefined, color?: string) => (
   <div className="text-2xl font-semibold leading-none tabular-nums" style={color ? { color } : undefined}>{fmt(v, 1)}</div>
 );
 
-// thin "mountain-ridge" line over the visible window, shared-scale, with optional faint reference curve
-function lineChart(
-  series: { vals: (number | null)[]; color: string }[], refVals: (number | null)[] | null, n: number, w: number,
-) {
-  const cx = (i: number) => ((i + 0.5) / n) * w;
-  const scaleFor = (vis: Vis) => {
-    const lo = Math.max(0, vis.lo - 1), hi = Math.min(n - 1, vis.hi + 1);
-    let mx = 1;
-    for (let i = lo; i <= hi; i++) {
-      for (const s of series) { const v = s.vals[i]; if (v != null) mx = Math.max(mx, v); }
-      if (refVals) { const r = refVals[i]; if (r != null) mx = Math.max(mx, r); }
-    }
-    return { lo, hi, max: mx * 1.1 };
-  };
-  const poly = (vals: (number | null)[], lo: number, hi: number, yOf: (v: number) => number) => {
-    const pts: string[] = [];
-    for (let i = lo; i <= hi; i++) { const v = vals[i]; if (v != null) pts.push(`${cx(i).toFixed(1)},${yOf(v).toFixed(1)}`); }
-    return pts.join(" ");
-  };
-  return { cx, scaleFor, poly };
+/** Zoom a channel's y-range to ITS OWN visible data (never anchored at 0) so a slow-moving series reads as
+ *  a real trend instead of a flat line dwarfed by a spikier one. A minimum span stops a near-flat window
+ *  from being amplified into fake relief; then pad 12 %. Load is never negative → the floor is clamped ≥0. */
+function niceRange(mn: number, mx: number): { min: number; max: number } {
+  if (!isFinite(mn) || !isFinite(mx)) return { min: 0, max: 1 };
+  const MIN_SPAN = 10;
+  if (mx - mn < MIN_SPAN) { const mid = (mn + mx) / 2; mn = mid - MIN_SPAN / 2; mx = mid + MIN_SPAN / 2; }
+  const pad = (mx - mn) * 0.12;
+  return { min: Math.max(0, mn - pad), max: mx + pad };
 }
 
 /** Half-width (px) of each marker's clickable hit-rect — clamped so neighbouring markers (sessions a day
@@ -437,9 +431,7 @@ export function ChartsSection({
   // reach the furthest event marker (lastOffset days past the real region) plus glyph room. Only when projecting.
   const trailingPx = projection ? Math.round((projection.lastOffset + MARKER_PAD_DAYS) * PX_PER_DAY) : 0;
   const shared = { metrics, selected, onSelect: setSelected, register, onReachStart, loadingOlder, h: chartH, trailingPx, baseIdx: latestIdx, defaultDate: latestDate };
-  const ctlNode = <CtlAtlChart {...shared} kind="ctl" selM={selM} projection={projection} />;
-  const atlNode = <CtlAtlChart {...shared} kind="atl" selM={selM} projection={projection} />;
-  const fusedNode = <CtlAtlChart {...shared} kind="fused" selM={selM} projection={projection} />;
+  const formeNode = <CtlAtlChart {...shared} selM={selM} projection={projection} />;
   const tsbNode = <TsbChart {...shared} selM={selM} projection={projection} />;
 
   // When the selected day is one of the projected sessions (not a real metrics row), show its prevision +
@@ -471,7 +463,7 @@ export function ChartsSection({
             <DayDetailPanel date={panelDate} activities={activitiesByDate.get(panelDate) ?? []}
               planned={plannedDetail} onClose={selected ? () => setSelected(null) : undefined} />
           )}
-          <div className="space-y-3">{fusedNode}{tsbNode}</div>
+          <div className="space-y-3">{formeNode}{tsbNode}</div>
           <div className="grid grid-cols-3 gap-2">
             <ArcGauge label="Monotonie" help={MONO_HELP} value={monoV} min={0} max={monoMax} zones={monoZones(monoMax)} />
             <ArcGauge label="ACWR" help={ACWR_HELP} value={acwrV} min={0} max={acwrMax} zones={acwrZones(acwrMax)} />
@@ -482,7 +474,7 @@ export function ChartsSection({
         </div>
       ) : (
         <>
-          <div className="grid gap-5 lg:grid-cols-3">{ctlNode}{atlNode}{tsbNode}</div>
+          <div className="grid gap-5 lg:grid-cols-2">{formeNode}{tsbNode}</div>
           {panelDate && (
             <DayDetailPanel date={panelDate} activities={activitiesByDate.get(panelDate) ?? []}
               planned={plannedDetail} onClose={selected ? () => setSelected(null) : undefined} />
@@ -519,10 +511,13 @@ type SharedChart = {
   defaultDate?: string | null; // day the cursor rests on when nothing is selected (today)
 };
 
-/** CTL / ATL line chart — or both fused (mobile). Thin ridge line(s); ATL alone shows a faint CTL ref.
+/** Fused CTL / ATL chart — the two channels OVERLAID with independent, dual y-axes: CTL (blue) on the left,
+ *  ATL (orange) on the right. Each axis is zoomed to its OWN visible range (see niceRange) so the slow CTL
+ *  drift reads as a real trend instead of a flat line crushed by ATL's spikes. The neighbouring TSB chart
+ *  carries the CTL−ATL relationship, so the two hues here are free to prioritise per-channel legibility.
  *  When sessions are planned ahead, a DOTTED projected line continues each channel over the planned loads
- *  from the last real point through them, with a hollow "target" dot on committed/key days. */
-function CtlAtlChart({ kind, metrics, selected, onSelect, register, onReachStart, loadingOlder, selM, h, trailingPx, baseIdx, defaultDate, projection }: SharedChart & { kind: "ctl" | "atl" | "fused"; projection?: DashboardProjection | null }) {
+ *  from its last real point, with a hollow "target" dot on committed/key days. */
+function CtlAtlChart({ metrics, selected, onSelect, register, onReachStart, loadingOlder, selM, h, trailingPx, baseIdx, defaultDate, projection }: SharedChart & { projection?: DashboardProjection | null }) {
   const n = metrics.length;
   const w = plotWidth(n);
   const ctl = metrics.map((m) => m.ctl);
@@ -530,13 +525,17 @@ function CtlAtlChart({ kind, metrics, selected, onSelect, register, onReachStart
   // Future days/events count their offset from the last day WITH a model (baseIdx) — NOT n-1, which may be a
   // recovery-only row with null CTL; keeping them aligned stops the dotted line skipping a column.
   const base = baseIdx ?? n - 1;
-  type S = { vals: (number | null)[]; color: string; projSel: (p: ProjectedPoint) => number; targetSel: (m: PlannedMarker) => number | null };
-  const series: S[] = kind === "ctl" ? [{ vals: ctl, color: VIZ.aerobic, projSel: (p) => p.ctl, targetSel: (m) => m.targetCtl }]
-    : kind === "atl" ? [{ vals: atl, color: VIZ.neuro, projSel: (p) => p.atl, targetSel: (m) => m.targetAtl }]
-    : [{ vals: ctl, color: VIZ.aerobic, projSel: (p) => p.ctl, targetSel: (m) => m.targetCtl },
-       { vals: atl, color: VIZ.neuro, projSel: (p) => p.atl, targetSel: (m) => m.targetAtl }];
-  const refVals = kind === "atl" ? ctl : null; // faint CTL behind ATL
-  const { cx, poly } = lineChart(series, refVals, n, w);
+  type S = { key: string; vals: (number | null)[]; color: string; projSel: (p: ProjectedPoint) => number; targetSel: (m: PlannedMarker) => number | null };
+  const ctlS: S = { key: "ctl", vals: ctl, color: VIZ.aerobic, projSel: (p) => p.ctl, targetSel: (m) => m.targetCtl };
+  const atlS: S = { key: "atl", vals: atl, color: VIZ.neuro, projSel: (p) => p.atl, targetSel: (m) => m.targetAtl };
+  const series = [ctlS, atlS];
+
+  const cx = (i: number) => ((i + 0.5) / n) * w;
+  const poly = (vals: (number | null)[], lo: number, hi: number, yOf: (v: number) => number) => {
+    const pts: string[] = [];
+    for (let i = lo; i <= hi; i++) { const v = vals[i]; if (v != null) pts.push(`${cx(i).toFixed(1)},${yOf(v).toFixed(1)}`); }
+    return pts.join(" ");
+  };
 
   const proj = projection?.series ?? [];
   const markers = projection?.markers ?? [];
@@ -548,23 +547,20 @@ function CtlAtlChart({ kind, metrics, selected, onSelect, register, onReachStart
     for (let i = vals.length - 1; i >= 0; i--) if (vals[i] != null) return { i, v: vals[i]! };
     return null;
   };
-  // Per-window scale that folds in the projection when the future region is on screen (vis.hi==n-1) so the
-  // dotted line + markers never clip; otherwise (scrolled into history) the projection is off-screen.
-  const scaleFor = (vis: Vis) => {
-    const lo = Math.max(0, vis.lo - 1), hi = Math.min(n - 1, vis.hi + 1);
-    let mx = 1;
-    for (let i = lo; i <= hi; i++) {
-      for (const s of series) { const v = s.vals[i]; if (v != null) mx = Math.max(mx, v); }
-      if (refVals) { const r = refVals[i]; if (r != null) mx = Math.max(mx, r); }
-    }
+  // Per-CHANNEL scale, folding in the projection when the future region is on screen (vis.hi==n-1) so the
+  // dotted line + markers never clip; each channel keeps its own axis (independent zoom).
+  const visRange = (vis: Vis) => ({ lo: Math.max(0, vis.lo - 1), hi: Math.min(n - 1, vis.hi + 1) });
+  const scaleForSeries = (s: S, vis: Vis) => {
+    const { lo, hi } = visRange(vis);
+    let mn = Infinity, mx = -Infinity;
+    for (let i = lo; i <= hi; i++) { const v = s.vals[i]; if (v != null) { mn = Math.min(mn, v); mx = Math.max(mx, v); } }
     if (projection && vis.hi >= n - 1) {
-      for (const s of series) {
-        for (const p of proj) mx = Math.max(mx, s.projSel(p));
-        for (const m of dotMarkers) { const t = s.targetSel(m); if (t != null) mx = Math.max(mx, t); }
-      }
+      for (const p of proj) { const v = s.projSel(p); mn = Math.min(mn, v); mx = Math.max(mx, v); }
+      for (const m of dotMarkers) { const t = s.targetSel(m); if (t != null) { mn = Math.min(mn, t); mx = Math.max(mx, t); } }
     }
-    return { lo, hi, max: mx * 1.1 };
+    return niceRange(mn, mx);
   };
+  const yFactory = (a: { min: number; max: number }) => (v: number) => h - ((Math.min(Math.max(v, a.min), a.max) - a.min) / (a.max - a.min || 1)) * h;
   // Dotted forecast points for a channel: last real point → each projected day (target days carry the
   // arrival/eve form so dots sit on the line; post-session days reflect each session's load).
   const projPoly = (s: S, yOf: (v: number) => number) => {
@@ -575,27 +571,28 @@ function CtlAtlChart({ kind, metrics, selected, onSelect, register, onReachStart
     return pts.length > 1 ? pts.join(" ") : "";
   };
 
-  const label = kind === "ctl" ? "CTL · forme" : kind === "atl" ? "ATL · fatigue" : "CTL · ATL";
-  const help = kind === "atl" ? ATL_HELP : CTL_HELP;
-  const score = kind === "fused" ? (
+  const score = (
     <div className="flex items-baseline gap-3">
       <span className="text-2xl font-semibold tabular-nums" style={{ color: VIZ.aerobic }}>{fmt(selM?.ctl, 1)}</span>
       <span className="text-2xl font-semibold tabular-nums" style={{ color: VIZ.neuro }}>{fmt(selM?.atl, 1)}</span>
       <span className="text-[11px] text-stone-400">CTL · ATL</span>
     </div>
-  ) : fmtScore(kind === "ctl" ? selM?.ctl : selM?.atl, kind === "atl" ? VIZ.neuro : undefined);
+  );
 
   return (
     <InteractiveChart
-      label={label} help={help} score={score} unit="points de charge" height={h}
+      label="CTL · ATL" help={CTL_ATL_HELP} score={score} unit="points de charge · CTL (bleu) · ATL (orange)" height={h}
       metrics={metrics} selected={selected} onSelect={onSelect} register={register} onReachStart={onReachStart} loadingOlder={loadingOlder}
       trailingPx={trailingPx} defaultDate={defaultDate}
-      axis={(vis) => ({ min: 0, max: scaleFor(vis).max })}
-      renderSelection={(i, vis) => {
-        const { max } = scaleFor(vis);
-        const yOf = (v: number) => h - (v / max) * h;
-        return (<>{series.map((s, k) => (s.vals[i] != null ? <circle key={k} cx={cx(i)} cy={yOf(s.vals[i]!)} r={3} fill={s.color} /> : null))}</>);
-      }}
+      axis={(vis) => ({ ...scaleForSeries(ctlS, vis), color: VIZ.aerobic })}
+      axisRight={(vis) => ({ ...scaleForSeries(atlS, vis), color: VIZ.neuro })}
+      renderSelection={(i, vis) => (
+        <>{series.map((s) => {
+          if (s.vals[i] == null) return null;
+          const yOf = yFactory(scaleForSeries(s, vis));
+          return <circle key={s.key} cx={cx(i)} cy={yOf(s.vals[i]!)} r={3} fill={s.color} />;
+        })}</>
+      )}
       renderTrailing={projection ? () => {
         const hh = hitHalves(markers);
         return (
@@ -610,27 +607,28 @@ function CtlAtlChart({ kind, metrics, selected, onSelect, register, onReachStart
       } : undefined}
     >
       {(vis) => {
-        const { lo, hi, max } = scaleFor(vis);
-        const yOf = (v: number) => h - (Math.min(Math.max(v, 0), max) / max) * h;
+        const { lo, hi } = visRange(vis);
         return (
           <>
-            {refVals && <polyline points={poly(refVals, lo, hi, yOf)} fill="none" stroke={MUTED} strokeWidth={1} strokeDasharray="3 2" opacity={0.6} strokeLinejoin="round" strokeLinecap="round" />}
-            {series.map((s, k) => (
-              <polyline key={k} points={poly(s.vals, lo, hi, yOf)} fill="none" stroke={s.color} strokeWidth={1.6} strokeLinejoin="round" strokeLinecap="round" />
-            ))}
-            {/* dotted projected continuation over the planned loads (each channel keeps its hue) */}
-            {projection && series.map((s, k) => {
-              const pts = projPoly(s, yOf);
-              return pts ? <polyline key={`p${k}`} points={pts} fill="none" stroke={s.color} strokeWidth={1.4} strokeDasharray="2 2.5" opacity={0.85} strokeLinejoin="round" strokeLinecap="round" /> : null;
+            {series.map((s) => {
+              const yOf = yFactory(scaleForSeries(s, vis));
+              const projPts = projection ? projPoly(s, yOf) : "";
+              return (
+                <g key={s.key}>
+                  <polyline points={poly(s.vals, lo, hi, yOf)} fill="none" stroke={s.color} strokeWidth={1.6} strokeLinejoin="round" strokeLinecap="round" />
+                  {/* dotted projected continuation over the planned loads (each channel keeps its hue + axis) */}
+                  {projPts && <polyline points={projPts} fill="none" stroke={s.color} strokeWidth={1.4} strokeDasharray="2 2.5" opacity={0.85} strokeLinejoin="round" strokeLinecap="round" />}
+                  {/* target markers (committed/key only): hollow + dashed = projected; FILLED when selected */}
+                  {dotMarkers.map((m) => {
+                    const t = s.targetSel(m);
+                    if (t == null) return null;
+                    const on = selected === m.date;
+                    return <circle key={`f${m.date}-${s.key}`} cx={xOfMarker(m)} cy={yOf(t)} r={on ? 4 : 3.5}
+                      fill={on ? s.color : "none"} stroke={s.color} strokeWidth={1.6} strokeDasharray={on ? undefined : "2 1.5"} />;
+                  })}
+                </g>
+              );
             })}
-            {/* target markers (committed/key only): hollow + dashed = projected; FILLED when selected */}
-            {dotMarkers.flatMap((m) => series.map((s, k) => {
-              const t = s.targetSel(m);
-              if (t == null) return null;
-              const on = selected === m.date;
-              return <circle key={`f${m.date}-${k}`} cx={xOfMarker(m)} cy={yOf(t)} r={on ? 4 : 3.5}
-                fill={on ? s.color : "none"} stroke={s.color} strokeWidth={1.6} strokeDasharray={on ? undefined : "2 1.5"} />;
-            }))}
           </>
         );
       }}
