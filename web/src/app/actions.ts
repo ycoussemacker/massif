@@ -9,6 +9,7 @@ import {
   sessionRpeLoad, scoredDuration, activitySpanDays, needsReview, descentFamiliarityRatios,
 } from "@/lib/load";
 import { generateCoachReply, COACH_MODEL, type ChatTurn } from "@/lib/coach-chat";
+import { LIMITS, fetchBounded } from "@/lib/agent/limits";
 import { todayLocal, whenLabelFr, dateMinusDays } from "@/lib/coach-context";
 import { sanitizeCoachSettings, type CoachSettings } from "@/lib/coach-settings";
 import { syncStrava } from "@/lib/strava-sync";
@@ -180,10 +181,37 @@ export async function setSoreness(value: number | null): Promise<void> {
 const rnd = (n: number | null | undefined) => (n == null ? "—" : String(Math.round(n)));
 const num = (n: number | null | undefined) => (n == null ? "—" : String(Math.round(Number(n))));
 
-/** Prior chat turns (oldest → newest), used to rebuild the conversation for Claude. */
+/** Prior chat turns (oldest → newest), used to rebuild the conversation for Claude.
+ *
+ *  Cette lecture était le même piège que `daily_metrics` : ascendante et SANS limite, donc une fois
+ *  `coach_messages` au-delà des 1000 lignes de PostgREST elle aurait renvoyé les 1000 tours les PLUS
+ *  ANCIENS — le coach aurait perdu, sans erreur ni trace, tous les échanges récents (plans convenus,
+ *  contraintes déclarées) tout en continuant à les afficher sur /coach, qui pagine de son côté. La table
+ *  est append-only et grossit d'environ 3 lignes par jour d'usage : ~95 lignes aujourd'hui, le plafond
+ *  en moins d'un an — et en une quinzaine de jours au débit que la limite de débit autorise (50 tours/j).
+ *
+ *  On garde donc les N tours les plus RÉCENTS, et quand il y en a davantage on le DIT au modèle par un
+ *  tour de contexte synthétique : mieux vaut un coach qui sait que sa mémoire est partielle qu'un coach
+ *  qui l'ignore. Effet de bord utile : le coût par tour d'API cesse de croître sans borne. */
 async function loadHistory(sb: SupabaseClient): Promise<ChatTurn[]> {
-  const { data } = await sb.from("coach_messages").select("role,content").order("created_at", { ascending: true });
-  return (data ?? []).map((m: any) => ({ role: m.role, content: m.content }));
+  const { rows, truncation } = await fetchBounded<{ role: ChatTurn["role"]; content: string }>(
+    sb.from("coach_messages").select("role,content").order("created_at", { ascending: false }),
+    LIMITS.chatHistoryTurns, { what: "tours de conversation", newestFirst: true },
+  );
+  const turns: ChatTurn[] = rows.map((m) => ({ role: m.role, content: m.content }));
+  if (!truncation.truncated) return turns;
+  console.warn(`[coach] historique tronqué aux ${LIMITS.chatHistoryTurns} tours les plus récents`);
+  return [
+    {
+      role: "user",
+      content:
+        `[Contexte système — pas un message de l'athlète : seuls les ${LIMITS.chatHistoryTurns} derniers ` +
+        `tours de votre conversation te sont fournis ; les échanges plus anciens ne sont PAS dans ce ` +
+        `prompt. Si l'athlète renvoie à quelque chose que tu n'y retrouves pas, dis-lui que ça sort de ` +
+        `ta fenêtre de conversation plutôt que de le reconstituer.]`,
+    },
+    ...turns,
+  ];
 }
 
 /** Cheap abuse/cost guard on the Anthropic-backed coach: the chat sits behind only the shared

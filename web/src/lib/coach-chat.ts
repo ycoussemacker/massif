@@ -4,6 +4,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { assembleCoachContext, loadTodayBriefing, todayLocal, dateMinusDays } from "./coach-context";
+import { LIMITS, clampWindow, fetchBounded, mergeTruncation, isIsoDate } from "./agent/limits";
 import { effectivePhase, phaseSummaryFr } from "./briefing-algo";
 import { loadCoachSettings, buildPersonaInstructions } from "./coach-settings";
 import { estimateForDeclared } from "./estimate-server";
@@ -123,7 +124,10 @@ const TOOLS = [
     name: "query_activities",
     description:
       "List the athlete's logged activities in a date window (older than the ~21d already provided). " +
-      "Returns per-activity load split (aerobic/neuro), method, duration, distance, vertical D±, avg HR, RPE.",
+      "Returns { window, count, truncated, activities[] } — per-activity load split (aerobic/neuro), method, " +
+      `duration, distance, vertical D±, avg HR, RPE. At most ${LIMITS.activities} activities, the most RECENT ` +
+      "ones. If `truncated` is true, older activities were left out: read `note`, say so if it changes your " +
+      "answer, and narrow the window rather than concluding from a partial list.",
     input_schema: {
       type: "object",
       properties: {
@@ -139,7 +143,11 @@ const TOOLS = [
     name: "query_daily_metrics",
     description:
       "Daily rollups + fitness model (CTL/ATL/TSB/ACWR, daily load aerobic/neuro, D±) over a date window. " +
-      "Use for volume/form trends or comparisons across weeks/months.",
+      "Use for volume/form trends or comparisons across weeks/months. Returns { requested_window, window, " +
+      `count, truncated, days[] }. The window is capped at ${LIMITS.dailyMetricsDays} days and is kept on its ` +
+      "RECENT end: ask for a span wider than that and `truncated` comes back true with `window` showing what " +
+      "was actually read — the earlier part is ABSENT, not empty. To compare two distant periods, make ONE " +
+      "call per period instead of a single call spanning both.",
     input_schema: {
       type: "object",
       properties: {
@@ -154,7 +162,9 @@ const TOOLS = [
     name: "read_plan",
     description:
       "List the athlete's UPCOMING planned_sessions with their real id (coach sessions, declared events " +
-      "and chat-accepted pinned sessions). Use it to get the exact id of a session you want to replace/delete.",
+      "and chat-accepted pinned sessions). Use it to get the exact id of a session you want to replace/delete. " +
+      `Returns { window, count, truncated, sessions[] }; at most ${LIMITS.plannedSessions} sessions over at ` +
+      `most ${LIMITS.planHorizonDays} days. If \`truncated\` is true, do not assume the plan is complete.`,
     input_schema: {
       type: "object",
       properties: {
@@ -298,73 +308,119 @@ const TOOLS = [
   },
 ];
 
+/** Erreur de validation rendue AU MODÈLE en français : il doit pouvoir se corriger tout seul au tour
+ *  suivant, donc on lui dit quoi corriger, pas juste que c'est invalide. */
+function badDate(field: string, got: unknown) {
+  return { error: `\`${field}\` doit être une date au format YYYY-MM-DD ; reçu ${JSON.stringify(got)}. Corrige et rappelle l'outil.` };
+}
+
+/** Les activités de la fenêtre. Ordonnées du plus RÉCENT au plus ancien côté base — pour que le
+ *  plafond morde sur les plus anciennes — puis remises en ordre chronologique dans la réponse. */
 async function queryActivities(sb: SupabaseClient, input: any): Promise<any> {
-  const lim = Math.min(Math.max(Number(input?.limit) || 100, 1), 300);
+  if (!isIsoDate(input?.since)) return badDate("since", input?.since);
+  if (!isIsoDate(input?.until)) return badDate("until", input?.until);
+  if (input.since > input.until) return { error: "`since` est postérieur à `until` — inverse les bornes." };
+
+  const lim = Math.min(Math.max(Number(input?.limit) || 100, 1), LIMITS.activities);
   const { data: sports } = await sb.from("sports").select("id,code");
   const codeById = new Map<number, string>((sports ?? []).map((s: any) => [s.id, s.code]));
 
   let q = sb.from("activities")
     .select("local_date,sport_id,training_load,aerobic_load,neuromuscular_load,load_method_used," +
             "duration_s,distance_m,vertical_gain_m,vertical_loss_m,avg_hr,perceived_rpe,rpe_source")
-    .gte("local_date", String(input.since)).lte("local_date", String(input.until))
-    .order("local_date", { ascending: true }).limit(lim);
+    .gte("local_date", input.since).lte("local_date", input.until)
+    .order("local_date", { ascending: false });
 
   if (input?.sport_code) {
     const sid = (sports ?? []).find((s: any) => s.code === input.sport_code)?.id;
-    if (sid != null) q = q.eq("sport_id", sid);
+    if (sid == null) {
+      return { error: `sport inconnu : ${input.sport_code}. Relance sans filtre de sport, ou utilise un code de \`available_sports\`.` };
+    }
+    q = q.eq("sport_id", sid);
   }
 
-  const { data, error } = await q;
-  if (error) throw new Error(error.message);
-  return (data ?? []).map((a: any) => ({
-    date: a.local_date, sport: codeById.get(a.sport_id) ?? "unknown",
-    load: a.training_load, aerobic: a.aerobic_load, neuro: a.neuromuscular_load,
-    method: a.load_method_used, dur_min: Math.round((a.duration_s || 0) / 60),
-    dist_km: a.distance_m != null ? Math.round(a.distance_m / 100) / 10 : null,
-    dplus: a.vertical_gain_m, dminus: a.vertical_loss_m, avg_hr: a.avg_hr,
-    rpe: a.perceived_rpe, rpe_source: a.rpe_source,
-  }));
+  const { rows, truncation } = await fetchBounded<any>(q, lim, { what: "activités", newestFirst: true });
+  return {
+    window: { since: input.since, until: input.until },
+    count: rows.length,
+    ...truncation,
+    activities: rows.map((a: any) => ({
+      date: a.local_date, sport: codeById.get(a.sport_id) ?? "unknown",
+      load: a.training_load, aerobic: a.aerobic_load, neuro: a.neuromuscular_load,
+      method: a.load_method_used, dur_min: Math.round((a.duration_s || 0) / 60),
+      dist_km: a.distance_m != null ? Math.round(a.distance_m / 100) / 10 : null,
+      dplus: a.vertical_gain_m, dminus: a.vertical_loss_m, avg_hr: a.avg_hr,
+      rpe: a.perceived_rpe, rpe_source: a.rpe_source,
+    })),
+  };
 }
 
+/** Le modèle jour par jour. C'EST la lecture qui a reproduit l'incident de production : `daily_metrics`
+ *  est une colonne vertébrale d'UNE ligne par jour depuis 2021 (1806 lignes au 2026-09-01), donc toute
+ *  fenêtre de plus de 1000 jours dépassait le plafond PostgREST et renvoyait, en silence, les 1000 jours
+ *  les PLUS ANCIENS — mesuré : une lecture ascendante non bornée s'arrêtait au 2024-05-22, soit 806 jours
+ *  manquants. Le modèle prenait cette tranche pour l'historique complet et concluait « ton volume s'est
+ *  effondré » alors que seules les données manquaient. Désormais : fenêtre resserrée sur son bout RÉCENT,
+ *  débordement détecté par un +1, et les deux dits explicitement dans la réponse. */
 async function queryDailyMetrics(sb: SupabaseClient, input: any): Promise<any> {
-  const { data, error } = await sb.from("daily_metrics")
+  if (!isIsoDate(input?.since)) return badDate("since", input?.since);
+  if (!isIsoDate(input?.until)) return badDate("until", input?.until);
+  if (input.since > input.until) return { error: "`since` est postérieur à `until` — inverse les bornes." };
+
+  const clamp = clampWindow(input.since, input.until, LIMITS.dailyMetricsDays, "modèle quotidien");
+  const q = sb.from("daily_metrics")
     .select("local_date,daily_load,daily_aerobic_load,daily_neuromuscular_load,ctl,atl,tsb,acwr," +
             "vertical_gain_m,vertical_loss_m")
-    .gte("local_date", String(input.since)).lte("local_date", String(input.until))
-    .order("local_date", { ascending: true });
-  if (error) throw new Error(error.message);
-  return (data ?? []).map((d: any) => ({
-    date: d.local_date, load: d.daily_load, aerobic: d.daily_aerobic_load, neuro: d.daily_neuromuscular_load,
-    ctl: d.ctl, atl: d.atl, tsb: d.tsb, acwr: d.acwr, dplus: d.vertical_gain_m, dminus: d.vertical_loss_m,
-  }));
+    .gte("local_date", clamp.since).lte("local_date", clamp.until)
+    .order("local_date", { ascending: false });
+
+  const { rows, truncation } = await fetchBounded<any>(q, LIMITS.dailyMetricsDays, { what: "jours", newestFirst: true });
+  return {
+    requested_window: { since: input.since, until: input.until },
+    window: { since: clamp.since, until: clamp.until },
+    count: rows.length,
+    ...mergeTruncation(clamp, truncation),
+    days: rows.map((d: any) => ({
+      date: d.local_date, load: d.daily_load, aerobic: d.daily_aerobic_load, neuro: d.daily_neuromuscular_load,
+      ctl: d.ctl, atl: d.atl, tsb: d.tsb, acwr: d.acwr, dplus: d.vertical_gain_m, dminus: d.vertical_loss_m,
+    })),
+  };
 }
 
-const ISO = /^\d{4}-\d{2}-\d{2}$/;
 const numOrNull = (v: any): number | null =>
   v == null || !Number.isFinite(Number(v)) ? null : Number(v);
 
-/** The athlete's upcoming plan with real ids — so a proposal can target an existing row. */
+/** Le plan à venir avec les vrais id — pour qu'une proposition puisse viser une ligne existante. */
 async function readPlan(sb: SupabaseClient, input: any): Promise<any> {
-  const from = ISO.test(input?.from) ? input.from : todayLocal();
-  const to = ISO.test(input?.to) ? input.to : dateMinusDays(from, -13);
+  const from = isIsoDate(input?.from) ? input.from : todayLocal();
+  const to = isIsoDate(input?.to) ? input.to : dateMinusDays(from, -13);
+  if (from > to) return { error: "`from` est postérieur à `to` — inverse les bornes." };
+  const clamp = clampWindow(from, to, LIMITS.planHorizonDays, "plan");
+
   const { data: sports } = await sb.from("sports").select("id,code");
   const codeById = new Map<number, string>((sports ?? []).map((s: any) => [s.id, s.code]));
-  const { data, error } = await sb.from("planned_sessions")
+  const q = sb.from("planned_sessions")
     .select("id,planned_date,order_in_day,sport_id,title,system_tag,is_event,is_pinned,is_key," +
             "target_load,target_aerobic_load,target_neuromuscular_load,target_duration_s,modified_by,status,linked_activity_id")
-    .gte("planned_date", from).lte("planned_date", to).neq("status", "skipped")
-    .order("planned_date", { ascending: true }).order("order_in_day", { ascending: true });
-  if (error) throw new Error(error.message);
-  return (data ?? []).map((r: any) => ({
-    id: r.id, date: r.planned_date, order_in_day: r.order_in_day,
-    sport: r.sport_id != null ? (codeById.get(r.sport_id) ?? null) : null,
-    title: r.title, system_tag: r.system_tag,
-    kind: r.is_event ? "event" : r.is_pinned ? "pinned" : r.modified_by === "coach" ? "coach" : "user",
-    is_key: !!r.is_key,
-    target_load: r.target_load, target_aerobic: r.target_aerobic_load, target_neuro: r.target_neuromuscular_load,
-    dur_min: r.target_duration_s ? Math.round(Number(r.target_duration_s) / 60) : null,
-    status: r.status, has_logged_activity: !!r.linked_activity_id,
-  }));
+    .gte("planned_date", clamp.since).lte("planned_date", clamp.until).neq("status", "skipped")
+    .order("planned_date", { ascending: false }).order("order_in_day", { ascending: false });
+
+  const { rows, truncation } = await fetchBounded<any>(q, LIMITS.plannedSessions, { what: "séances planifiées", newestFirst: true });
+  return {
+    window: { from: clamp.since, to: clamp.until },
+    count: rows.length,
+    ...mergeTruncation(clamp, truncation),
+    sessions: rows.map((r: any) => ({
+      id: r.id, date: r.planned_date, order_in_day: r.order_in_day,
+      sport: r.sport_id != null ? (codeById.get(r.sport_id) ?? null) : null,
+      title: r.title, system_tag: r.system_tag,
+      kind: r.is_event ? "event" : r.is_pinned ? "pinned" : r.modified_by === "coach" ? "coach" : "user",
+      is_key: !!r.is_key,
+      target_load: r.target_load, target_aerobic: r.target_aerobic_load, target_neuro: r.target_neuromuscular_load,
+      dur_min: r.target_duration_s ? Math.round(Number(r.target_duration_s) / 60) : null,
+      status: r.status, has_logged_activity: !!r.linked_activity_id,
+    })),
+  };
 }
 
 /** Cost a hypothetical session from the athlete's own similar past efforts (wraps estimateForDeclared). */

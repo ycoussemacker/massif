@@ -4,6 +4,7 @@
  *  forecast and the declared-event taper read — so the simulated numbers match what the athlete will see. */
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { todayLocal, dateMinusDays } from "./coach-context";
+import { LIMITS, fetchBounded, mergeTruncation } from "./agent/limits";
 import { buildPlannedLoads } from "./planning";
 import { projectFromMetrics, type SeedMetric, type DayLoad } from "./project";
 
@@ -22,6 +23,8 @@ export type SimResult = {
   horizon_days: number;
   baseline: SimPoint[];               // today..+horizon under the CURRENT plan
   with_overrides: SimPoint[] | null;  // same window with the hypothetical sessions added (null if none)
+  truncated?: boolean;                // true = une des lectures a été bornée (voir `note`)
+  note?: string;
 };
 
 export async function simulateForChat(
@@ -31,20 +34,32 @@ export async function simulateForChat(
   const today = todayLocal();
   const horizon = Math.min(60, Math.max(1, Math.round(opts.horizonDays ?? 21)));
   const seedFrom = dateMinusDays(today, 90); // enough history to seed the EWMA + replay the seed→today gap
+  // Les deux lectures sont bornées des DEUX côtés et plafonnées explicitement (règle « jamais de
+  // troncature muette », voir agent/limits.ts). Borner le plan par le haut n'enlève rien à la
+  // projection : projectFromMetrics ne regarde de toute façon que today..today+horizon.
+  const horizonEnd = dateMinusDays(today, -horizon);
 
   const [mm, up, np] = await Promise.all([
-    sb.from("daily_metrics")
-      .select("local_date,daily_aerobic_load,daily_neuromuscular_load,ctl,atl,ctl_aerobic,atl_aerobic,ctl_neuromuscular,atl_neuromuscular")
-      .gte("local_date", seedFrom).order("local_date", { ascending: true }),
-    sb.from("planned_sessions")
-      .select("planned_date,is_event,system_tag,target_load,target_aerobic_load,target_neuromuscular_load,predicted_aerobic_load,predicted_neuromuscular_load")
-      .gte("planned_date", today).neq("status", "skipped"),
+    fetchBounded<SeedMetric>(
+      sb.from("daily_metrics")
+        .select("local_date,daily_aerobic_load,daily_neuromuscular_load,ctl,atl,ctl_aerobic,atl_aerobic,ctl_neuromuscular,atl_neuromuscular")
+        .gte("local_date", seedFrom).lte("local_date", today)
+        .order("local_date", { ascending: true }),
+      LIMITS.simulationSeedDays, { what: "jours d'historique" },
+    ),
+    fetchBounded<Record<string, unknown>>(
+      sb.from("planned_sessions")
+        .select("planned_date,is_event,system_tag,target_load,target_aerobic_load,target_neuromuscular_load,predicted_aerobic_load,predicted_neuromuscular_load")
+        .gte("planned_date", today).lte("planned_date", horizonEnd).neq("status", "skipped")
+        .order("planned_date", { ascending: true }),
+      LIMITS.plannedSessions, { what: "séances planifiées" },
+    ),
     sb.from("athlete_load_params").select("value").eq("param", "neuro_atl_days").maybeSingle(),
   ]);
 
-  const metrics = (mm.data ?? []) as SeedMetric[];
+  const metrics = mm.rows;
   const neuroAtlDays = Number((np.data as any)?.value) || undefined;
-  const baseLoads = buildPlannedLoads(up.data ?? []);
+  const baseLoads = buildPlannedLoads(up.rows);
 
   const project = (loads: DayLoad[]): SimPoint[] =>
     projectFromMetrics(metrics, loads, { today, horizonDays: horizon, neuroAtlDays })
@@ -66,5 +81,7 @@ export async function simulateForChat(
     with_overrides = project([...byDate.values()]);
   }
 
-  return { today, horizon_days: horizon, baseline, with_overrides };
+  // La simulation ne peut pas « manquer » de données en silence : si l'une des deux lectures a été
+  // bornée, le drapeau et la note partent au modèle avec le résultat.
+  return { today, horizon_days: horizon, baseline, with_overrides, ...mergeTruncation(mm.truncation, up.truncation) };
 }
