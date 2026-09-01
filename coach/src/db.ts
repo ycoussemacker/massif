@@ -95,10 +95,19 @@ export async function loadRecentActivities(sinceDate: string): Promise<any[]> {
   return data ?? [];
 }
 
+/** Plan à venir. MIRROR de web/src/lib/coach-context.ts (mêmes bornes) : horizon + plafond explicites,
+ *  sous les 1000 lignes de PostgREST. L'ordre ascendant est délibéré — si la limite mord, elle écarte le
+ *  futur le plus lointain, jamais les jours qui viennent. */
+const PLAN_HORIZON_DAYS = 400;
+const PLAN_ROWS = 200;
+
 export async function loadUpcomingPlanned(fromDate: string): Promise<any[]> {
+  const horizon = new Date(Date.parse(fromDate + "T00:00:00Z") + PLAN_HORIZON_DAYS * 86_400_000)
+    .toISOString().slice(0, 10);
   const { data, error } = await db
     .from("planned_sessions").select("*")
-    .gte("planned_date", fromDate).neq("status", "skipped").order("planned_date");
+    .gte("planned_date", fromDate).lte("planned_date", horizon).neq("status", "skipped")
+    .order("planned_date", { ascending: true }).limit(PLAN_ROWS);
   if (error) throw error;
   return data ?? [];
 }

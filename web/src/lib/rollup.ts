@@ -7,6 +7,7 @@
  *
  *  Builds a CONTIGUOUS daily spine (zero-load rest days included) so the EWMAs have no gaps. */
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { fetchAllPaged } from "./db-paged";
 import { descentFamiliarityRatios, descentRecoveryFactor, ewmaVariableTau } from "./load";
 import { todayLocal } from "./coach-context";
 
@@ -52,10 +53,15 @@ export async function rollupDailyMetrics(sb: SupabaseClient): Promise<number> {
   const { data: sports } = await sb.from("sports").select("id,taxonomy_group");
   const groupById = new Map<number, string>((sports ?? []).map((s: any) => [s.id, s.taxonomy_group ?? "other"]));
 
-  const { data: acts } = await sb
-    .from("activities")
-    .select("local_date,aerobic_load,neuromuscular_load,vertical_gain_m,vertical_loss_m,sport_id,effective_days");
-  if (!acts?.length) return 0;
+  // Le rollup réécrit TOUT l'historique quotidien : il lui faut toutes les activités, pas la première
+  // page de 1000 (voir db-paged.ts). Une activité manquante ici fausse la CTL pour toujours.
+  const acts = await fetchAllPaged<any>(
+    (from, to) => sb.from("activities")
+      .select("local_date,aerobic_load,neuromuscular_load,vertical_gain_m,vertical_loss_m,sport_id,effective_days")
+      .order("local_date", { ascending: true }).range(from, to),
+    { what: "activités (rollup)" },
+  );
+  if (!acts.length) return 0;
 
   // Neuromuscular acute τ: personalized from athlete_load_params when fitted, else NEURO_ATL_DAYS.
   const { data: paramRows } = await sb.from("athlete_load_params").select("param,value").eq("param", "neuro_atl_days");

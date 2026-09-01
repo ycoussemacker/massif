@@ -106,13 +106,14 @@ def rollup_daily_metrics(ctl_days: int = 42, atl_days: int = 7) -> int:
     Returns the number of days written.
     """
     sport_by_id = {s["id"]: s for s in db.client().table("sports").select("*").execute().data}
-    acts = (
-        db.client()
-        .table("activities")
-        .select("local_date,aerobic_load,neuromuscular_load,vertical_gain_m,"
-                "vertical_loss_m,sport_id,effective_days")
-        .execute()
-        .data
+    # Le rollup réécrit TOUT l'historique quotidien : lecture paginée, sinon PostgREST rendrait les
+    # 1000 premières activités et la CTL serait durablement fausse, sans erreur (voir select_all_paged).
+    acts = db.select_all_paged(
+        lambda a, b: (db.client().table("activities")
+                      .select("local_date,aerobic_load,neuromuscular_load,vertical_gain_m,"
+                              "vertical_loss_m,sport_id,effective_days")
+                      .order("local_date", desc=False).range(a, b)),
+        "activités (rollup)",
     )
     if not acts:
         return 0

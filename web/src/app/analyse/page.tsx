@@ -14,6 +14,10 @@ import { VIZ, SERIES, PERIOD } from "@/lib/theme";
 export const dynamic = "force-dynamic";
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** Plafond de jours lus par période, sous les 1000 lignes de PostgREST. Une comparaison A/B au-delà de
+ *  ~2,5 ans par période n'a pas de sens sportif ; au-delà, on lit ce plafond ET on l'affiche. */
+const MAX_PERIOD_DAYS = 900;
 type Period = { from: string; to: string };
 type SP = { preset?: string; aFrom?: string; aTo?: string; bFrom?: string; bTo?: string };
 
@@ -169,26 +173,42 @@ export default async function AnalysePage({ searchParams }: { searchParams: Prom
   const { a, b, preset } = derivePeriods(today, sp);
 
   const sb = await createServiceClient();
-  const lo = [a.from, b.from].sort()[0];
-  const hi = [a.to, b.to].sort().at(-1)!;
   const heatStart = yearsAgo(today, 1);
   // Widen each period's activity fetch backwards by MULTIDAY_LOOKBACK_DAYS so a multi-day expedition
   // that STARTS just before the period but spans INTO it is fetched; spreadActivities then attributes
   // only the spanned days that fall inside the period (mirrors the daily rollup). 31 d covers any
   // realistic expedition — a longer one starting >31 d before the period would lose its earliest days.
   const MULTIDAY_LOOKBACK_DAYS = 31;
-  const [aRes, bRes, sports, mm, hm] = await Promise.all([
+  // Une lecture PAR PÉRIODE, bornée et plafonnée. Avant, un seul read couvrait lo..hi (de la plus
+  // ancienne borne de A à la plus récente de B) : avec une période A ancienne, la fenêtre dépassait les
+  // 1000 lignes de PostgREST, qui renvoyait alors les 1000 jours les PLUS ANCIENS — donc A servie, B
+  // vide, et les six tuiles de la période récente affichées « — » comme si Garmin n'avait rien
+  // enregistré. Deux lectures séparées : un écart entre les périodes ne coûte plus une seule ligne.
+  const readMetrics = (p: Period) =>
+    sb.from("daily_metrics").select("local_date,ctl,atl,tsb,acwr,sleep_score,hrv_overnight_ms,resting_hr,training_readiness")
+      .gte("local_date", p.from).lte("local_date", p.to)
+      .order("local_date", { ascending: true }).limit(MAX_PERIOD_DAYS + 1);
+
+  const [aRes, bRes, sports, am, bm, hm] = await Promise.all([
     listActivities({ from: dateMinusDays(a.from, MULTIDAY_LOOKBACK_DAYS), to: a.to, order: "date_asc", limit: 1000 }),
     listActivities({ from: dateMinusDays(b.from, MULTIDAY_LOOKBACK_DAYS), to: b.to, order: "date_asc", limit: 1000 }),
     getSports(),
-    sb.from("daily_metrics").select("local_date,ctl,atl,tsb,acwr,sleep_score,hrv_overnight_ms,resting_hr,training_readiness")
-      .gte("local_date", lo).lte("local_date", hi).order("local_date", { ascending: true }),
-    sb.from("daily_metrics").select("local_date,daily_load").gte("local_date", heatStart).order("local_date", { ascending: true }),
+    readMetrics(a),
+    readMetrics(b),
+    sb.from("daily_metrics").select("local_date,daily_load")
+      .gte("local_date", heatStart).lte("local_date", today)
+      .order("local_date", { ascending: true }).limit(MAX_PERIOD_DAYS),
   ]);
 
-  const metrics = (mm.data ?? []) as MetricRow[];
-  const inRange = (p: Period) => metrics.filter((m) => m.local_date >= p.from && m.local_date <= p.to);
-  const aM = inRange(a), bM = inRange(b);
+  // La ligne sentinelle (limite + 1) rend la troncature DÉTECTABLE ; sans elle, « exactement N lignes »
+  // et « il y en a plus » sont indiscernables. Quand elle arrive, on le dit à l'écran.
+  const overflow = (rows: unknown[] | null) => (rows?.length ?? 0) > MAX_PERIOD_DAYS;
+  const truncatedPeriods = [
+    overflow(am.data) ? "A" : null,
+    overflow(bm.data) ? "B" : null,
+  ].filter(Boolean) as string[];
+  const aM = ((am.data ?? []) as MetricRow[]).slice(0, MAX_PERIOD_DAYS);
+  const bM = ((bm.data ?? []) as MetricRow[]).slice(0, MAX_PERIOD_DAYS);
   const heatDays = ((hm.data ?? []) as { local_date: string; daily_load: number }[]).map((r) => ({ date: r.local_date, load: r.daily_load ?? 0 }));
 
   // Per-day slices, multi-day expeditions spread across their spanned days (mirror of the rollup), then
@@ -307,6 +327,20 @@ export default async function AnalysePage({ searchParams }: { searchParams: Prom
 
         <div className="space-y-5">
           <PeriodPicker />
+
+          {/* Troncature DITE, jamais muette : au-delà du plafond de lecture, les moyennes de forme et de
+              récupération ne portent que sur le début de la période — l'athlète doit le savoir, sinon un
+              « — » ou une moyenne partielle se lit comme une absence de données. */}
+          {truncatedPeriods.length > 0 && (
+            <p className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-300">
+              <span aria-hidden className="leading-snug">⚠️</span>
+              <span>
+                Période {truncatedPeriods.join(" et ")} trop longue : les moyennes de forme et de
+                récupération ne portent que sur les {MAX_PERIOD_DAYS} premiers jours. Resserre
+                l&apos;intervalle pour une comparaison complète.
+              </span>
+            </p>
+          )}
 
           {/* Quelles périodes — rendu explicite */}
           <section className="grid grid-cols-1 gap-3 sm:grid-cols-2">

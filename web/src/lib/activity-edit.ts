@@ -7,6 +7,7 @@
  *  Les deux syncs ré-appliquent ces overrides APRÈS avoir reconstruit la ligne provider et AVANT
  *  compute_load — une correction (ex. D− aberrant sur un canyoning) survit donc à toute re-sync. */
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { fetchAllPaged } from "./db-paged";
 import {
   computeLoad, resolveProfile, descentFamiliarityRatios,
   type LoadActivity, type LoadSport, type LoadProfile, type LoadParams, type LoadResult, type ThresholdRow,
@@ -98,7 +99,11 @@ export async function recomputeActivityLoad(sb: SupabaseClient, activityId: stri
       sb.from("athlete_profile").select("ftp_watts,resting_hr,max_hr,lthr,threshold_pace_s_per_km,weight_kg").limit(1).maybeSingle(),
       sb.from("athlete_load_params").select("param,value"),
       sb.from("athlete_thresholds").select("*").order("effective_date", { ascending: true }),
-      sb.from("activities").select("local_date,vertical_loss_m"),
+      fetchAllPaged<{ local_date: string; vertical_loss_m: number | null }>(
+        (from, to) => sb.from("activities").select("local_date,vertical_loss_m")
+          .order("local_date", { ascending: true }).range(from, to),
+        { what: "série D− (recompute)" },
+      ).then((data) => ({ data })),
     ]);
   if (!sport) throw new Error("Sport introuvable");
 

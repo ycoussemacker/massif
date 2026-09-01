@@ -8,6 +8,7 @@
  *  the source of truth: the next cron re-pulls + recomputes identically (incl. auto-creating sports for
  *  unseen sport_types, which this fast path maps to 'unknown' until then). KEEP IN SYNC with strava.py. */
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { fetchAllPaged } from "./db-paged";
 import {
   computeLoad, resolveProfile, descentFamiliarityRatios, ALT_HYPOXIA_THRESHOLD_M,
   type LoadProfile, type LoadParams, type ThresholdRow,
@@ -188,12 +189,21 @@ export async function syncStrava(sb: SupabaseClient, afterDays = 21): Promise<St
   const [{ data: sportsRows }, { data: profileRow }, { data: rpeRows }, { data: paramRows }, { data: thresholdRows }, { data: overrideRows }] = await Promise.all([
     sb.from("sports").select("id,code,taxonomy_group,load_method_ladder,uses_distance,uses_hr,needs_manual_rpe,source_aliases"),
     sb.from("athlete_profile").select("max_hr,resting_hr,lthr,ftp_watts,threshold_pace_s_per_km,weight_kg,timezone").limit(1).maybeSingle(),
-    sb.from("activities").select("source_activity_id,perceived_rpe,rpe_cardio,rpe_legs,rpe_grip").eq("source", "strava").eq("rpe_source", "user"),
+    fetchAllPaged<any>(
+      (from, to) => sb.from("activities").select("source_activity_id,perceived_rpe,rpe_cardio,rpe_legs,rpe_grip")
+        .eq("source", "strava").eq("rpe_source", "user").order("source_activity_id", { ascending: true }).range(from, to),
+      { what: "RPE saisis par l'athlète" },
+    ).then((data) => ({ data })),
     sb.from("athlete_load_params").select("param,value"),
     sb.from("athlete_thresholds").select("*").order("effective_date", { ascending: true }),
     // Corrections manuelles de l'athlète (sport reclassé, D− corrigé…) — ré-appliquées à chaque
     // re-sync, comme les RPE user, pour que le pull ne les écrase jamais (mirror strava.py).
-    sb.from("activities").select("source_activity_id,user_overrides").eq("source", "strava").not("user_overrides", "is", null),
+    fetchAllPaged<any>(
+      (from, to) => sb.from("activities").select("source_activity_id,user_overrides")
+        .eq("source", "strava").not("user_overrides", "is", null)
+        .order("source_activity_id", { ascending: true }).range(from, to),
+      { what: "corrections manuelles" },
+    ).then((data) => ({ data })),
   ]);
   // Personalized load coefficients (empty → population defaults; mirror of db.load_load_params).
   const loadParams: LoadParams = Object.fromEntries(
@@ -229,10 +239,14 @@ export async function syncStrava(sb: SupabaseClient, afterDays = 21): Promise<St
 
   // Descent-familiarity (repeated-bout): ratios from the stored daily D- series (mirror of strava.sync).
   // recompute_activity_loads re-derives this across all history (source of truth); the recent pull stamps
-  // each row from it. NB relies on the <1000-activity PostgREST page; paginate if it ever grows.
-  const { data: descRows } = await sb.from("activities").select("local_date,vertical_loss_m");
+  // each row from it. Lecture PAGINÉE : la note « paginate if it ever grows » est levée (db-paged.ts).
+  const descRows = await fetchAllPaged<any>(
+    (from, to) => sb.from("activities").select("local_date,vertical_loss_m")
+      .order("local_date", { ascending: true }).range(from, to),
+    { what: "série D−" },
+  );
   const dailyDescent: Record<string, number> = {};
-  for (const dr of (descRows ?? []) as any[]) {
+  for (const dr of descRows) {
     const d = dr.local_date as string;
     dailyDescent[d] = (dailyDescent[d] ?? 0) + Number(dr.vertical_loss_m || 0);
   }

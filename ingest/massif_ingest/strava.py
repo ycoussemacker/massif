@@ -399,8 +399,12 @@ def sync(after_days: int = 30, stream_days: int | None = None) -> int:
 
     # Descent-familiarity ratios from the stored daily D- series (sum of vertical_loss_m per local_date).
     # The recent pull stamps each row from this; --recompute-loads later re-derives it across all history
-    # (the source of truth). NB: relies on the <1000-activity PostgREST page; paginate if it ever grows.
-    desc_rows = db.client().table("activities").select("local_date,vertical_loss_m").execute().data
+    # (the source of truth). Lecture PAGINÉE : la note « paginate if it ever grows » est levée.
+    desc_rows = db.select_all_paged(
+        lambda a, b: (db.client().table("activities").select("local_date,vertical_loss_m")
+                      .order("local_date", desc=False).range(a, b)),
+        "série D−",
+    )
     daily_descent: dict[str, float] = {}
     for dr in desc_rows:
         daily_descent[dr["local_date"]] = daily_descent.get(dr["local_date"], 0.0) + float(dr.get("vertical_loss_m") or 0.0)

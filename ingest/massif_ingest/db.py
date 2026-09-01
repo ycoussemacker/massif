@@ -115,17 +115,45 @@ def save_integration_token(provider: str, fields: dict) -> None:
     client().table("integration_tokens").upsert(row, on_conflict="provider").execute()
 
 
+_PAGE = 1000  # plafond PostgREST : une page pleine signifie « il y en a peut-être d'autres »
+
+
+def select_all_paged(build, what: str, max_rows: int = 200_000) -> list[dict]:
+    """Lit TOUTES les lignes d'une requête, page par page.
+
+    PostgREST plafonne chaque réponse à 1000 lignes : une lecture pleine table sans pagination
+    renvoie les 1000 premières SANS erreur ni indication. Pour un calcul qui exige l'historique
+    complet — le rollup CTL/ATL, le re-scoring, la familiarité à la descente — une ligne manquante
+    fausse le modèle durablement et de façon invisible. `build(offset, limit_end)` doit reconstruire
+    la requête à chaque page (un builder n'est pas réutilisable après exécution).
+
+    Dépassement du garde-fou `max_rows` → on LÈVE : un résultat partiel n'a pas de sens ici, donc
+    échouer bruyamment est le seul comportement honnête.  (Mirror TS : web/src/lib/db-paged.ts.)
+    """
+    rows: list[dict] = []
+    page = 0
+    while True:
+        chunk = build(page * _PAGE, page * _PAGE + _PAGE - 1).execute().data or []
+        rows.extend(chunk)
+        if len(chunk) < _PAGE:
+            return rows
+        if len(rows) >= max_rows:
+            raise RuntimeError(
+                f"Lecture de {what} interrompue à {len(rows)} lignes (garde-fou {max_rows}). "
+                f"Un calcul qui exige l'historique complet ne doit pas se contenter d'une partie."
+            )
+        page += 1
+
+
 def load_user_rpes(source: str) -> dict[str, int]:
     """{source_activity_id: perceived_rpe} for activities the user RPE'd, so re-syncs don't clobber
     the user's load back to duration_fallback (the manual RPE is re-applied → session_rpe)."""
-    rows = (
-        client()
-        .table("activities")
-        .select("source_activity_id,perceived_rpe")
-        .eq("source", source)
-        .eq("rpe_source", "user")
-        .execute()
-        .data
+    rows = select_all_paged(
+        lambda a, b: (client().table("activities")
+                      .select("source_activity_id,perceived_rpe")
+                      .eq("source", source).eq("rpe_source", "user")
+                      .order("source_activity_id", desc=False).range(a, b)),
+        "RPE saisis par l'athlète",
     )
     return {r["source_activity_id"]: r["perceived_rpe"]
             for r in rows if r.get("source_activity_id") and r.get("perceived_rpe") is not None}
@@ -134,14 +162,12 @@ def load_user_rpes(source: str) -> dict[str, int]:
 def load_user_differential_rpes(source: str) -> dict[str, dict]:
     """{source_activity_id: {rpe_cardio, rpe_legs, rpe_grip}} for user-RPE activities that carry differential
     sub-scores, so re-syncs preserve them (the perception-derived channel split is re-applied — Phase 2)."""
-    rows = (
-        client()
-        .table("activities")
-        .select("source_activity_id,rpe_cardio,rpe_legs,rpe_grip")
-        .eq("source", source)
-        .eq("rpe_source", "user")
-        .execute()
-        .data
+    rows = select_all_paged(
+        lambda a, b: (client().table("activities")
+                      .select("source_activity_id,rpe_cardio,rpe_legs,rpe_grip")
+                      .eq("source", source).eq("rpe_source", "user")
+                      .order("source_activity_id", desc=False).range(a, b)),
+        "RPE différentiels",
     )
     out: dict[str, dict] = {}
     for r in rows:
@@ -158,14 +184,12 @@ def load_user_overrides(source: str) -> dict[str, dict]:
     un re-pull n'écrase jamais une correction de l'athlète. Tolérant à la colonne absente
     (pré-migration) → {}."""
     try:
-        rows = (
-            client()
-            .table("activities")
-            .select("source_activity_id,user_overrides")
-            .eq("source", source)
-            .not_.is_("user_overrides", "null")
-            .execute()
-            .data
+        rows = select_all_paged(
+            lambda a, b: (client().table("activities")
+                          .select("source_activity_id,user_overrides")
+                          .eq("source", source).not_.is_("user_overrides", "null")
+                          .order("source_activity_id", desc=False).range(a, b)),
+            "corrections manuelles",
         )
     except Exception:
         return {}
@@ -228,14 +252,13 @@ def upsert_activity(activity: dict) -> str:
 def fetch_activities_for_recompute() -> list[dict]:
     """All activities with the fields load.compute_load reads, for re-applying the load model to
     history after a model change (no provider re-pull). Includes id + sport_id to update/classify."""
-    return (
-        client()
-        .table("activities")
-        .select("id,sport_id,local_date,started_at,duration_s,moving_s,avg_hr,np_power_w,avg_power_w,"
-                "avg_pace_s_per_km,vertical_gain_m,vertical_loss_m,carried_load_kg,perceived_rpe,"
-                "rpe_source,avg_altitude_m,rpe_cardio,rpe_legs,rpe_grip")
-        .execute()
-        .data
+    return select_all_paged(
+        lambda a, b: (client().table("activities")
+                      .select("id,sport_id,local_date,started_at,duration_s,moving_s,avg_hr,np_power_w,avg_power_w,"
+                              "avg_pace_s_per_km,vertical_gain_m,vertical_loss_m,carried_load_kg,perceived_rpe,"
+                              "rpe_source,avg_altitude_m,rpe_cardio,rpe_legs,rpe_grip")
+                      .order("started_at", desc=False).range(a, b)),
+        "activités (re-scoring)",
     )
 
 

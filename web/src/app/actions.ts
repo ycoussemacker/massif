@@ -10,6 +10,7 @@ import {
 } from "@/lib/load";
 import { generateCoachReply, COACH_MODEL, type ChatTurn } from "@/lib/coach-chat";
 import { LIMITS, fetchBounded } from "@/lib/agent/limits";
+import { fetchAllPaged } from "@/lib/db-paged";
 import { todayLocal, whenLabelFr, dateMinusDays } from "@/lib/coach-context";
 import { sanitizeCoachSettings, type CoachSettings } from "@/lib/coach-settings";
 import { syncStrava } from "@/lib/strava-sync";
@@ -109,9 +110,13 @@ export async function setRpe(activityId: string, rpe: number, differential?: Dif
 
   // Descent-familiarity (repeated-bout) ratio for this activity's date, so a manual RPE on a descent day
   // (alpi) gets the same neuromuscular adjustment as the recompute. Built from the stored daily D- series.
-  const { data: descRows } = await sb.from("activities").select("local_date,vertical_loss_m");
+  const descRows = await fetchAllPaged<any>(
+    (from, to) => sb.from("activities").select("local_date,vertical_loss_m")
+      .order("local_date", { ascending: true }).range(from, to),
+    { what: "série D−" },
+  );
   const dailyDescent: Record<string, number> = {};
-  for (const dr of (descRows ?? []) as any[]) {
+  for (const dr of descRows) {
     const d = dr.local_date as string;
     dailyDescent[d] = (dailyDescent[d] ?? 0) + Number(dr.vertical_loss_m || 0);
   }

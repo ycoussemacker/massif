@@ -161,6 +161,11 @@ export async function loadTodayBriefing(
   };
 }
 
+/** Bornes du plan lu pour le contexte coach (mirror : coach/src/db.ts loadUpcomingPlanned). Sous les
+ *  1000 lignes de PostgREST, qui tronquerait sinon en silence. */
+const PLAN_HORIZON_DAYS = 400;
+const PLAN_ROWS = 200;
+
 /** Read profile + 21d of daily metrics + 14d of activities + upcoming plan → one compact picture.
  *  Same object as coach/src/context.ts so the chat persona has the briefing run's exact view. */
 export async function assembleCoachContext(sb: SupabaseClient): Promise<{ today: string; context: Record<string, unknown> }> {
@@ -176,7 +181,13 @@ export async function assembleCoachContext(sb: SupabaseClient): Promise<{ today:
               "avg_temp_c,max_altitude_m,time_high_altitude_s")
       .gte("local_date", since14).order("local_date", { ascending: false }),
     sb.from("sports").select("id,code"),
-    sb.from("planned_sessions").select("*").gte("planned_date", today).neq("status", "skipped").order("planned_date"),
+    // Plan à venir : borné + plafonné. Ici l'ordre ASCENDANT est le bon : si la limite mord, elle
+    // écarte le futur le plus LOINTAIN, pas les jours qui viennent. L'horizon reste large (400 j) pour
+    // qu'un objectif daté à un an — une course déclarée — reste dans le contexte du coach.
+    sb.from("planned_sessions").select("*")
+      .gte("planned_date", today).lte("planned_date", dateMinusDays(today, -PLAN_HORIZON_DAYS))
+      .neq("status", "skipped")
+      .order("planned_date", { ascending: true }).limit(PLAN_ROWS),
     sb.from("goals")
       .select("title,sport_id,kind,priority_rank,target_date,target_horizon,target_detail,notes,status")
       .eq("status", "active").order("priority_rank", { ascending: true }),
