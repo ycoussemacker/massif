@@ -39,3 +39,6 @@ logs/
 .DS_Store
 .idea/
 *.swp
+
+# Rapports d'évals — artefacts de run (publiés par la CI), pas des sources.
+coach/evals/report*.json

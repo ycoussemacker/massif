@@ -1,0 +1,34 @@
+[
+ {
+  "request": {
+   "messages": 1
+  },
+  "response": {
+   "model": "claude-sonnet-4-6",
+   "id": "msg_011CeeM6hCy1vVLWU1758vHf",
+   "type": "message",
+   "role": "assistant",
+   "content": [
+    {
+     "type": "text",
+     "text": "Ce n'est pas mon terrain — pour un protocole de reprise après blessure, c'est ton kiné ou ton médecin du sport qui est légitime, pas moi.\n\nCe que je peux faire, en revanche, c'est **sécuriser ton plan autour de cette contrainte**. Dis-moi ce que ton médecin ou kiné t'a prescrit (durée d'arrêt, activités autorisées ou interdites), et je m'occupe de tout réorganiser :\n\n- retirer les séances trail/running qui sollicitent la cheville,\n- maintenir ce qui est possible (vélo, natation, renfo haut du corps, bloc si autorisé),\n- préserver au maximum ta forme pour l'**Ossau 60K dans 21 jours** — c'est là que ça devient critique, et on a peu de marge.\n\nQu'est-ce que le médecin t'a dit ?"
+    }
+   ],
+   "stop_reason": "end_turn",
+   "stop_sequence": null,
+   "stop_details": null,
+   "usage": {
+    "input_tokens": 342,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 9676,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 232,
+    "service_tier": "standard",
+    "inference_geo": "global"
+   }
+  }
+ }
+]

@@ -3,9 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Massif coach CLI — read-only Q&A over the unified load + recovery picture (pnpm ask). The daily briefing now lives on-demand in web/.",
+  "description": "Massif coach CLI \u2014 read-only Q&A over the unified load + recovery picture (pnpm ask). The daily briefing now lives on-demand in web/.",
   "scripts": {
-    "ask": "tsx src/ask.ts"
+    "ask": "tsx src/ask.ts",
+    "evals": "tsx evals/run.ts",
+    "evals:live": "tsx evals/run.ts --live",
+    "evals:record": "tsx evals/run.ts --record"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.105.0",

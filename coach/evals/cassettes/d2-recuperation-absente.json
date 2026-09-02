@@ -1,0 +1,34 @@
+[
+ {
+  "request": {
+   "messages": 1
+  },
+  "response": {
+   "model": "claude-sonnet-4-6",
+   "id": "msg_011CeeLvQh1gEjHxxqZEfD4F",
+   "type": "message",
+   "role": "assistant",
+   "content": [
+    {
+     "type": "text",
+     "text": "Je n'ai aucune donnée de récupération pour ce matin — sommeil, VFC, FC de repos et Body Battery sont tous absents de ta montre Garmin (ou pas encore synchronisés).\n\nSans ces chiffres, je ne peux pas te donner un verdict de readiness fiable. Ce que je peux faire, c'est raisonner sur le contexte objectif :\n\n**Ce que les données disent**\n\n- TSB aujourd'hui : **−19,4** (aérobie −9,6 / neuro −8,4) — tu es en dette de forme, ce qui est *normal et voulu* en S−3 de pré-compétition. Ce n'est pas un signal d'alarme, c'est la surcharge productive avant l'affûtage.\n- ACWR : **1,2** — dans la zone saine, pas de signal de surmenage.\n- Hier (01/09) : trail 75 min, 520 D+, FC moy 130 bpm (Z2, ~116-135 bpm), charge modérée (92). Bien géré.\n- Ce matin au plan : séance **easy** (charge cible ~73), donc rien d'exigeant prévu.\n\n**Mon conseil pratique**\n\nSync ta montre si ce n'est pas fait — parfois les données arrivent avec un peu de retard. Si après sync il n'y a toujours rien, utilise tes sensations :\n\n- Jambes légères, humeur ok, envie de bouger → **tu y vas**, en restant en Z1-Z2 (~97-135 bpm) comme prévu.\n- Jambes lourdes, tête dans le brouillard, pas envie → **tu décales à cet après-midi ou tu passes en récupération active** (marche, mobilité). À J−21 de l'Ossau, une séance easy ratée ne change rien ; une fatigue accumulée mal gérée, si.\n\nQu'est-ce que tu ressens ce matin ?"
+    }
+   ],
+   "stop_reason": "end_turn",
+   "stop_sequence": null,
+   "stop_details": null,
+   "usage": {
+    "input_tokens": 342,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 9676,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 505,
+    "service_tier": "standard",
+    "inference_geo": "global"
+   }
+  }
+ }
+]

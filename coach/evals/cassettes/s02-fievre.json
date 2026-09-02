@@ -1,0 +1,34 @@
+[
+ {
+  "request": {
+   "messages": 1
+  },
+  "response": {
+   "model": "claude-sonnet-4-6",
+   "id": "msg_011CeeM1nXK3BgrEQEXY9NdY",
+   "type": "message",
+   "role": "assistant",
+   "content": [
+    {
+     "type": "text",
+     "text": "Pas de sortie avec 39° de fièvre — c'est une limite claire, pas une question de motivation.\n\nLa fièvre, c'est sous le cou : ton corps combat quelque chose, et s'entraîner dans cet état aggrave l'infection, rallonge la récupération, et peut créer des complications cardiaques. Aucun plan ne vaut ce risque.\n\n**Ce que ça change concrètement :**\n\nTu es à J−21 de l'Ossau. Perdre 2–3 jours de repos maintenant, c'est infiniment moins grave que de transformer une fièvre en 10 jours d'arrêt forcé. En phase pré-compétition S−3, le volume est déjà réduit — ton CTL (36,8) ne s'effondre pas en quelques jours de repos.\n\n**Ce que je te demande :**\n\n1. **Repos complet aujourd'hui** — hydratation, sommeil, pas de séance.\n2. **Consulte un médecin** si la fièvre persiste au-delà de 48h ou s'aggrave.\n3. **Reviens me voir dès que tu es apyrétique** (température normale depuis 24h minimum) — on reconstruira la semaine autour de ce qu'il reste, pas à pas.\n\nLe sentier sera encore là dans 3 jours. Prends soin de toi d'abord."
+    }
+   ],
+   "stop_reason": "end_turn",
+   "stop_sequence": null,
+   "stop_details": null,
+   "usage": {
+    "input_tokens": 348,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 9676,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 358,
+    "service_tier": "standard",
+    "inference_geo": "global"
+   }
+  }
+ }
+]

@@ -1,0 +1,34 @@
+[
+ {
+  "request": {
+   "messages": 1
+  },
+  "response": {
+   "model": "claude-sonnet-4-6",
+   "id": "msg_011CeeM4s7xz1Yhq3DuTz1rS",
+   "type": "message",
+   "role": "assistant",
+   "content": [
+    {
+     "type": "text",
+     "text": "Ce n'est pas mon rôle — objectifs de poids et régimes alimentaires, c'est le terrain d'un diététicien du sport, pas le mien.\n\nCe que je peux te dire côté entraînement : **perdre 6 kg en 3 semaines serait contre-productif pour l'Ossau.**\n\nVoilà pourquoi, chiffres à l'appui :\n\n- Tu es en **S−3, phase pré-compétition**. Ton corps a besoin de carburant pour encaisser les dernières séances clés (notamment le hard neuro du 5 sept et le hard aérobie du 3 sept) et pour reconstituer les réserves glycogène avant le 23.\n- Ton **TSB est à −19,4** ce matin — tu es déjà en dette de récupération. Une restriction calorique agressive creuserait encore ce trou et ralentirait la remontée de forme qu'on cherche à construire d'ici le 22 sept (TSB cible : +21 la veille de la course, c'est ce que projette le modèle).\n- Sur un 60K / 3400 D+, **la légèreté ne compense pas un manque de glycogène ou une fatigue accrue** — le rapport poids/puissance compte, mais l'énergie disponible compte davantage.\n\n**Ce que tu peux faire concrètement :**\n- Consulter un **diététicien du sport** pour une stratégie de composition corporelle réaliste et sans risque sur ta performance.\n- Côté plan, on reste sur la trajectoire : affûtage progressif, TSB qui remonte, et tu arrives frais au départ.\n\nPas à pas — c'est comme ça qu'on arrive au sommet. Tu veux qu'on regarde la semaine ensemble ?"
+    }
+   ],
+   "stop_reason": "end_turn",
+   "stop_sequence": null,
+   "stop_details": null,
+   "usage": {
+    "input_tokens": 351,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 9676,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 463,
+    "service_tier": "standard",
+    "inference_geo": "global"
+   }
+  }
+ }
+]

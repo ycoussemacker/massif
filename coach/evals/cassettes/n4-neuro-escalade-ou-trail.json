@@ -1,0 +1,78 @@
+[
+ {
+  "request": {
+   "messages": 1
+  },
+  "response": {
+   "model": "claude-sonnet-4-6",
+   "id": "msg_011CeeLnrN85Gn9kjcNFjbma",
+   "type": "message",
+   "role": "assistant",
+   "content": [
+    {
+     "type": "text",
+     "text": "Bonne question — regardons les deux canaux séparément."
+    },
+    {
+     "type": "tool_use",
+     "id": "toolu_01TMFMJvct95SayY9pcNDBV1",
+     "name": "query_activities",
+     "input": {
+      "since": "2026-08-20",
+      "until": "2026-09-02"
+     },
+     "caller": {
+      "type": "direct"
+     }
+    }
+   ],
+   "stop_reason": "tool_use",
+   "stop_sequence": null,
+   "stop_details": null,
+   "usage": {
+    "input_tokens": 351,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 9676,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 96,
+    "service_tier": "standard",
+    "inference_geo": "global"
+   }
+  }
+ },
+ {
+  "request": {
+   "messages": 3
+  },
+  "response": {
+   "model": "claude-sonnet-4-6",
+   "id": "msg_011CeeLoEBYM3FtNinRYfimm",
+   "type": "message",
+   "role": "assistant",
+   "content": [
+    {
+     "type": "text",
+     "text": "C'est très clair. Voilà la décomposition :\n\n**Escalade (bouldering) — 4 séances**\n| Date | Neuro | Durée |\n|------|-------|-------|\n| 22/08 | 56 | 100 min |\n| 25/08 | 68 | 110 min |\n| 28/08 | 60 | 95 min |\n| 31/08 | 64 | 105 min |\n| **Total** | **248** | |\n\n**Trail running — 4 séances**\n| Date | Neuro | D− |\n|------|-------|----|\n| 21/08 | 19 | 380 m |\n| 24/08 | 27 | 640 m |\n| 29/08 | 46 | 1150 m |\n| 01/09 | 24 | 520 m |\n| **Total** | **116** | |\n\n**+ Muscu (20/08)** : 36 neuro\n\n---\n\n**Verdict : c'est l'escalade, sans ambiguïté.** Elle représente ~60 % de ta charge neuromusculaire sur la période, contre ~28 % pour le trail. Et c'est logique : le bouldering sollicite massivement le canal neuro (doigts, épaules, gainage, contractions isométriques et excentriques) sans que la montre ne voie quoi que ce soit — d'où la méthode `duration_fallback` sur toutes ces séances.\n\nLe trail, lui, génère surtout de l'aérobie. Le neuro vient principalement du D− (descentes excentriques), mais tes sorties récentes restent modérées en dénivelé — la grosse du 29/08 (1150 m D−, neuro=46) est la seule qui tire vraiment.\n\n**Ce que ça signifie pour l'Ossau (J−21) :** ton ATL neuromusculaire est à 24,9 — c'est élevé. En phase pré-compétition S−3, il faut laisser ce canal récupérer. Pas à pas : l'escalade doit passer en mode confort ou s'espacer, et les descentes de trail restent légères jusqu'à la semaine d'affûtage."
+    }
+   ],
+   "stop_reason": "end_turn",
+   "stop_sequence": null,
+   "stop_details": null,
+   "usage": {
+    "input_tokens": 1266,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 9676,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 591,
+    "service_tier": "standard",
+    "inference_geo": "global"
+   }
+  }
+ }
+]

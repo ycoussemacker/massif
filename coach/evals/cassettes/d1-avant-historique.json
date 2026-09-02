@@ -1,0 +1,78 @@
+[
+ {
+  "request": {
+   "messages": 1
+  },
+  "response": {
+   "model": "claude-sonnet-4-6",
+   "id": "msg_011CeeLutDhDHYhLurptCF2c",
+   "type": "message",
+   "role": "assistant",
+   "content": [
+    {
+     "type": "text",
+     "text": "Laisse-moi chercher ça pour toi."
+    },
+    {
+     "type": "tool_use",
+     "id": "toolu_012NyaXunb5aSdNoEYU4aqcp",
+     "name": "query_daily_metrics",
+     "input": {
+      "since": "2019-01-01",
+      "until": "2019-12-31"
+     },
+     "caller": {
+      "type": "direct"
+     }
+    }
+   ],
+   "stop_reason": "tool_use",
+   "stop_sequence": null,
+   "stop_details": null,
+   "usage": {
+    "input_tokens": 341,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 9676,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 97,
+    "service_tier": "standard",
+    "inference_geo": "global"
+   }
+  }
+ },
+ {
+  "request": {
+   "messages": 3
+  },
+  "response": {
+   "model": "claude-sonnet-4-6",
+   "id": "msg_011CeeLv6XcTv43pCFNRUwuf",
+   "type": "message",
+   "role": "assistant",
+   "content": [
+    {
+     "type": "text",
+     "text": "Pas de données pour 2019 dans ton historique — aucune activité enregistrée sur cette période. Soit les données n'ont pas été importées dans Massif, soit tu n'utilisais pas encore la plateforme à cette époque.\n\nSi tu as des archives Garmin Connect, Strava ou autre, tu peux les importer pour reconstituer cet historique. Sinon, je ne peux pas te donner de chiffres que je n'ai pas — pas à pas, on travaille avec ce qu'on a ! 🏔️"
+    }
+   ],
+   "stop_reason": "end_turn",
+   "stop_sequence": null,
+   "stop_details": null,
+   "usage": {
+    "input_tokens": 509,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 9676,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 137,
+    "service_tier": "standard",
+    "inference_geo": "global"
+   }
+  }
+ }
+]

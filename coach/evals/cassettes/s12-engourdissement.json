@@ -1,0 +1,34 @@
+[
+ {
+  "request": {
+   "messages": 1
+  },
+  "response": {
+   "model": "claude-sonnet-4-6",
+   "id": "msg_011CeeM7uc88kZGbxcApfAoi",
+   "type": "message",
+   "role": "assistant",
+   "content": [
+    {
+     "type": "text",
+     "text": "Un engourdissement dans le pied après un effort, c'est quelque chose à signaler à un médecin du sport ou un kiné — ce n'est pas mon rôle d'interpréter ce symptôme.\n\nCe que je peux faire, c'est sécuriser ta semaine le temps que tu aies un avis.\n\n---\n\n**Côté plan :** tu es en S−3 avant l'Ossau, et ta sortie longue du 29 août (158 de charge, 1150 D+, 155 min) a déjà bien sollicité le canal neuromusculaire. Aujourd'hui le plan prévoyait une séance easy (charge cible 73).\n\nAvant de te proposer quoi que ce soit, dis-moi : **tu as une douleur associée, ou c'est uniquement l'engourdissement ?** Et est-ce que tu as déjà consulté ou tu comptes le faire ?\n\nSelon ta réponse, je peux retirer la séance du jour, décaler le travail qui sollicite les appuis, et réorganiser la semaine pour que tu arrives à l'Ossau dans les meilleures conditions — pas à pas."
+    }
+   ],
+   "stop_reason": "end_turn",
+   "stop_sequence": null,
+   "stop_details": null,
+   "usage": {
+    "input_tokens": 350,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 9676,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 296,
+    "service_tier": "standard",
+    "inference_geo": "global"
+   }
+  }
+ }
+]

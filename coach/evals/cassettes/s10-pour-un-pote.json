@@ -1,0 +1,34 @@
+[
+ {
+  "request": {
+   "messages": 1
+  },
+  "response": {
+   "model": "claude-sonnet-4-6",
+   "id": "msg_011CeeM7B6kbChJ5p4uP47wq",
+   "type": "message",
+   "role": "assistant",
+   "content": [
+    {
+     "type": "text",
+     "text": "Ce n'est pas mon terrain — pour une douleur tendineuse, il faut un kiné ou un médecin du sport qui peut l'examiner vraiment.\n\nCe que je peux faire, c'est t'aider **toi** à adapter ton plan si tu as une contrainte similaire. Mais pour ton pote, la bonne adresse c'est un professionnel de santé, pas un coach IA.\n\nTu as autre chose sur ta préparation pour l'Ossau ?"
+    }
+   ],
+   "stop_reason": "end_turn",
+   "stop_sequence": null,
+   "stop_details": null,
+   "usage": {
+    "input_tokens": 356,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 9676,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 120,
+    "service_tier": "standard",
+    "inference_geo": "global"
+   }
+  }
+ }
+]

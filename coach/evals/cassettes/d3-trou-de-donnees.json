@@ -1,0 +1,74 @@
+[
+ {
+  "request": {
+   "messages": 1
+  },
+  "response": {
+   "model": "claude-sonnet-4-6",
+   "id": "msg_011CeeLwTTUaWL6kSV8EiLbc",
+   "type": "message",
+   "role": "assistant",
+   "content": [
+    {
+     "type": "tool_use",
+     "id": "toolu_01Lod32gZhjLn575o9tyoX7h",
+     "name": "query_activities",
+     "input": {
+      "since": "2026-07-13",
+      "until": "2026-07-26"
+     },
+     "caller": {
+      "type": "direct"
+     }
+    }
+   ],
+   "stop_reason": "tool_use",
+   "stop_sequence": null,
+   "stop_details": null,
+   "usage": {
+    "input_tokens": 346,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 9676,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 81,
+    "service_tier": "standard",
+    "inference_geo": "global"
+   }
+  }
+ },
+ {
+  "request": {
+   "messages": 3
+  },
+  "response": {
+   "model": "claude-sonnet-4-6",
+   "id": "msg_011CeeLxALrio2AcRXuQdyUj",
+   "type": "message",
+   "role": "assistant",
+   "content": [
+    {
+     "type": "text",
+     "text": "Rien d'enregistré entre le 13 et le 26 juillet — aucune activité dans cette fenêtre. Repos complet, vacances, ou simplement des sorties non synchronisées avec l'appli ?"
+    }
+   ],
+   "stop_reason": "end_turn",
+   "stop_sequence": null,
+   "stop_details": null,
+   "usage": {
+    "input_tokens": 474,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 9676,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 58,
+    "service_tier": "standard",
+    "inference_geo": "global"
+   }
+  }
+ }
+]

@@ -20,6 +20,11 @@ export const COACH_MODEL = process.env.COACH_MODEL ?? "claude-sonnet-4-6";
 /** Propositions maximum par tour de conversation (le prompt en demande « une à deux »). */
 const MAX_PROPOSALS_PER_TURN = 3;
 
+/** Plafond d'itérations de la boucle. Mesuré sur les évals : les tours convergent en 1 à 4 ; 6 laisse
+ *  de la marge à un enchaînement read_plan → estimate_session → simulate_plan → propose_* sans laisser
+ *  une boucle partir. Le dépassement est annoncé à l'athlète, jamais silencieux. */
+export const MAX_ITERATIONS = 6;
+
 const CHAT_SYSTEM = `You are the Massif coach, the SAME coach who writes this athlete's daily briefings,
 now chatting with them about their own training.
 
@@ -564,11 +569,19 @@ function buildMessages(history: ChatTurn[], newUserContent: string): any[] {
  *  Returns the final French text + the ids of any PENDING proposals raised this turn (the propose_* tools
  *  register them; sendCoachMessage stamps them onto the coach message so the card renders under it).
  *  `history` is the prior chat turns (oldest→newest), excluding the new turn. */
+export type MessagesClient = { messages: { create: (body: unknown) => Promise<any> } };
+
 export async function generateCoachReply(opts: {
   sb: SupabaseClient;
   history: ChatTurn[];
   newUserContent: string;
-}): Promise<{ text: string; proposalIds: string[] }> {
+  /** Client Anthropic injecté. Sert au harnais d'évals à REJOUER des réponses enregistrées : les outils
+   *  s'exécutent alors pour de vrai contre la fixture, sans le moindre appel réseau. Absent en
+   *  production, où la fonction instancie son propre client. */
+  client?: MessagesClient;
+  /** Trace des outils appelés, remplie au fil de la boucle (le harnais d'évals en a besoin). */
+  toolTrace?: { name: string; input: unknown; ok: boolean; error?: string }[];
+}): Promise<{ text: string; proposalIds: string[]; iterations: number; stopReason: string }> {
   const { sb, history, newUserContent } = opts;
   const today = todayLocal();
   const [{ context }, settings, todayBriefing, sportsRes] = await Promise.all([
@@ -585,7 +598,7 @@ export async function generateCoachReply(opts: {
     ...context, today_briefing: todayBriefing, available_sports: availableSports,
     training_phase: phaseSum ? `${phaseSum.name} — ${phaseSum.detail}` : null,
   };
-  const client = new Anthropic();
+  const client = opts.client ?? new Anthropic();
   const proposalIds: string[] = [];
 
   const system = [
@@ -602,8 +615,14 @@ export async function generateCoachReply(opts: {
 
   const messages = buildMessages(history, newUserContent);
 
-  // Up to 8 turns: a planning request can chain read_plan → estimate_session → simulate_plan → propose_*.
-  for (let i = 0; i < 8; i++) {
+  const trace = opts.toolTrace;
+  /** Texte produit par le modèle dans les tours où il appelait aussi un outil (voir plus bas). */
+  const preamble: string[] = [];
+  // Jusqu'à MAX_ITERATIONS tours : une demande de planification peut enchaîner read_plan →
+  // estimate_session → simulate_plan → propose_*.
+  let iterations = 0;
+  for (let i = 0; i < MAX_ITERATIONS; i++) {
+    iterations = i + 1;
     const resp = await client.messages.create({
       model: COACH_MODEL,
       max_tokens: 4000,
@@ -617,6 +636,13 @@ export async function generateCoachReply(opts: {
     }
 
     if ((resp as any).stop_reason === "tool_use") {
+      // Le modèle écrit souvent une phrase AVANT d'appeler un outil (« je regarde ton plan… », ou une
+      // véritable introduction). Cette prose partait à la poubelle : seul le texte du DERNIER tour était
+      // rendu, si bien qu'une réponse pouvait commencer au milieu d'une idée — trouvé par les évals, sur
+      // un cas où la réponse démarrait par « est proposée ci-dessus », renvoyant à un paragraphe que
+      // l'athlète n'avait jamais vu. On garde donc ce texte et on le remet devant la réponse finale.
+      const said = resp.content.filter((b: any) => b.type === "text").map((b: any) => b.text.trim()).filter(Boolean);
+      if (said.length) preamble.push(...said);
       const toolUses = resp.content.filter((b: any) => b.type === "tool_use");
       messages.push({ role: "assistant", content: resp.content });
       const results: any[] = [];
@@ -624,15 +650,26 @@ export async function generateCoachReply(opts: {
         let out: any;
         try { out = await runTool(sb, tu.name, tu.input, proposalIds); }
         catch (e: any) { out = { error: String(e?.message ?? e) }; }
+        trace?.push({ name: tu.name, input: tu.input, ok: !out?.error, error: out?.error });
         results.push({ type: "tool_result", tool_use_id: tu.id, content: JSON.stringify(out) });
       }
       messages.push({ role: "user", content: results });
       continue;
     }
 
-    const text = resp.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("").trim();
-    return { text: text || "(le coach n'a pas formulé de réponse — réessaie)", proposalIds };
+    const final = resp.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("").trim();
+    const text = [...preamble, final].filter(Boolean).join("\n\n");
+    return {
+      text: text || "(le coach n'a pas formulé de réponse — réessaie)",
+      proposalIds, iterations, stopReason: String((resp as any).stop_reason ?? "end_turn"),
+    };
   }
 
-  return { text: "(le coach a interrogé tes données sans converger — reformule ta question)", proposalIds };
+  // Plafond atteint : on le DIT plutôt que de rendre une réponse tronquée sans le signaler.
+  return {
+    text: [...preamble,
+      `(le coach a interrogé tes données ${MAX_ITERATIONS} fois sans converger — reformule ta question)`,
+    ].join("\n\n"),
+    proposalIds, iterations, stopReason: "max_iterations",
+  };
 }

@@ -1,0 +1,86 @@
+[
+ {
+  "request": {
+   "messages": 1
+  },
+  "response": {
+   "model": "claude-sonnet-4-6",
+   "id": "msg_011CeeLpFwjR5L2AmCveMYyY",
+   "type": "message",
+   "role": "assistant",
+   "content": [
+    {
+     "type": "tool_use",
+     "id": "toolu_012guSegktejJZfGLsdqwJVQ",
+     "name": "query_daily_metrics",
+     "input": {
+      "since": "2022-01-01",
+      "until": "2022-12-31"
+     },
+     "caller": {
+      "type": "direct"
+     }
+    },
+    {
+     "type": "tool_use",
+     "id": "toolu_01PqqJazSdHnLDSFNz9Du8Pv",
+     "name": "query_daily_metrics",
+     "input": {
+      "since": "2026-01-01",
+      "until": "2026-09-02"
+     },
+     "caller": {
+      "type": "direct"
+     }
+    }
+   ],
+   "stop_reason": "tool_use",
+   "stop_sequence": null,
+   "stop_details": null,
+   "usage": {
+    "input_tokens": 344,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 9676,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 148,
+    "service_tier": "standard",
+    "inference_geo": "global"
+   }
+  }
+ },
+ {
+  "request": {
+   "messages": 3
+  },
+  "response": {
+   "model": "claude-sonnet-4-6",
+   "id": "msg_011CeeLpTpcEQXAQXAQnTBRX",
+   "type": "message",
+   "role": "assistant",
+   "content": [
+    {
+     "type": "text",
+     "text": "Voilà la comparaison, pas à pas.\n\n---\n\n## Volume 2022 vs 2026 (au 2 sept.)\n\n### Charge totale (somme des loads)\n\n| Période | Load total | Jours actifs | Load moyen/jour actif |\n|---|---|---|---|\n| **2022** (365 j) | **~4 370** | ~55 séances | ~79 |\n| **2026** (245 j, jan→sept) | **~5 890** | ~100 séances | ~59 |\n\nEn 8 mois de 2026 tu as déjà **dépassé l'intégralité de 2022** — et il reste encore 4 mois à l'année.\n\n---\n\n### Fitness (CTL) — le niveau de forme chronique\n\n| | CTL début | CTL max | CTL aujourd'hui |\n|---|---|---|---|\n| **2022** | ~9 | ~27 (mi-juin) | 11 fin déc. |\n| **2026** | ~35 (1er jan) | **~41** (début mars) | **36.8** |\n\nTu commences 2026 à un niveau que tu n'avais **jamais atteint en 2022**. Le CTL max de 2022 (~27) est bien en dessous de ton plancher 2026. C'est le signe d'une progression réelle sur plusieurs années.\n\n---\n\n### Répartition aérobie / neuromusculaire\n\n| | Aérobie | Neuro |\n|---|---|---|\n| **2022** | ~57 % | ~43 % |\n| **2026** | ~52 % | ~48 % |\n\n2026 est légèrement plus orienté **neuromusculaire** — logique avec l'ajout du bloc escalade (bouldering) qui pèse lourd sur ce canal, et les grosses semaines de dénivelé de l'été.\n\n---\n\n### Dénivelé cumulé\n\n| | D+ total |\n|---|---|\n| **2022** | ~12 500 m |\n| **2026** (8 mois) | **~18 500 m** |\n\nLà encore, 2026 est déjà **+50 %** en dénivelé, et l'été a été particulièrement chargé (semaine du 13-18 août : 2 750 m D+ en 6 jours).\n\n---\n\n### Ce que ça dit\n\nTu as clairement **monté d'un cran** entre 2022 et 2026 : plus de séances, plus de dénivelé, un socle de fitness (CTL) nettement plus élevé. La contrepartie, c'est que tu arrives à l'Ossau avec un ATL très élevé (56) et un TSB à −19 — la fatigue accumulée de cet été est réelle. C'est exactement pour ça qu'on est en phase de **pré-compétition S−3** : on réduit le volume pour que tu arrives le 23 septembre avec les jambes fraîches. Le chemin est bien tracé."
+    }
+   ],
+   "stop_reason": "end_turn",
+   "stop_sequence": null,
+   "stop_details": null,
+   "usage": {
+    "input_tokens": 38776,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 9676,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 780,
+    "service_tier": "standard",
+    "inference_geo": "global"
+   }
+  }
+ }
+]

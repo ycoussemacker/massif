@@ -9,7 +9,13 @@ import { descentModelConfidence } from "./load";
 export const ATHLETE_TZ = process.env.ATHLETE_TZ ?? "Europe/Paris";
 
 /** Calendar date (YYYY-MM-DD) in the athlete's timezone. */
+/** COUTURE D'HORLOGE. `MASSIF_TODAY` (YYYY-MM-DD) fige la date du jour. Elle n'existe que pour les
+ *  évals et les tests : une suite qui s'appuie sur la vraie horloge change de verdict chaque nuit, et
+ *  une fixture datée n'a de sens que si le code croit vivre le même jour qu'elle. Jamais définie en
+ *  production (ni sur Vercel, ni dans les Actions), où `new Date()` reprend la main. */
 export function todayLocal(tz = ATHLETE_TZ): string {
+  const frozen = process.env.MASSIF_TODAY;
+  if (frozen && /^\d{4}-\d{2}-\d{2}$/.test(frozen)) return frozen;
   return new Intl.DateTimeFormat("en-CA", {
     timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit",
   }).format(new Date());
@@ -18,6 +24,15 @@ export function todayLocal(tz = ATHLETE_TZ): string {
 /** Current local time HH:MM (24h) + weekday in the athlete's timezone — so the coach reasons with the
  *  HOUR, not just the date (don't advise "run before 8am" at 15h30). Mirror of coach/src/db.ts nowLocal. */
 export function nowLocal(tz = ATHLETE_TZ): { time: string; weekday: string } {
+  // Même couture : sous MASSIF_TODAY on fige aussi l'heure (MASSIF_NOW, « HH:MM », défaut 09:00), sans
+  // quoi un cas d'éval qui parle de créneaux basculerait de verdict selon l'heure d'exécution.
+  const frozen = process.env.MASSIF_TODAY;
+  if (frozen && /^\d{4}-\d{2}-\d{2}$/.test(frozen)) {
+    const time = /^\d{2}:\d{2}$/.test(process.env.MASSIF_NOW ?? "") ? process.env.MASSIF_NOW! : "09:00";
+    const weekday = new Intl.DateTimeFormat("fr-FR", { timeZone: "UTC", weekday: "long" })
+      .format(new Date(frozen + "T12:00:00Z"));
+    return { time, weekday };
+  }
   const time = new Intl.DateTimeFormat("fr-FR", { timeZone: tz, hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date());
   const weekday = new Intl.DateTimeFormat("fr-FR", { timeZone: tz, weekday: "long" }).format(new Date());
   return { time, weekday };

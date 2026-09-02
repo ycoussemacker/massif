@@ -1,0 +1,78 @@
+[
+ {
+  "request": {
+   "messages": 1
+  },
+  "response": {
+   "model": "claude-sonnet-4-6",
+   "id": "msg_011CeeLinhkHkPZnsZbzvYnY",
+   "type": "message",
+   "role": "assistant",
+   "content": [
+    {
+     "type": "text",
+     "text": "Bonne question — laisse-moi regarder le plan réel pour avoir les détails exacts de la séance de demain."
+    },
+    {
+     "type": "tool_use",
+     "id": "toolu_0169185N5uq2CTf7QUtiSVjz",
+     "name": "read_plan",
+     "input": {
+      "from": "2026-09-03",
+      "to": "2026-09-03"
+     },
+     "caller": {
+      "type": "direct"
+     }
+    }
+   ],
+   "stop_reason": "tool_use",
+   "stop_sequence": null,
+   "stop_details": null,
+   "usage": {
+    "input_tokens": 345,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 9676,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 112,
+    "service_tier": "standard",
+    "inference_geo": "global"
+   }
+  }
+ },
+ {
+  "request": {
+   "messages": 3
+  },
+  "response": {
+   "model": "claude-sonnet-4-6",
+   "id": "msg_011CeeLj3h9WmDEo6tD99tuX",
+   "type": "message",
+   "role": "assistant",
+   "content": [
+    {
+     "type": "text",
+     "text": "Voilà ce que j'ai prévu pour demain : un **Seuil 3×8'** en running, ~60 min, charge cible 90 (78 aérobie / 12 neuro). C'est une séance clé `hard_aerobic`.\n\n---\n\n**Pourquoi du seuil maintenant ?**\n\nTu es en **S−3 avant l'Ossau 60K** (23 sept), phase pré-compétition. Le principe de cette phase : *volume réduit, mais on garde une touche d'intensité-clé*. Voilà la logique pas à pas :\n\n1. **Le volume baisse** — la semaine est allégée (charges cibles modestes : 73 aujourd'hui, 54 vendredi, 50 dimanche). Mais si on ne fait que du facile, le moteur aérobie se \"ramollit\" avant la course.\n\n2. **Une séance de seuil maintient le piqûre** — 3×8' au seuil lactate (Z4, ~154-179 bpm) rappelle au corps qu'il sait courir vite, sans accumuler de fatigue neuromusculaire lourde (charge neuro = 12 seulement, très faible).\n\n3. **Ton TSB est à −19,4 ce matin** — c'est négatif, mais c'est *voulu* en phase de charge. La bonne nouvelle : la simulation de l'affûtage montre un TSB à **+21 la veille de la course** — le corps va encaisser et rebondir d'ici là.\n\n4. **Tu te sens bien → c'est le bon moment** — une séance de seuil quand les jambes répondent, c'est exactement ça qu'on cherche. Si tu te sentais cassé, je l'aurais allégée.\n\n---\n\n**En résumé** : ce n'est pas \"du seuil parce que c'est dur\", c'est *la dernière stimulation aérobie de qualité* avant que l'affûtage prenne le relais. Après ça, le volume continue de baisser et tu arrives à l'Ossau avec les jambes fraîches et le moteur chaud. Sûr comme un cabri sur ses appuis. 🐐"
+    }
+   ],
+   "stop_reason": "end_turn",
+   "stop_sequence": null,
+   "stop_details": null,
+   "usage": {
+    "input_tokens": 602,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 9676,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 580,
+    "service_tier": "standard",
+    "inference_geo": "global"
+   }
+  }
+ }
+]

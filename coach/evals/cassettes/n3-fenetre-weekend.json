@@ -1,0 +1,129 @@
+[
+ {
+  "request": {
+   "messages": 1
+  },
+  "response": {
+   "model": "claude-sonnet-4-6",
+   "id": "msg_011CeeLkqHLSUnwyBLydudYs",
+   "type": "message",
+   "role": "assistant",
+   "content": [
+    {
+     "type": "text",
+     "text": "Laisse-moi regarder le plan prévu pour ce week-end avant de te répondre."
+    },
+    {
+     "type": "tool_use",
+     "id": "toolu_01EyNmtjXSv6Bp9R45WNQr4n",
+     "name": "read_plan",
+     "input": {
+      "from": "2026-09-05",
+      "to": "2026-09-06"
+     },
+     "caller": {
+      "type": "direct"
+     }
+    },
+    {
+     "type": "tool_use",
+     "id": "toolu_01ASmHbTvPMAQbfmCqCeFxLj",
+     "name": "query_activities",
+     "input": {
+      "since": "2026-09-02",
+      "until": "2026-09-06"
+     },
+     "caller": {
+      "type": "direct"
+     }
+    }
+   ],
+   "stop_reason": "tool_use",
+   "stop_sequence": null,
+   "stop_details": null,
+   "usage": {
+    "input_tokens": 350,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 9676,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 168,
+    "service_tier": "standard",
+    "inference_geo": "global"
+   }
+  }
+ },
+ {
+  "request": {
+   "messages": 3
+  },
+  "response": {
+   "model": "claude-sonnet-4-6",
+   "id": "msg_011CeeLmRFzC7MpzDWUZzHAW",
+   "type": "message",
+   "role": "assistant",
+   "content": [
+    {
+     "type": "tool_use",
+     "id": "toolu_01XAvkbMdFrVnUVL7d81ycb3",
+     "name": "simulate_plan",
+     "input": {
+      "horizon_days": 21
+     },
+     "caller": {
+      "type": "direct"
+     }
+    }
+   ],
+   "stop_reason": "tool_use",
+   "stop_sequence": null,
+   "stop_details": null,
+   "usage": {
+    "input_tokens": 750,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 9676,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 55,
+    "service_tier": "standard",
+    "inference_geo": "global"
+   }
+  }
+ },
+ {
+  "request": {
+   "messages": 5
+  },
+  "response": {
+   "model": "claude-sonnet-4-6",
+   "id": "msg_011CeeLmYbWb2nUkSNag4Ubb",
+   "type": "message",
+   "role": "assistant",
+   "content": [
+    {
+     "type": "text",
+     "text": "Bonne nouvelle, tu as une belle fenêtre. Voilà le tableau de bord :\n\n**Ce que le plan prévoit ce week-end**\n\n- **Samedi 5/09** : séance clé — *Longue avec D+* (trail, ~60 min, charge cible 150, dont 95 aérobie + 55 neuro). C'est la dernière grosse sortie avant l'Ossau.\n- **Dimanche 6/09** : rien de planifié → fenêtre libre.\n\n---\n\n**Le contexte fitness**\n\nTu es en **S−3 pré-compétition**, TSB aujourd'hui à **−19.4** (fatigue accumulée normale en phase de charge). La simulation montre qu'après la séance du samedi le TSB descend à **−22** dimanche, puis remonte progressivement pour atteindre **+21 la veille de l'Ossau** — exactement dans la cible d'affûtage. Le plan est bien calibré.\n\nUn point d'attention : l'ACWR monte à **1.75 samedi** après la longue — c'est dans la zone orange. Rien d'alarmant pour une séance clé planifiée, mais ça confirme qu'il ne faut pas en rajouter.\n\n---\n\n**Ce que je te recommande pour ces deux jours**\n\n**Samedi** → Fais la longue avec D+ comme prévu. C'est ta dernière vraie sortie de qualité avant la course. Vise ~1000–1200 D+, effort contrôlé (Z2/Z3, ~116–154 bpm), pas de dépassement.\n\n**Dimanche** → Récupération active légère : 45–60 min de randonnée ou footing très facile (Z1, <116 bpm), zéro D- significatif. L'objectif est de faire circuler le sang sans creuser le canal neuromusculaire — les jambes ont besoin de récupérer de la descente du samedi.\n\n---\n\nTu veux que je te détaille la séance du samedi, ou tu as une idée de sortie précise en tête pour l'un des deux jours ?"
+    }
+   ],
+   "stop_reason": "end_turn",
+   "stop_sequence": null,
+   "stop_details": null,
+   "usage": {
+    "input_tokens": 2138,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 9676,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 551,
+    "service_tier": "standard",
+    "inference_geo": "global"
+   }
+  }
+ }
+]
