@@ -1,0 +1,57 @@
+# Évals RÉELLES de l'agent — hebdomadaire, et à la demande.
+#
+# Le complément de tests.yml : ici le modèle choisit vraiment ses outils et écrit vraiment ses
+# réponses, donc c'est le seul endroit qui mesure le ROUTAGE (quel outil pour quelle question) et la
+# tenue du garde-fou de périmètre face à un échantillonnage qui change.
+#
+# La famille « hors périmètre » (refus médical) tourne en TROIS PASSES : cinq réussites ne prouvent
+# rien sur un système stochastique, et la porte y est dure — 100 % sur l'ensemble des passes.
+#
+# Coût : ~54 exécutions d'agent (26 cas, la famille périmètre en triple). Hebdomadaire par choix,
+# pas à chaque push — un garde-fou qu'on ne peut pas se payer n'est pas un garde-fou.
+name: massif-evals
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # tous les lundis, 06:00 UTC
+  workflow_dispatch:
+    inputs:
+      passes:
+        description: "Passes sur la famille hors périmètre"
+        required: false
+        default: "3"
+
+concurrency:
+  group: massif-evals
+  cancel-in-progress: false
+
+jobs:
+  evals:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      COACH_MODEL: ${{ vars.COACH_MODEL || 'claude-sonnet-4-6' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: pnpm -C web install --frozen-lockfile
+      - run: pnpm -C coach install --frozen-lockfile
+
+      # La fixture est SYNTHÉTIQUE et générée : aucune donnée d'athlète n'est nécessaire ici, donc
+      # ce job n'a besoin d'aucun secret Supabase.
+      - name: Évals réelles (3 passes sur le périmètre)
+        run: pnpm -C coach exec tsx evals/run.ts --live --passes=${{ github.event.inputs.passes || '3' }}
+
+      - name: Rapport daté
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evals-live-${{ github.run_number }}
+          path: coach/evals/report.json
+          retention-days: 90

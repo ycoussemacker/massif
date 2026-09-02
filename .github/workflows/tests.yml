@@ -1,0 +1,73 @@
+# CI rapide — à chaque push et sur chaque PR. AUCUN appel d'API payante, aucun secret.
+#
+# Ce workflow existe parce que le dépôt n'en avait aucun : 74 tests pytest et 68 tests node ne
+# tournaient que sur la machine de l'auteur, et un garde-fou que rien n'exécute est une affirmation,
+# pas une garantie.
+#
+# Les évals tournent ici en mode REJEU : le modèle est rejoué depuis des cassettes enregistrées, mais
+# les OUTILS s'exécutent pour de vrai contre la fixture synthétique. Ça attrape une régression d'outil,
+# un changement de forme de réponse, une boucle cassée ou une assertion à la dérive — sans un token.
+# Ce que ça n'attrape PAS : une régression de ROUTAGE due à un changement de prompt, puisque le choix
+# des outils est figé dans la cassette. C'est le rôle de evals.yml, hebdomadaire et en appels réels.
+name: massif-tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch: {}
+
+concurrency:
+  group: massif-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: ingest (pytest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: ingest/pyproject.toml
+      - run: pip install -e "ingest[dev]"
+      - run: python -m pytest ingest/tests -q
+
+  typescript:
+    name: web + coach (types, lint, tests, évals rejouées)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # web/ et coach/ sont deux projets pnpm distincts (lockfiles séparés) : Vercel ne déploie que web/.
+      - run: pnpm -C web install --frozen-lockfile
+      - run: pnpm -C coach install --frozen-lockfile
+
+      - name: Types
+        run: pnpm -C web exec tsc --noEmit && pnpm -C coach exec tsc --noEmit
+
+      - name: Lint
+        run: pnpm -C web lint
+
+      - name: Tests unitaires (moteur algorithmique, bornes de lecture, garde-fou, invariant d'écriture)
+        run: pnpm -C web test
+
+      - name: Évals — modèle rejoué, outils réels (aucun appel API)
+        run: pnpm -C coach evals
+
+      - name: Rapport d'évals
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evals-replay-report
+          path: coach/evals/report.json
+          if-no-files-found: warn

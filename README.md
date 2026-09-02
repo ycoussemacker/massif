@@ -1,5 +1,8 @@
 # Massif
 
+[![tests](https://github.com/ycoussemacker/massif/actions/workflows/tests.yml/badge.svg)](https://github.com/ycoussemacker/massif/actions/workflows/tests.yml)
+[![agent evals](https://github.com/ycoussemacker/massif/actions/workflows/evals.yml/badge.svg)](https://github.com/ycoussemacker/massif/actions/workflows/evals.yml)
+
 > Many summits, one massif. A personal multi-sport training app that reads all your sport as one
 > adaptive system.
 
@@ -48,8 +51,13 @@ iterations per turn, with the recent picture injected up front and cached.
 
 **Nothing the agent calls mutates training state.** The `propose_*` tools insert a `pending` row
 into `coach_proposals` — an intent, inert. The only write path to `planned_sessions` / `activities`
-is a human clicking *Accepter* on the proposal card. Typed tool schemas, trace logging, an eval
-suite and CI are planned but **not built** — see [`docs/AGENT_PLAN.md`](docs/AGENT_PLAN.md).
+is a human clicking *Accepter* on the proposal card. That invariant is **proved by a test**
+(`web/src/lib/agent/invariants.test.ts`), not asserted: all ten tools run against a fake Supabase
+client that throws on any write outside `coach_proposals`.
+
+The agent also has a **medical-scope guardrail** shared by all three prompts, and an **eval suite** —
+26 cases across three families (nominal, missing data, out of scope), with a hard 100 % gate on
+medical refusal over three passes. See [`coach/evals/README.md`](coach/evals/README.md).
 
 ## Quickstart
 
@@ -68,8 +76,9 @@ python -m massif_ingest.sync          # pull 30 d + roll up the fitness model
 supabase db push
 
 # 4. Tests
-ingest/.venv/bin/python -m pytest ingest/tests          # 74
-cd web && npx tsx --test src/lib/briefing-algo.test.ts  # 31
+ingest/.venv/bin/python -m pytest ingest/tests   # 74 — ingestion + load model
+pnpm -C web test                                 # 68 — engine, read bounds, guardrail, write invariant
+pnpm -C coach evals                              # 26 — agent evals, replayed model, zero API calls
 ```
 
 ## Status
@@ -96,8 +105,9 @@ use.
 
 - **Multi-user.** Single athlete, single profile row. RLS is on and denies everything to the anon
   key; per-user policies come with the multi-user epic.
-- **Agent hardening.** Zod-typed tool schemas, trace logging, the eval suite and CI:
-  [`docs/AGENT_PLAN.md`](docs/AGENT_PLAN.md), not started.
+- **Agent typing and tracing.** Zod schemas on the tool boundary and persisted execution traces are
+  still to come — see [`docs/AGENT_PLAN.md`](docs/AGENT_PLAN.md). (The medical-scope guardrail, the
+  write invariant, the eval suite and CI are done.)
 - **Phase 4 metrics.** HR/pace decoupling and time-in-zone are still open; only the load-model side
   advanced.
 - **No nightly cron, no push notifications.** Both retired on purpose — cost and fragility. The
