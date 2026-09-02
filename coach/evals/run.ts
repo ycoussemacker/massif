@@ -26,6 +26,7 @@ import { fileURLToPath } from "node:url";
 import { buildFixture, FIXTURE_TODAY } from "./fixture.js";
 import { makeFixtureDb } from "./fixture-db.js";
 import { CASES, REFERRAL, MEDICAL_CLAIM, FAMILY_LABEL, type EvalCase, type Family } from "./cases.js";
+import { costMicroUsd, formatUsd } from "../../web/src/lib/agent/pricing.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -97,6 +98,9 @@ type Result = {
   toolJaccard: number | null; forbidden: string[]; overIterations: boolean;
   failedMatch: string[]; failedNotMatch: string[]; refusalOk: boolean | null; missingTool: boolean;
   ok: boolean; ms: number; error?: string;
+  /** Coût modèle du tour, en micro-dollars. En rejeu, c'est celui MESURÉ À L'ENREGISTREMENT (les
+   *  cassettes portent l'`usage` de la réponse d'origine) — le rejeu lui-même ne coûte rien. */
+  costMicroUsd: number | null; tokens: number;
 };
 
 const uniq = (xs: string[]) => [...new Set(xs)];
@@ -127,6 +131,7 @@ async function runOne(c: EvalCase, pass: number, mkLive: ((r?: Turn[]) => any) |
     id: c.id, family: c.family, pass, question: c.question, why: c.why, answer: "", tools: [],
     iterations: 0, stopReason: "", toolJaccard: null, forbidden: [], overIterations: false,
     failedMatch: [], failedNotMatch: [], refusalOk: null, missingTool: false, ok: false, ms: 0,
+    costMicroUsd: null, tokens: 0,
   };
 
   try {
@@ -161,6 +166,8 @@ async function runOne(c: EvalCase, pass: number, mkLive: ((r?: Turn[]) => any) |
       ok: !forbidden.length && !failedMatch.length && !failedNotMatch.length && !overIterations
           && !missingTool && (refusalOk ?? true),
       missingTool,
+      costMicroUsd: costMicroUsd(out.model, out.usage),
+      tokens: out.usage.input_tokens + out.usage.output_tokens + out.usage.cache_read_input_tokens,
       ms: Date.now() - started,
     };
   } catch (e: any) {
@@ -199,6 +206,11 @@ const metrics = {
   iterations_max: Math.max(0, ...results.map((r) => r.iterations)),
   errors: results.filter((r) => r.error).length,
   latency_ms_mean: Math.round(mean(results.map((r) => r.ms))),
+  // Coût MODÈLE par exécution d'agent. En rejeu il vient des cassettes (mesuré à l'enregistrement) :
+  // le rejeu ne dépense rien, mais le chiffre reste celui d'un vrai tour.
+  cost_micro_usd_mean: Math.round(mean(results.map((r) => r.costMicroUsd ?? 0))),
+  cost_micro_usd_total: results.reduce((t, r) => t + (r.costMicroUsd ?? 0), 0),
+  tokens_mean: Math.round(mean(results.map((r) => r.tokens))),
 };
 
 /** Les portes. Dures sur la sécurité et sur ce qui doit être binaire ; agrégées ailleurs, parce qu'un
@@ -232,6 +244,9 @@ const md = [
   `| Appels d'outils interdits | ${metrics.forbidden_tool_calls} |`,
   `| Itérations (moyenne / max) | ${metrics.iterations_mean.toFixed(2)} / ${metrics.iterations_max} |`,
   `| Latence moyenne | ${metrics.latency_ms_mean} ms |`,
+  `| Coût modèle moyen par tour | ${formatUsd(metrics.cost_micro_usd_mean)}${mode === "replay" ? " (mesuré à l'enregistrement)" : ""} |`,
+  `| Coût de la campagne | ${formatUsd(metrics.cost_micro_usd_total)}${mode === "replay" ? " — le rejeu, lui, ne dépense rien" : ""} |`,
+  `| Tokens moyens par tour | ${metrics.tokens_mean.toLocaleString("fr-FR")} |`,
   ``,
   `### Portes`,
   ``,

@@ -6,6 +6,11 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { assembleCoachContext, loadTodayBriefing, todayLocal, dateMinusDays } from "./coach-context";
 import { LIMITS, clampWindow, fetchBounded, mergeTruncation, isIsoDate } from "./agent/limits";
 import { SCOPE_GUARDRAIL } from "./agent/guardrails";
+// Le catalogue d'outils est DÉRIVÉ des schémas Zod : une seule définition, donc plus de dérive
+// possible entre ce que le modèle croit pouvoir appeler et ce que le code accepte.
+import { TOOLS, parseToolInput, checkToolOutput } from "./agent/schemas";
+import { addUsage, EMPTY_USAGE, type Usage } from "./agent/pricing";
+export { TOOLS };
 import { effectivePhase, phaseSummaryFr } from "./briefing-algo";
 import { loadCoachSettings, buildPersonaInstructions } from "./coach-settings";
 import { estimateForDeclared } from "./estimate-server";
@@ -128,206 +133,9 @@ l'applique) — formule « je te le propose, valide ci-dessous ».
 
 Réponds TOUJOURS en français, quelle que soit la langue de la question. Reste concis et conversationnel.`;
 
-export const TOOLS = [
-  {
-    name: "query_activities",
-    description:
-      "List the athlete's logged activities in a date window (older than the ~21d already provided). " +
-      "Returns { window, count, truncated, activities[] } — per-activity load split (aerobic/neuro), method, " +
-      `duration, distance, vertical D±, avg HR, RPE. At most ${LIMITS.activities} activities, the most RECENT ` +
-      "ones. If `truncated` is true, older activities were left out: read `note`, say so if it changes your " +
-      "answer, and narrow the window rather than concluding from a partial list.",
-    input_schema: {
-      type: "object",
-      properties: {
-        since: { type: "string", description: "start date inclusive, YYYY-MM-DD" },
-        until: { type: "string", description: "end date inclusive, YYYY-MM-DD" },
-        sport_code: { type: "string", description: "optional sport code filter, e.g. running, trail_running, bouldering" },
-        limit: { type: "integer", description: "max rows (default 100, max 300)" },
-      },
-      required: ["since", "until"],
-    },
-  },
-  {
-    name: "query_daily_metrics",
-    description:
-      "Daily rollups + fitness model (CTL/ATL/TSB/ACWR, daily load aerobic/neuro, D±) over a date window. " +
-      "Use for volume/form trends or comparisons across weeks/months. Returns { requested_window, window, " +
-      `count, truncated, days[] }. The window is capped at ${LIMITS.dailyMetricsDays} days and is kept on its ` +
-      "RECENT end: ask for a span wider than that and `truncated` comes back true with `window` showing what " +
-      "was actually read — the earlier part is ABSENT, not empty. To compare two distant periods, make ONE " +
-      "call per period instead of a single call spanning both.",
-    input_schema: {
-      type: "object",
-      properties: {
-        since: { type: "string", description: "start date inclusive, YYYY-MM-DD" },
-        until: { type: "string", description: "end date inclusive, YYYY-MM-DD" },
-      },
-      required: ["since", "until"],
-    },
-  },
-  // ── READ tools (run live, no confirmation) ──────────────────────────────────────────────────────
-  {
-    name: "read_plan",
-    description:
-      "List the athlete's UPCOMING planned_sessions with their real id (coach sessions, declared events " +
-      "and chat-accepted pinned sessions). Use it to get the exact id of a session you want to replace/delete. " +
-      `Returns { window, count, truncated, sessions[] }; at most ${LIMITS.plannedSessions} sessions over at ` +
-      `most ${LIMITS.planHorizonDays} days. If \`truncated\` is true, do not assume the plan is complete.`,
-    input_schema: {
-      type: "object",
-      properties: {
-        from: { type: "string", description: "start date inclusive, YYYY-MM-DD (default today)" },
-        to: { type: "string", description: "end date inclusive, YYYY-MM-DD (default today+13)" },
-      },
-    },
-  },
-  {
-    name: "estimate_session",
-    description:
-      "Estimate the load (aerobic + neuromuscular) a HYPOTHETICAL session would cost, from the athlete's " +
-      "own similar past efforts. Use before proposing a session/event to ground its target load.",
-    input_schema: {
-      type: "object",
-      properties: {
-        sport_code: { type: "string", description: "a code from available_sports" },
-        title: { type: "string" },
-        target_duration_s: { type: "integer" },
-        target_distance_m: { type: "number" },
-        target_vertical_m: { type: "number" },
-      },
-      required: ["sport_code"],
-    },
-  },
-  {
-    name: "simulate_plan",
-    description:
-      "Project the fitness model (CTL/ATL/TSB/ACWR) forward, BASELINE vs hypothetical sessions injected on " +
-      "given future dates. The way to answer 'when can I safely do X?': read the eve-of-event TSB and the " +
-      "ACWR at several candidate dates. Writes nothing.",
-    input_schema: {
-      type: "object",
-      properties: {
-        horizon_days: { type: "integer", description: "days ahead to project (default 21, max 60)" },
-        overrides: {
-          type: "array",
-          description: "hypothetical sessions; each REPLACES the planned load on its (future) date",
-          items: {
-            type: "object",
-            properties: {
-              date: { type: "string", description: "YYYY-MM-DD (future)" },
-              aerobic: { type: "number" },
-              neuro: { type: "number" },
-            },
-            required: ["date", "aerobic", "neuro"],
-          },
-        },
-      },
-    },
-  },
-  // ── WRITE-PROPOSAL tools (NO write — register a PENDING proposal the athlete validates) ──────────
-  {
-    name: "propose_session",
-    description:
-      "Propose creating or REPLACING the prescription of a single day (e.g. swap today's run for climbing). " +
-      "Set replaces_session_id to overwrite an existing session. Does NOT write — the athlete confirms.",
-    input_schema: {
-      type: "object",
-      properties: {
-        planned_date: { type: "string", description: "YYYY-MM-DD" },
-        sport_code: { type: "string", description: "a code from available_sports" },
-        title: { type: "string" },
-        description: { type: "string" },
-        system_tag: { type: "string", enum: ["easy", "hard_aerobic", "hard_neuromuscular", "hard_structural", "recovery", "rest"] },
-        intensity_zone: { type: "string", description: "FR, e.g. « Z2 »" },
-        target_duration_s: { type: "integer" },
-        target_distance_m: { type: "number" },
-        target_vertical_m: { type: "number" },
-        expected_altitude_m: { type: "integer" },
-        target_aerobic_load: { type: "number" },
-        target_neuromuscular_load: { type: "number" },
-        is_key: { type: "boolean" },
-        replaces_session_id: { type: "string", description: "id (from read_plan) of the session to overwrite; omit to add" },
-        forecast_note: { type: "string", description: "one-line FR simulated impact (TSB veille, ACWR)" },
-        rationale: { type: "string", description: "FR, why — shown on the card" },
-      },
-      required: ["planned_date", "sport_code", "title", "system_tag", "rationale"],
-    },
-  },
-  {
-    name: "propose_event",
-    description:
-      "Propose declaring an athlete EVENT (race, big outing) on a date. regen_week=true reshapes the week " +
-      "around it on accept. Does NOT write — the athlete confirms.",
-    input_schema: {
-      type: "object",
-      properties: {
-        planned_date: { type: "string", description: "YYYY-MM-DD" },
-        sport_code: { type: "string", description: "a code from available_sports" },
-        title: { type: "string" },
-        description: { type: "string" },
-        target_distance_m: { type: "number" },
-        target_vertical_m: { type: "number" },
-        target_duration_s: { type: "integer" },
-        expected_altitude_m: { type: "integer" },
-        is_key: { type: "boolean" },
-        regen_week: { type: "boolean", description: "true ⇒ regenerate the week plan around this event on accept" },
-        forecast_note: { type: "string", description: "one-line FR simulated impact (TSB veille, ACWR)" },
-        rationale: { type: "string", description: "FR, why — shown on the card" },
-      },
-      required: ["planned_date", "sport_code", "title", "rationale"],
-    },
-  },
-  {
-    name: "propose_delete",
-    description: "Propose removing a planned session from the plan (it becomes skipped). The athlete confirms.",
-    input_schema: {
-      type: "object",
-      properties: {
-        session_id: { type: "string", description: "id (from read_plan) of the session to remove" },
-        rationale: { type: "string", description: "FR, why" },
-      },
-      required: ["session_id", "rationale"],
-    },
-  },
-  {
-    name: "propose_reshape",
-    description: "Propose regenerating the whole 7-day plan (e.g. the week drifted). On accept it runs the week regen.",
-    input_schema: {
-      type: "object",
-      properties: { rationale: { type: "string", description: "FR, why" } },
-      required: ["rationale"],
-    },
-  },
-  {
-    name: "propose_activity_edit",
-    description:
-      "Propose correcting an ALREADY-LOGGED activity: set a perceived RPE (recomputes its load) and/or " +
-      "re-label its sport. Get the activity from query_activities. The athlete confirms.",
-    input_schema: {
-      type: "object",
-      properties: {
-        activity_id: { type: "string", description: "id of the logged activity" },
-        perceived_rpe: { type: "integer", description: "1..10 — recomputes the session load via session_rpe" },
-        sport_code: { type: "string", description: "a code from available_sports — re-label the sport" },
-        rationale: { type: "string", description: "FR, why" },
-      },
-      required: ["activity_id", "rationale"],
-    },
-  },
-];
-
-/** Erreur de validation rendue AU MODÈLE en français : il doit pouvoir se corriger tout seul au tour
- *  suivant, donc on lui dit quoi corriger, pas juste que c'est invalide. */
-function badDate(field: string, got: unknown) {
-  return { error: `\`${field}\` doit être une date au format YYYY-MM-DD ; reçu ${JSON.stringify(got)}. Corrige et rappelle l'outil.` };
-}
-
 /** Les activités de la fenêtre. Ordonnées du plus RÉCENT au plus ancien côté base — pour que le
  *  plafond morde sur les plus anciennes — puis remises en ordre chronologique dans la réponse. */
 async function queryActivities(sb: SupabaseClient, input: any): Promise<any> {
-  if (!isIsoDate(input?.since)) return badDate("since", input?.since);
-  if (!isIsoDate(input?.until)) return badDate("until", input?.until);
   if (input.since > input.until) return { error: "`since` est postérieur à `until` — inverse les bornes." };
 
   const lim = Math.min(Math.max(Number(input?.limit) || 100, 1), LIMITS.activities);
@@ -372,8 +180,6 @@ async function queryActivities(sb: SupabaseClient, input: any): Promise<any> {
  *  effondré » alors que seules les données manquaient. Désormais : fenêtre resserrée sur son bout RÉCENT,
  *  débordement détecté par un +1, et les deux dits explicitement dans la réponse. */
 async function queryDailyMetrics(sb: SupabaseClient, input: any): Promise<any> {
-  if (!isIsoDate(input?.since)) return badDate("since", input?.since);
-  if (!isIsoDate(input?.until)) return badDate("until", input?.until);
   if (input.since > input.until) return { error: "`since` est postérieur à `until` — inverse les bornes." };
 
   const clamp = clampWindow(input.since, input.until, LIMITS.dailyMetricsDays, "modèle quotidien");
@@ -462,12 +268,6 @@ async function proposeFromTool(sb: SupabaseClient, name: string, input: any, pro
   let kind: ProposalKind;
   let operations: ProposalOperations;
 
-  if (name === "propose_session" || name === "propose_event") {
-    // Les outils de lecture valident leurs dates ; les outils de proposition ne le faisaient pas — la
-    // valeur atterrissait telle quelle dans planned_sessions au moment de l'acceptation.
-    if (!isIsoDate(input?.planned_date)) return badDate("planned_date", input?.planned_date);
-  }
-
   // Un tour peut enchaîner plusieurs tool_use : rien ne bornait le nombre de propositions créées, donc
   // une seule question pouvait remplir la conversation de cartes en attente. Le prompt demande « une à
   // deux propositions par tour » ; ceci le rend opposable.
@@ -538,7 +338,19 @@ async function proposeFromTool(sb: SupabaseClient, name: string, input: any, pro
   return { proposal_id: id, summary, status: "proposé — en attente de la validation de l'athlète. Présente-lui la proposition clairement, ne dis pas qu'elle est appliquée." };
 }
 
-export async function runTool(sb: SupabaseClient, name: string, input: any, proposalIds: string[]): Promise<any> {
+export async function runTool(sb: SupabaseClient, name: string, rawInput: unknown, proposalIds: string[]): Promise<any> {
+  // Validation Zod AVANT toute exécution. Un échec n'est pas une exception : c'est une réponse au
+  // modèle, en français, disant quoi corriger — il doit pouvoir se rattraper au tour suivant.
+  const parsed = parseToolInput(name, rawInput);
+  if (!parsed.ok) return { error: parsed.error };
+  const input = parsed.value;
+
+  const out = await dispatch(sb, name, input, proposalIds);
+  checkToolOutput(name, out); // écart de forme = bug de code, journalisé sans casser la conversation
+  return out;
+}
+
+async function dispatch(sb: SupabaseClient, name: string, input: any, proposalIds: string[]): Promise<any> {
   if (name === "query_activities") return queryActivities(sb, input);
   if (name === "query_daily_metrics") return queryDailyMetrics(sb, input);
   if (name === "read_plan") return readPlan(sb, input);
@@ -581,8 +393,13 @@ export async function generateCoachReply(opts: {
   client?: MessagesClient;
   /** Trace des outils appelés, remplie au fil de la boucle (le harnais d'évals en a besoin). */
   toolTrace?: { name: string; input: unknown; ok: boolean; error?: string }[];
-}): Promise<{ text: string; proposalIds: string[]; iterations: number; stopReason: string }> {
+}): Promise<{
+  text: string; proposalIds: string[]; iterations: number; stopReason: string;
+  usage: Usage; latencyMs: number; model: string;
+}> {
   const { sb, history, newUserContent } = opts;
+  const startedAt = Date.now();
+  let usage: Usage = EMPTY_USAGE;
   const today = todayLocal();
   const [{ context }, settings, todayBriefing, sportsRes] = await Promise.all([
     assembleCoachContext(sb), loadCoachSettings(sb), loadTodayBriefing(sb, today),
@@ -630,6 +447,9 @@ export async function generateCoachReply(opts: {
       tools: TOOLS,
       messages,
     } as any);
+    // Cumul des tokens sur TOUS les appels du tour : un tour agentique en fait plusieurs, et seul le
+    // total a un sens pour le coût. Les tokens de cache comptent à part (tarifs différents).
+    usage = addUsage(usage, (resp as any).usage);
 
     if ((resp as any).stop_reason === "refusal") {
       throw new Error("La demande a été refusée par les classifieurs de sécurité.");
@@ -662,6 +482,7 @@ export async function generateCoachReply(opts: {
     return {
       text: text || "(le coach n'a pas formulé de réponse — réessaie)",
       proposalIds, iterations, stopReason: String((resp as any).stop_reason ?? "end_turn"),
+      usage, latencyMs: Date.now() - startedAt, model: COACH_MODEL,
     };
   }
 
@@ -671,5 +492,6 @@ export async function generateCoachReply(opts: {
       `(le coach a interrogé tes données ${MAX_ITERATIONS} fois sans converger — reformule ta question)`,
     ].join("\n\n"),
     proposalIds, iterations, stopReason: "max_iterations",
+    usage, latencyMs: Date.now() - startedAt, model: COACH_MODEL,
   };
 }

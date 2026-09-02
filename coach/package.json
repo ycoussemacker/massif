@@ -8,7 +8,8 @@
     "ask": "tsx src/ask.ts",
     "evals": "tsx evals/run.ts",
     "evals:live": "tsx evals/run.ts --live",
-    "evals:record": "tsx evals/run.ts --record"
+    "evals:record": "tsx evals/run.ts --record",
+    "traces": "tsx src/traces.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.105.0",

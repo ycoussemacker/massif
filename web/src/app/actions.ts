@@ -11,6 +11,7 @@ import {
 import { generateCoachReply, COACH_MODEL, type ChatTurn } from "@/lib/coach-chat";
 import { LIMITS, fetchBounded } from "@/lib/agent/limits";
 import { fetchAllPaged } from "@/lib/db-paged";
+import { writeTrace, linkTraceToMessage, type TraceStep } from "@/lib/agent/trace";
 import { todayLocal, whenLabelFr, dateMinusDays } from "@/lib/coach-context";
 import { sanitizeCoachSettings, type CoachSettings } from "@/lib/coach-settings";
 import { syncStrava } from "@/lib/strava-sync";
@@ -251,13 +252,22 @@ export async function sendCoachMessage(text: string): Promise<void> {
   const ins = await sb.from("coach_messages").insert({ role: "user", kind: "chat", content });
   if (ins.error) throw new Error(ins.error.message);
 
-  const { text: reply, proposalIds } = await generateCoachReply({ sb, history, newUserContent: content });
+  // Une trace par tour : question, outils appelés AVEC leurs arguments, itérations, réponse, tokens,
+  // coût, latence. Écriture best-effort — une mesure perdue vaut mieux qu'une réponse perdue.
+  const toolTrace: TraceStep[] = [];
+  const r = await generateCoachReply({ sb, history, newUserContent: content, toolTrace });
+  const { text: reply, proposalIds } = r;
+  const traceId = await writeTrace(sb, {
+    source: "chat", question: content, model: r.model, answer: reply, steps: toolTrace,
+    iterations: r.iterations, stopReason: r.stopReason, usage: r.usage, latencyMs: r.latencyMs,
+  });
 
   const insC = await sb.from("coach_messages")
     .insert({ role: "coach", kind: "chat", content: reply, model: COACH_MODEL }).select("id").single();
   if (insC.error) throw new Error(insC.error.message);
   // Attach any pending proposals raised this turn to the coach message so the card renders under it.
   await stampProposalMessage(sb, proposalIds, (insC.data as { id: string }).id);
+  await linkTraceToMessage(sb, traceId, (insC.data as { id: string }).id);
 
   revalidatePath("/coach");
 }
@@ -328,7 +338,13 @@ export async function commentActivities(localDate: string): Promise<void> {
     .insert({ role: "user", kind: "activity_comment", content: userBubble, activity_ids: activityIds });
   if (ins.error) throw new Error(ins.error.message);
 
-  const { text: reply, proposalIds } = await generateCoachReply({ sb, history, newUserContent });
+  const toolTrace: TraceStep[] = [];
+  const r = await generateCoachReply({ sb, history, newUserContent, toolTrace });
+  const { text: reply, proposalIds } = r;
+  const traceId = await writeTrace(sb, {
+    source: "activity_comment", question: newUserContent, model: r.model, answer: reply, steps: toolTrace,
+    iterations: r.iterations, stopReason: r.stopReason, usage: r.usage, latencyMs: r.latencyMs,
+  });
 
   const insC = await sb.from("coach_messages").insert({
     role: "coach", kind: "activity_comment", content: reply, model: COACH_MODEL,
@@ -336,6 +352,7 @@ export async function commentActivities(localDate: string): Promise<void> {
   }).select("id").single();
   if (insC.error) throw new Error(insC.error.message);
   await stampProposalMessage(sb, proposalIds, (insC.data as { id: string }).id);
+  await linkTraceToMessage(sb, traceId, (insC.data as { id: string }).id);
 
   revalidatePath("/coach");
 }
