@@ -5,6 +5,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { assembleCoachContext, loadTodayBriefing, todayLocal, dateMinusDays } from "./coach-context";
 import { LIMITS, clampWindow, fetchBounded, mergeTruncation, isIsoDate } from "./agent/limits";
+import { SCOPE_GUARDRAIL } from "./agent/guardrails";
 import { effectivePhase, phaseSummaryFr } from "./briefing-algo";
 import { loadCoachSettings, buildPersonaInstructions } from "./coach-settings";
 import { estimateForDeclared } from "./estimate-server";
@@ -15,6 +16,9 @@ import {
 } from "./coach-proposals";
 
 export const COACH_MODEL = process.env.COACH_MODEL ?? "claude-sonnet-4-6";
+
+/** Propositions maximum par tour de conversation (le prompt en demande « une à deux »). */
+const MAX_PROPOSALS_PER_TURN = 3;
 
 const CHAT_SYSTEM = `You are the Massif coach, the SAME coach who writes this athlete's daily briefings,
 now chatting with them about their own training.
@@ -119,7 +123,7 @@ l'applique) — formule « je te le propose, valide ci-dessous ».
 
 Réponds TOUJOURS en français, quelle que soit la langue de la question. Reste concis et conversationnel.`;
 
-const TOOLS = [
+export const TOOLS = [
   {
     name: "query_activities",
     description:
@@ -453,6 +457,20 @@ async function proposeFromTool(sb: SupabaseClient, name: string, input: any, pro
   let kind: ProposalKind;
   let operations: ProposalOperations;
 
+  if (name === "propose_session" || name === "propose_event") {
+    // Les outils de lecture valident leurs dates ; les outils de proposition ne le faisaient pas — la
+    // valeur atterrissait telle quelle dans planned_sessions au moment de l'acceptation.
+    if (!isIsoDate(input?.planned_date)) return badDate("planned_date", input?.planned_date);
+  }
+
+  // Un tour peut enchaîner plusieurs tool_use : rien ne bornait le nombre de propositions créées, donc
+  // une seule question pouvait remplir la conversation de cartes en attente. Le prompt demande « une à
+  // deux propositions par tour » ; ceci le rend opposable.
+  if (proposalIds.length >= MAX_PROPOSALS_PER_TURN) {
+    return { error: `Tu as déjà fait ${proposalIds.length} propositions dans ce tour — présente-les à ` +
+                    `l'athlète et attends sa réponse avant d'en proposer d'autres.` };
+  }
+
   if (name === "propose_session") {
     kind = "session";
     const payload: ProposalPayload = {
@@ -515,7 +533,7 @@ async function proposeFromTool(sb: SupabaseClient, name: string, input: any, pro
   return { proposal_id: id, summary, status: "proposé — en attente de la validation de l'athlète. Présente-lui la proposition clairement, ne dis pas qu'elle est appliquée." };
 }
 
-async function runTool(sb: SupabaseClient, name: string, input: any, proposalIds: string[]): Promise<any> {
+export async function runTool(sb: SupabaseClient, name: string, input: any, proposalIds: string[]): Promise<any> {
   if (name === "query_activities") return queryActivities(sb, input);
   if (name === "query_daily_metrics") return queryDailyMetrics(sb, input);
   if (name === "read_plan") return readPlan(sb, input);
@@ -571,7 +589,10 @@ export async function generateCoachReply(opts: {
   const proposalIds: string[] = [];
 
   const system = [
-    { type: "text", text: CHAT_SYSTEM + "\n\n" + buildPersonaInstructions(settings) },
+    // ORDRE VOLONTAIRE : le garde-fou de périmètre vient EN DERNIER, après la persona — celle-ci
+    // porte du texte libre saisi par l'athlète que le produit étiquette « PRIORITÉ HAUTE », et le
+    // dernier bloc doit être celui qui ne se négocie pas. Verrouillé par guardrails.test.ts.
+    { type: "text", text: CHAT_SYSTEM + "\n\n" + buildPersonaInstructions(settings) + "\n\n" + SCOPE_GUARDRAIL },
     {
       type: "text",
       text: `État actuel de l'athlète (données au ${today}, JSON) :\n${JSON.stringify(fullContext)}`,

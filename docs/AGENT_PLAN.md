@@ -451,3 +451,21 @@ restent, l'invariant étant prouvé par un test. Quatre amendements au §3 et au
 Le bug PostgREST du §0 est généralisé : la revue porte sur **tous** les outils de lecture, et la
 règle est une limite explicite avec **signalement de la troncature dans la réponse de l'outil** —
 jamais de troncature muette.
+
+---
+
+## Constats de revue adverse — reportés (2026-09-02)
+
+Le périmètre médical et l'invariant d'écriture ont été passés en revue par six angles adverses. Les
+constats de gravité haute sont corrigés (garde-fou réécrit, préséance sur la persona, faux client qui
+enregistre avant de lever, piège réseau, plafond de propositions par tour). Ceux-ci restent ouverts,
+consignés pour ne pas être perdus :
+
+| # | Constat | Gravité | Pourquoi reporté |
+|---|---|---|---|
+| A1 | `daily_soreness` est collectée (champ « jambes » du dashboard) mais **n'atteint aucun prompt** : le coach ne voit jamais la courbature déclarée | moyenne | C'est une amélioration produit, pas une correction : ajouter le champ au contexte touche le mirror `coach-context.ts` ↔ `coach/src/context.ts`. À faire avec la prochaine évolution du contexte |
+| A2 | La preuve s'arrête à `runTool` : les trois lectures propres de `generateCoachReply` ne sont pas couvertes par le test | moyenne | Vérifié à la main comme propre (aucune écriture, aucun client ambiant). Le couvrir demande de simuler l'API Anthropic — c'est le harnais d'évals (lot 3) qui l'apportera |
+| A3 | Aucune contrainte **à l'exécution** : la boucle tourne sur le client service-role, qui a BYPASSRLS. L'invariant tient par construction du code, pas par la base | moyenne | Un rôle Postgres restreint pour les lectures d'outil serait la vraie ceinture. Relève de l'épopée multi-utilisateur (RLS par athlète) |
+| A4 | `listActivities(f, client?)` : le client est **optionnel**, donc l'oublier compile | moyenne | Le piège réseau du test d'invariant fait échouer tout appel ambiant, ce qui couvre la régression. Scinder en cœur à client requis + enveloppe de confort touche six appelants de pages |
+| A5 | `coach/src/persona.ts` est **orphelin** depuis le retrait de `coach.ts` — un mirror mort de `coach-settings.ts` | basse | Suppression triviale, à faire avec la passe de documentation (lot 6) pour ne pas mélanger les diffs |
+| A6 | Les scans de source de l'invariant reposent sur des regex : un refactor pourrait les rendre vides sans échouer | basse | Les assertions d'exécution (violations, réseau, tables écrites) sont la vraie garde ; les scans ne sont qu'une ceinture anti-dérive |

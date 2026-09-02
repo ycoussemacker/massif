@@ -1,3 +1,4 @@
 allowBuilds:
+  esbuild: true   # tsx (le lanceur de tests) embarque esbuild
   sharp: true
   unrs-resolver: true

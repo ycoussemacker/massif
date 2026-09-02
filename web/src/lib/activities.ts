@@ -1,6 +1,7 @@
 /** Filtered/searchable activities access — server-side via the service-role client (RLS off).
  *  Mirrors the getDashboard query patterns. Name search runs on the Strava title stored in
  *  sport_specific->>strava_name (zero backend); a later sub-phase extends it to descriptions. */
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { createServiceClient } from "./supabase/server";
 import { ACTIVITY_COLS, enrichActivities, type Activity } from "./data";
 
@@ -29,14 +30,17 @@ export type SportOption = {
 let _sportsCache: SportOption[] | null = null;
 
 /** All sports (id/code/name/taxonomy/rpe-flag), memoised for the process — seed data, ~22 rows. */
-export async function getSports(): Promise<SportOption[]> {
-  if (_sportsCache) return _sportsCache;
-  const sb = await createServiceClient();
+export async function getSports(client?: SupabaseClient): Promise<SportOption[]> {
+  // Le cache est court-circuité quand un client est injecté : un test (ou une éval sur fixture) doit
+  // voir SES sports, pas ceux qu'une lecture live aurait mis en cache dans le même process.
+  if (_sportsCache && !client) return _sportsCache;
+  const sb = client ?? await createServiceClient();
   const { data } = await sb.from("sports")
     .select("id,code,display_name,taxonomy_group,needs_manual_rpe")
     .order("display_name", { ascending: true });
-  _sportsCache = (data ?? []) as SportOption[];
-  return _sportsCache;
+  const sports = (data ?? []) as SportOption[];
+  if (!client) _sportsCache = sports;
+  return sports;
 }
 
 /** Sanitise a keyword for a PostgREST `.or()` ilike value: drop chars that break the or-filter
@@ -45,9 +49,12 @@ function sanitizeOr(s: string): string {
   return s.replace(/[,()*%\\]/g, " ").trim();
 }
 
-export async function listActivities(f: ActivityFilter): Promise<ActivityPage> {
-  const sb = await createServiceClient();
-  const sports = await getSports();
+/** `client` : client Supabase injecté. Sans lui la fonction s'en fabrique un — pratique dans une page,
+ *  mais opaque : un appelant qui a déjà un client (un outil de l'agent, un test, une éval sur fixture)
+ *  doit pouvoir imposer le sien, sinon ce chemin échappe à toute instrumentation. */
+export async function listActivities(f: ActivityFilter, client?: SupabaseClient): Promise<ActivityPage> {
+  const sb = client ?? await createServiceClient();
+  const sports = await getSports(client);
   const sportById = new Map<number, SportOption>(sports.map((s) => [s.id, s]));
 
   // Resolve sport-derived filters (taxonomy, rpePending) into a concrete sport_id allow-list so the

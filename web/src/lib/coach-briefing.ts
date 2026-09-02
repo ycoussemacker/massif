@@ -11,6 +11,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { assembleCoachContext, dateMinusDays } from "./coach-context";
 import { loadCoachSettings, buildPersonaInstructions, type CoachSettings } from "./coach-settings";
+import { SCOPE_GUARDRAIL_SHORT } from "./agent/guardrails";
 import { COACH_MODEL } from "./coach-chat";
 import { buildForwardPlanRows, deriveToday, diffPlanRows } from "./briefing-shared";
 import { buildAlgorithmicBriefing, type AlgoBriefing } from "./briefing-algo";
@@ -168,7 +169,7 @@ async function enrichBriefingWithLLM(briefing: AlgoBriefing, settings: CoachSett
     model: COACH_MODEL,
     max_tokens: 1500,
     output_config: { format: { type: "json_schema", schema: ENRICH_SCHEMA } },
-    system: [{ type: "text", text: ENRICH_SYSTEM + "\n\n" + buildPersonaInstructions(settings), cache_control: { type: "ephemeral" } }],
+    system: [{ type: "text", text: ENRICH_SYSTEM + "\n\n" + buildPersonaInstructions(settings) + "\n\n" + SCOPE_GUARDRAIL_SHORT, cache_control: { type: "ephemeral" } }],
     messages: [{ role: "user", content: `Faits du jour (JSON) — réécris uniquement les 3 textes de "draft" dans ta voix :\n${JSON.stringify(facts)}` }],
   } as any);
 

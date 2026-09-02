@@ -53,7 +53,7 @@ export async function estimatedMovingFraction(sb: SupabaseClient, sportId: numbe
   const from = dateMinusDays(today, NEIGHBOUR_WINDOW_DAYS);
   const [{ data: sp }, exact] = await Promise.all([
     sb.from("sports").select("code,taxonomy_group").eq("id", sportId).maybeSingle(),
-    listActivities({ sportIds: [sportId], from, order: "load_desc", limit: NEIGHBOUR_LIMIT }),
+    listActivities({ sportIds: [sportId], from, order: "load_desc", limit: NEIGHBOUR_LIMIT }, sb),
   ]);
   return movingFraction(exact.rows, (sp as any)?.code ?? null, (sp as any)?.taxonomy_group ?? null);
 }
@@ -87,7 +87,7 @@ export async function estimateForDeclared(sb: SupabaseClient, declared: Declared
     from,
     order: "load_desc",
     limit: NEIGHBOUR_LIMIT,
-  });
+  }, sb);
   let candidates = spreadActivities(exact.rows);
   if (exact.rows.length < 5 && (sport.taxonomy_group ?? declared.taxonomyGroup)) {
     const wide = await listActivities({
@@ -95,7 +95,7 @@ export async function estimateForDeclared(sb: SupabaseClient, declared: Declared
       from,
       order: "load_desc",
       limit: NEIGHBOUR_LIMIT,
-    });
+    }, sb);
     candidates = spreadActivities(wide.rows);
   }
 

@@ -10,6 +10,9 @@ import { stdin as input, stdout as output } from "node:process";
 import Anthropic from "@anthropic-ai/sdk";
 import { COACH_MODEL } from "./db.js";
 import { assemblePicture } from "./context.js";
+// Le garde-fou de périmètre vit dans web/ (source unique) ; tsx le résout en relatif — c'est la
+// contrainte D1 du plan : ce module n'a aucune dépendance Next ni alias @/.
+import { SCOPE_GUARDRAIL } from "../../web/src/lib/agent/guardrails.js";
 
 const ASK_SYSTEM = `You are the Massif coach, answering the athlete's questions about THEIR OWN training data.
 
@@ -39,7 +42,9 @@ guessing. Keep answers focused and practical. The athlete may have several objec
 date — reason about them in that priority order. Note when load is
 `+ "`duration_fallback`" + ` (a rough estimate awaiting a manual RPE or HR data), so the athlete knows its confidence.
 
-Réponds TOUJOURS en français, quelle que soit la langue de la question.`;
+Réponds TOUJOURS en français, quelle que soit la langue de la question.
+
+${SCOPE_GUARDRAIL}`;
 
 async function main() {
   const { today, context } = await assemblePicture();
