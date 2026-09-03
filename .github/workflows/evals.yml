@@ -31,7 +31,9 @@ jobs:
     timeout-minutes: 45
     env:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      COACH_MODEL: ${{ vars.COACH_MODEL || 'claude-sonnet-4-6' }}
+      # COACH_MODEL est stocké en SECRET dans ce dépôt (comme ATHLETE_TZ pour garmin-refresh),
+      # pas en variable : `vars.` serait toujours vide et masquerait le modèle réellement voulu.
+      COACH_MODEL: ${{ secrets.COACH_MODEL || 'claude-sonnet-4-6' }}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
