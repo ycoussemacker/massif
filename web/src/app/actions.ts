@@ -11,7 +11,7 @@ import {
 import { generateCoachReply, COACH_MODEL, type ChatTurn } from "@/lib/coach-chat";
 import { LIMITS, fetchBounded } from "@/lib/agent/limits";
 import { fetchAllPaged } from "@/lib/db-paged";
-import { writeTrace, linkTraceToMessage, type TraceStep } from "@/lib/agent/trace";
+import { runCoachTurn, loadHistory, enforceCoachRateLimit } from "@/lib/coach-turn";
 import { todayLocal, whenLabelFr, dateMinusDays } from "@/lib/coach-context";
 import { sanitizeCoachSettings, type CoachSettings } from "@/lib/coach-settings";
 import { syncStrava } from "@/lib/strava-sync";
@@ -187,88 +187,16 @@ export async function setSoreness(value: number | null): Promise<void> {
 const rnd = (n: number | null | undefined) => (n == null ? "—" : String(Math.round(n)));
 const num = (n: number | null | undefined) => (n == null ? "—" : String(Math.round(Number(n))));
 
-/** Prior chat turns (oldest → newest), used to rebuild the conversation for Claude.
- *
- *  Cette lecture était le même piège que `daily_metrics` : ascendante et SANS limite, donc une fois
- *  `coach_messages` au-delà des 1000 lignes de PostgREST elle aurait renvoyé les 1000 tours les PLUS
- *  ANCIENS — le coach aurait perdu, sans erreur ni trace, tous les échanges récents (plans convenus,
- *  contraintes déclarées) tout en continuant à les afficher sur /coach, qui pagine de son côté. La table
- *  est append-only et grossit d'environ 3 lignes par jour d'usage : ~95 lignes aujourd'hui, le plafond
- *  en moins d'un an — et en une quinzaine de jours au débit que la limite de débit autorise (50 tours/j).
- *
- *  On garde donc les N tours les plus RÉCENTS, et quand il y en a davantage on le DIT au modèle par un
- *  tour de contexte synthétique : mieux vaut un coach qui sait que sa mémoire est partielle qu'un coach
- *  qui l'ignore. Effet de bord utile : le coût par tour d'API cesse de croître sans borne. */
-async function loadHistory(sb: SupabaseClient): Promise<ChatTurn[]> {
-  const { rows, truncation } = await fetchBounded<{ role: ChatTurn["role"]; content: string }>(
-    sb.from("coach_messages").select("role,content").order("created_at", { ascending: false }),
-    LIMITS.chatHistoryTurns, { what: "tours de conversation", newestFirst: true },
-  );
-  const turns: ChatTurn[] = rows.map((m) => ({ role: m.role, content: m.content }));
-  if (!truncation.truncated) return turns;
-  console.warn(`[coach] historique tronqué aux ${LIMITS.chatHistoryTurns} tours les plus récents`);
-  return [
-    {
-      role: "user",
-      content:
-        `[Contexte système — pas un message de l'athlète : seuls les ${LIMITS.chatHistoryTurns} derniers ` +
-        `tours de votre conversation te sont fournis ; les échanges plus anciens ne sont PAS dans ce ` +
-        `prompt. Si l'athlète renvoie à quelque chose que tu n'y retrouves pas, dis-lui que ça sort de ` +
-        `ta fenêtre de conversation plutôt que de le reconstituer.]`,
-    },
-    ...turns,
-  ];
-}
-
-/** Cheap abuse/cost guard on the Anthropic-backed coach: the chat sits behind only the shared
- *  password, so a leaked password could otherwise spam paid Claude calls. Counts recent user turns
- *  (works on serverless — shared DB state, not in-memory) and throws over the burst/day limits.
- *  Belt for the hard ceiling set on the Anthropic console. */
-async function enforceCoachRateLimit(sb: SupabaseClient): Promise<void> {
-  const now = Date.now();
-  const since1m = new Date(now - 60_000).toISOString();
-  const since1d = new Date(now - 86_400_000).toISOString();
-  const [burst, daily] = await Promise.all([
-    sb.from("coach_messages").select("id", { count: "exact", head: true })
-      .eq("role", "user").gte("created_at", since1m),
-    sb.from("coach_messages").select("id", { count: "exact", head: true })
-      .eq("role", "user").gte("created_at", since1d),
-  ]);
-  if ((burst.count ?? 0) >= 3) throw new Error("Doucement — attends quelques secondes avant de relancer le coach.");
-  if ((daily.count ?? 0) >= 50) throw new Error("Limite quotidienne atteinte (50 messages/jour au coach).");
-}
-
-/** Send a free-text message to the coach and persist the exchange.
- *  History is read BEFORE inserting so the new turn isn't double-counted in the prompt. */
+/** Send a free-text message to the coach and persist the exchange. Le pipeline complet (débit,
+ *  historique, agent, messages, propositions, trace) vit dans runCoachTurn — partagé avec la route
+ *  API /api/coach/ask, pour qu'il n'y ait qu'une implémentation. */
 export async function sendCoachMessage(text: string): Promise<void> {
   const content = (text ?? "").trim();
   if (!content) throw new Error("Message vide");
   if (content.length > 4000) throw new Error("Message trop long (4000 caractères max)");
 
   const sb = await createServiceClient();
-  await enforceCoachRateLimit(sb);
-  const history = await loadHistory(sb);
-
-  const ins = await sb.from("coach_messages").insert({ role: "user", kind: "chat", content });
-  if (ins.error) throw new Error(ins.error.message);
-
-  // Une trace par tour : question, outils appelés AVEC leurs arguments, itérations, réponse, tokens,
-  // coût, latence. Écriture best-effort — une mesure perdue vaut mieux qu'une réponse perdue.
-  const toolTrace: TraceStep[] = [];
-  const r = await generateCoachReply({ sb, history, newUserContent: content, toolTrace });
-  const { text: reply, proposalIds } = r;
-  const traceId = await writeTrace(sb, {
-    source: "chat", question: content, model: r.model, answer: reply, steps: toolTrace,
-    iterations: r.iterations, stopReason: r.stopReason, usage: r.usage, latencyMs: r.latencyMs,
-  });
-
-  const insC = await sb.from("coach_messages")
-    .insert({ role: "coach", kind: "chat", content: reply, model: COACH_MODEL }).select("id").single();
-  if (insC.error) throw new Error(insC.error.message);
-  // Attach any pending proposals raised this turn to the coach message so the card renders under it.
-  await stampProposalMessage(sb, proposalIds, (insC.data as { id: string }).id);
-  await linkTraceToMessage(sb, traceId, (insC.data as { id: string }).id);
-
+  await runCoachTurn(sb, { userBubble: content, kind: "chat" });
   revalidatePath("/coach");
 }
 
@@ -332,27 +260,10 @@ export async function commentActivities(localDate: string): Promise<void> {
     `Compare le réalisé au plan : suivi ou pas ? trop / pas assez ? quel canal (aérobie / neuro) a été ` +
     `sollicité ? implications pour la récupération et les prochains jours ?`;
 
-  const history = await loadHistory(sb);
-
-  const ins = await sb.from("coach_messages")
-    .insert({ role: "user", kind: "activity_comment", content: userBubble, activity_ids: activityIds });
-  if (ins.error) throw new Error(ins.error.message);
-
-  const toolTrace: TraceStep[] = [];
-  const r = await generateCoachReply({ sb, history, newUserContent, toolTrace });
-  const { text: reply, proposalIds } = r;
-  const traceId = await writeTrace(sb, {
-    source: "activity_comment", question: newUserContent, model: r.model, answer: reply, steps: toolTrace,
-    iterations: r.iterations, stopReason: r.stopReason, usage: r.usage, latencyMs: r.latencyMs,
+  await runCoachTurn(sb, {
+    userBubble, promptContent: newUserContent, kind: "activity_comment",
+    activityIds, briefingId: (briefing?.id as string | undefined) ?? null,
   });
-
-  const insC = await sb.from("coach_messages").insert({
-    role: "coach", kind: "activity_comment", content: reply, model: COACH_MODEL,
-    activity_ids: activityIds, briefing_id: briefing?.id ?? null,
-  }).select("id").single();
-  if (insC.error) throw new Error(insC.error.message);
-  await stampProposalMessage(sb, proposalIds, (insC.data as { id: string }).id);
-  await linkTraceToMessage(sb, traceId, (insC.data as { id: string }).id);
 
   revalidatePath("/coach");
 }

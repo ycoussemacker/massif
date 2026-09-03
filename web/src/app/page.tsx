@@ -9,6 +9,7 @@ import { PhaseChip } from "@/components/phase-chip";
 import { effectivePhase } from "@/lib/briefing-algo";
 import { daysTo } from "@/lib/profile-types";
 import { CoachHero } from "@/components/coach-hero";
+import { CoachAskSection } from "@/components/coach-ask-section";
 import { assembleVerdict } from "@/lib/day-verdict";
 import { GarminRefresh } from "@/components/garmin-refresh";
 import { SorenessInput } from "@/components/soreness-input";
@@ -161,6 +162,10 @@ async function DashboardBody() {
             brief se réécrivent) ET pendant une sync (le verdict/les activités du jour bougent). */}
         <Dim on={["regen", "sync"]} label="Mise à jour…">
           <CoachHero briefing={briefing} verdict={verdict} todayActivities={todayActivities} tsbNeuro={latest?.tsb_neuromuscular ?? null} />
+          {/* L'agent, là où l'athlète arrive. Il ne vivait que dans /coach ; ce champ pose une question
+              sans changer de page (route API, donc la navigation n'est pas bloquée pendant les ~15 s
+              d'un tour) et l'échange atterrit quand même dans la conversation. */}
+          <CoachAskSection />
         </Dim>
 
         {/* Indicateurs clés — CTL/ATL/TSB interactifs (sélection = scrubber) + indicateurs du jour.
