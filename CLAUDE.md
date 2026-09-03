@@ -69,8 +69,8 @@ big descent adds real neuromuscular cost on top of a calm-HR aerobic load. See `
 - **PostgREST 1000-row cap** (bit us once): the cloud project caps each REST response at **1000 rows**.
   An *unbounded* `.order(…,{ascending:true})` silently returns only the OLDEST 1000 — the `daily_metrics`
   spine (>1000 days) stopped ~2 years back, freezing the dashboard charts + CTL/ATL tiles at that date.
-  Always BOUND history reads by date range (the dashboard uses a rolling 2-month window
-  `DASHBOARD_WINDOW_MONTHS`; `/analyse` bounds to the compared range) or page via `.range()`.
+  Always BOUND history reads by date range (the dashboard bounds to `DASHBOARD_WINDOW_DAYS` = 21 d;
+  `/analyse` reads ONE bounded query PER PERIOD) or page via `.range()`.
 - **RLS** is now **ON** (migration `…0001_enable_rls`): every public table has RLS enabled with NO
   anon/authenticated policy → deny-all to the publishable/anon key (verified live: anon read `[]`,
   write `42501`). The app is unaffected — all reads/writes go through the **service-role** server
@@ -250,7 +250,7 @@ from `web/src/lib/theme.ts`. Canonical reference + do/don't: `docs/DESIGN_SYSTEM
    The two **Forme** charts (CTL/ATL + TSB) are **fused into one card** with the detail panel, and share
    a single selected date (synced crosshair) AND a synced horizontal scroll (`ScrollGroup`); the channel
    chart is a separate card with the same synced cursor. Charts are bounded to a rolling **2-month window**
-   (`DASHBOARD_WINDOW_MONTHS` in `data.ts`) — deeper history lives in `/analyse`.
+   (`DASHBOARD_WINDOW_DAYS` = 21 in `data.ts`) — deeper history lives in `/analyse`.
 2. **`/activites`** (`web/src/app/activites/`, server component + `activity-filters.tsx` client island):
    browse ALL activities with URL-driven filters (sport chips, date range, load range, RPE-pending) +
    **keyword search** over the Strava name AND description, a summary strip, and pagination.
@@ -408,3 +408,45 @@ and nothing showed it. Now `generateBriefing` snapshots the prior coach rows, co
 when the diff is empty), (2) returns `changes` through regen route → the RegenProvider banner says
 «Plan ajusté — N changements» or «Plan réévalué — inchangé (mêmes données)», (3) the briefing card's
 «Afficher plus» (BriefingDetail) shows the diff under `Dernière régénération :`. Engine tests 31/31.
+
+**PHASE 7 — DURCISSEMENT DE L'AGENT (2026-09-02/03).** Huit lots, huit commits. Vitrine :
+`coach/README.md` (frontière, catalogue, garde-fous, trace réelle, évals datées) ; plan et constats
+reportés : `docs/AGENT_PLAN.md` ; méthode d'éval : `coach/evals/README.md`.
+1. **Troncature muette supprimée.** `query_daily_metrics` rejouait l'incident PostgREST DANS l'agent —
+   mesuré : fenêtre 2021→2026 = 1000 lignes s'arrêtant au 2024-05-22, 832 jours manquants, en silence
+   (sur une comparaison inter-annuelle c'est la moitié RÉCENTE qui disparaît, ce qui inverse la
+   conclusion). Règle appliquée partout via `web/src/lib/agent/limits.ts` (outil : borne + SIGNALE, la
+   sonde `limit+1` rend le débordement détectable) et `web/src/lib/db-paged.ts` / `db.select_all_paged`
+   (calcul sur l'historique : PAGINE, et LÈVE au-delà du garde-fou). Corrigés aussi : `loadHistory`
+   (coach_messages ascendant non borné), `/analyse` (une lecture PAR PÉRIODE ; avant, période B = 0
+   jour et six tuiles en « — »), rollup TS+Python et les lectures pleine table d'`activities`.
+2. **Périmètre médical** — `agent/guardrails.ts`, source unique injectée dans les TROIS prompts LLM
+   (chat, briefing `ai`, CLI `ask` ; il y en a trois, pas quatre — `coach.ts` est parti avec le cron).
+   Le garde-fou vient EN DERNIER, après la persona (texte libre de l'athlète étiqueté « PRIORITÉ
+   HAUTE »), et revendique la préséance. Deux pièges symétriques, trouvés en revue adverse : une
+   première rédaction médicalisait les courbatures de descente (« perte de force », « dure au-delà de
+   quelques jours ») et ne parlait pas de fièvre. Verrouillé par `guardrails.test.ts` (11 assertions,
+   chacune encodant une faille trouvée).
+3. **Invariant d'écriture prouvé** — `agent/invariants.test.ts` : les 10 outils contre un faux client
+   qui lève hors `coach_proposals`, ligne insérée vérifiée `pending`, piège réseau (un module qui se
+   fabrique son propre client échapperait au garde — c'était le cas d'`estimate_session` via
+   `listActivities`, désormais à client injectable), et les violations survivent à un `try/catch`.
+4. **Évals** — `coach/evals/`, 26 cas / 3 familles, fixture GÉNÉRÉE (le dépôt est public : pas de
+   données de santé committées, et n'importe qui peut les lancer). Deux modes : rejeu (modèle rejoué,
+   OUTILS réels, gratuit) et live. Campagne réelle : hors périmètre 100 % (42/42, 3 passes), données
+   manquantes 100 %, nominal 6/7 (variance ; seuil agrégé), 1,5 itération, 0,024 $/tour. Le harnais a
+   trouvé un vrai bug produit : le texte écrit par le modèle DANS LE MÊME TOUR qu'un appel d'outil
+   était jeté (réponses commençant en plein milieu d'une phrase).
+5. **CI** — `tests.yml` (push, gratuit : pytest 74 + 68 tests node + évals rejouées) et `evals.yml`
+   (hebdo + dispatch : évals réelles, rapport en artefact). Le dépôt n'avait AUCUN workflow de test.
+6. **Zod + traces + coût** — `agent/schemas.ts` est la seule définition (le JSON Schema du modèle en
+   est DÉRIVÉ) ; entrée invalide = réponse corrigeable au modèle, sortie validée = bug journalisé (a
+   attrapé `confidence: number` déclaré string). Migration `…20260902000001_coach_agent_traces`
+   (⚠️ `supabase db push` À FAIRE — sans elle le code tourne, il journalise juste un avertissement).
+   `pnpm -C coach traces` sort l'agrégat ; tarifs de cache pris en compte (lecture 0,1×, écriture 1,25×).
+7. **Route API + dashboard** — `POST /api/coach/ask` et un champ sous la carte coach. La séquence d'un
+   tour vit dans `web/src/lib/coach-turn.ts`, partagée par la route ET les Server Actions.
+GOTCHAS : `MASSIF_TODAY` fige l'horloge (évals/tests uniquement) · `pnpm -C web test` existe (tsx) et
+`web/pnpm-workspace.yaml` a besoin d'`allowBuilds: esbuild` · le plafond d'itérations est passé de 8 à
+6 (convergence mesurée à 1,6) · secret `ANTHROPIC_API_KEY` à ajouter dans les GitHub Actions pour les
+évals hebdomadaires.

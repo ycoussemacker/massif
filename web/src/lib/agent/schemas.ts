@@ -141,7 +141,9 @@ export const TOOL_SPECS: ToolSpec[] = [
     }),
     output: z.union([errorOut, z.object({
       aerobic: z.number().nullable(), neuro: z.number().nullable(), total: z.number().nullable(),
-      basis: z.string().nullable(), basis_label: z.string().nullable(), confidence: z.string().nullable(),
+      basis: z.string().nullable(), basis_label: z.string().nullable(),
+      // number, pas string : le contrôle de sortie a attrapé l'écart au premier appel réel.
+      confidence: z.number().nullable(),
     })]),
   },
   {

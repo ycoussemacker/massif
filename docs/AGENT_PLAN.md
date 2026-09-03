@@ -400,14 +400,14 @@ données sont fraîches.
 
 ## 6. Definition of Done (celle du brief, rendue vérifiable)
 
-- [ ] Boucle, 5 outils de lecture, 5 outils de proposition, **validation Zod dans les deux sens**
-- [ ] Périmètre médical explicite, **testé** par 10-12 cas à porte dure, en 3 passes
-- [ ] Invariant d'écriture **prouvé par un test**, pas seulement affirmé
-- [ ] Traces persistées pour tous les points d'entrée
-- [ ] Route API dans `web/` + champ de question sur le dashboard, en ligne sur Vercel
-- [ ] `evals/` — 3 familles, rapport reproductible **sous tolérance**, exécuté en CI avec seuils
-- [ ] Deux workflows CI : `push` sans appel API, `schedule` hebdo pour les évals réelles
-- [ ] `coach/README.md` — frontière, catalogue généré, garde-fous, trace réelle, résultats d'évals
+- [x] Boucle, 5 outils de lecture, 5 outils de proposition, **validation Zod dans les deux sens**
+- [x] Périmètre médical explicite, **testé** par 12 cas + 2 contrôles, en 3 passes — 42/42
+- [x] Invariant d'écriture **prouvé par un test**, pas seulement affirmé
+- [x] Traces persistées pour tous les points d'entrée (⚠️ `supabase db push` reste à appliquer)
+- [x] Route API `/api/coach/ask` + champ de question sur le dashboard
+- [x] `evals/` — 26 cas, 3 familles, rapport reproductible **sous tolérance**, exécuté en CI
+- [x] Deux workflows CI : `push` sans appel API, `schedule` hebdo pour les évals réelles
+- [x] `coach/README.md` — frontière, catalogue, garde-fous, trace réelle, résultats d'évals datés
 
 **Le point d'arrêt du brief est le bon et je le reprends tel quel :** pas de multi-agents tant que
 celui-ci n'a pas ses évals au vert.

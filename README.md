@@ -3,6 +3,117 @@
 [![tests](https://github.com/ycoussemacker/massif/actions/workflows/tests.yml/badge.svg)](https://github.com/ycoussemacker/massif/actions/workflows/tests.yml)
 [![agent evals](https://github.com/ycoussemacker/massif/actions/workflows/evals.yml/badge.svg)](https://github.com/ycoussemacker/massif/actions/workflows/evals.yml)
 
+> Plusieurs sommets, un seul massif. Une app d'entraînement multi-sport personnelle qui lit tout ton
+> sport comme un seul système adaptatif.
+
+> 🇬🇧 **English version below** — see [Massif, in English](#massif-in-english).
+
+Massif rassemble tes données **Strava** et **Garmin** dans un même store, calcule une **charge
+d'entraînement unifiée sur tous les sports** (course, trail, rando, escalade, alpinisme, vélo,
+renforcement…) et fait tourner un coach par-dessus : un briefing quotidien algorithmique, plus un
+agent conversationnel qui répond aux questions ouvertes sur ton propre entraînement.
+
+L'idée : chaque activité — même une séance de bloc ou une grosse rando, là où il n'y a pas d'allure et
+où la fréquence cardiaque ment — produit **un** chiffre de charge comparable, séparé en deux canaux,
+**aérobie** et **neuromusculaire/structurel**. Une grosse journée d'escalade fatigue donc correctement
+la course du lendemain, et le coach n'empile jamais deux jours durs sur le même budget physiologique.
+
+| Chemin | Quoi |
+|---|---|
+| `web/` | L'app Next.js — dashboard, chat coach, agenda, analyse. Héberge aussi le coach : `briefing-algo.ts` (briefing algorithmique) et `coach-chat.ts` (la boucle de l'agent) |
+| `ingest/` | Ingestion et calcul de charge en Python (`massif_ingest`) |
+| `coach/` | Le harnais de l'agent — CLI `ask`, évals, agrégat de traces. **[Lire `coach/README.md`](coach/README.md)** |
+| `supabase/migrations/` | Le schéma Postgres (source de vérité) |
+| `docs/ARCHITECTURE.md` | Conception et justifications — **commence par là** |
+| `docs/MODEL_UPGRADES.md` | Journal de chaque évolution du modèle charge / fatigue / forme |
+| `docs/AGENT_PLAN.md` | Plan de durcissement de l'agent |
+
+## La frontière déterministe / agent
+
+Deux natures de code cohabitent, et la séparation est délibérée.
+
+**Le cœur déterministe.** Le calcul de charge, le rollup CTL/ATL/TSB/ACWR et le briefing quotidien
+lui-même (`web/src/lib/briefing-algo.ts`) sont des fonctions ordinaires : même entrée, même sortie,
+aucun appel de modèle. `buildAlgorithmicBriefing` — readiness, plan à 7 jours, phase de périodisation,
+cadence de décharge, rampe de CTL — est **pur**, couvert par **31 tests**, et coûte **zéro token**. Un
+plan du jour n'est pas un problème d'agent : c'est une fonction de la charge des 7 derniers jours, du
+ratio aigu/chronique et de la récupération du matin.
+
+**L'agent.** Une boucle d'outils (`web/src/lib/coach-chat.ts`) traite les questions dont le nombre et
+l'ordre des lectures dépendent de la question elle-même. Dix outils : cinq lisent, cinq proposent.
+Six itérations au plafond, contexte récent injecté en tête et mis en cache.
+
+> **La règle :** si le nombre et l'ordre des lectures sont connus à l'avance, c'est une fonction.
+> Sinon, c'est l'agent.
+
+**Rien de ce que l'agent appelle ne mute l'état d'entraînement.** Les outils `propose_*` insèrent une
+ligne `pending` dans `coach_proposals` — une intention, sans effet. La seule voie d'écriture vers
+`planned_sessions` / `activities` est un clic humain sur la carte. Cet invariant est **prouvé par un
+test** (`web/src/lib/agent/invariants.test.ts`), pas affirmé. L'agent porte aussi un garde-fou de
+périmètre médical partagé par les trois prompts, et une suite de **26 évals** — trois familles, porte
+dure à 100 % sur le refus médical en trois passes. Détail : **[`coach/README.md`](coach/README.md)**.
+
+## Démarrage rapide
+
+```bash
+# 1. App web  (secrets : .env à la racine + web/.env.local)
+pnpm -C web install
+pnpm -C web dev                       # http://localhost:3100
+
+# 2. Ingestion
+python -m venv ingest/.venv && source ingest/.venv/bin/activate
+pip install -e ingest
+cp .env.example ingest/.env           # renseigner Strava + Garmin
+python -m massif_ingest.sync          # 30 j de pull + recalcul du modèle
+
+# 3. Base — les migrations passent par la CLI Supabase
+supabase db push
+
+# 4. Tests
+ingest/.venv/bin/python -m pytest ingest/tests   # 74 — ingestion + modèle de charge
+pnpm -C web test                                 # 68 — moteur, bornes, garde-fou, invariant
+pnpm -C coach evals                              # 26 — évals de l'agent, sans appel API
+```
+
+## État
+
+**En production** pour son unique athlète, sur Vercel (derrière un mot de passe, installable en PWA),
+contre un projet Supabase cloud personnel. ~400 activités Strava depuis 2021, récupération Garmin, et
+le coach en usage quotidien.
+
+**Ce qui marche** — l'ingestion (Strava avec historique profond et synchro à la demande, récupération
+Garmin) · le modèle de charge, une charge comparable par activité séparée en deux canaux, avec dix
+évolutions documentées · le briefing quotidien, algorithmique et sans token en mode `free` · le coach
+conversationnel, avec propositions validées par l'athlète · l'app web (dashboard, chat, agenda avec
+fenêtres de contrainte, navigateur d'activités, comparaison de périodes, profil et objectifs classés).
+
+**Ce qui n'est pas construit** — le **multi-utilisateur** (un seul athlète, RLS en deny-all à la clé
+anon) · la **Phase 4 métriques** (découplage FC/allure, temps en zone) · **ni cron nocturne ni
+notifications push**, retirés volontairement pour le coût et la fragilité : le briefing se génère à la
+demande.
+
+## Feuille de route
+
+| # | Phase | État |
+|---|---|---|
+| 1 | Squelette — dépôt, schéma, Next.js, paquet Python | ✅ |
+| 2 | Ingestion Strava | ✅ |
+| 3 | Ingestion Garmin | ✅ |
+| 4 | Métriques — découplage, temps en zone, affinage du modèle | 🟡 partiel — dix évolutions du modèle livrées ; découplage et temps en zone restent |
+| 5 | Dashboard | ✅ |
+| 6 | Profil, édition du plan, RPE manuel | ✅ profil, objectifs classés, agenda, RPE CR10 |
+| 7 | Cerveau du coach | ✅ en production — durcissement suivi dans `docs/AGENT_PLAN.md` |
+| 8 | Ordonnancement | ⛔ retiré — le cron nocturne a été remplacé par la génération à la demande |
+| 9 | Hébergement — Vercel + Supabase cloud + RLS | ✅ mono-utilisateur ; l'auth multi-utilisateur reste à faire |
+
+Projet personnel. Sans affiliation avec Strava, Garmin ou toute autre app citée.
+
+---
+
+<a name="massif-in-english"></a>
+
+# Massif, in English
+
 > Many summits, one massif. A personal multi-sport training app that reads all your sport as one
 > adaptive system.
 
@@ -22,7 +133,7 @@ two hard days on the same physiological budget.
 |---|---|
 | `web/` | Next.js app — dashboard, coach chat, agenda, analysis (Next 16 · React 19 · Tailwind 4 · Supabase). Also hosts the coach: `briefing-algo.ts` (algorithmic briefing) and `coach-chat.ts` (the agent loop) |
 | `ingest/` | Python ingestion + load computation (`massif_ingest`) |
-| `coach/` | Agent harness — the read-only `ask` CLI today; the eval suite lands here |
+| `coach/` | Agent harness — `ask` CLI, evals, trace aggregate. **[Read `coach/README.md`](coach/README.md)** |
 | `supabase/migrations/` | Postgres schema (source of truth) |
 | `docs/ARCHITECTURE.md` | Design & rationale — **start here** |
 | `docs/MODEL_UPGRADES.md` | Log of every change to the load / fatigue / form model |

@@ -95,6 +95,9 @@ function replayClient(caseId: string) {
 type Result = {
   id: string; family: Family; pass: number; question: string; why: string;
   answer: string; tools: string[]; iterations: number; stopReason: string;
+  /** La trace complète : chaque outil AVEC ses arguments, dans l'ordre d'appel. C'est ce qui permet de
+   *  coller une trace d'exécution réelle dans la documentation plutôt que de la paraphraser. */
+  steps: { name: string; input: unknown; ok: boolean; error?: string }[];
   toolJaccard: number | null; forbidden: string[]; overIterations: boolean;
   failedMatch: string[]; failedNotMatch: string[]; refusalOk: boolean | null; missingTool: boolean;
   ok: boolean; ms: number; error?: string;
@@ -128,7 +131,7 @@ async function runOne(c: EvalCase, pass: number, mkLive: ((r?: Turn[]) => any) |
   const recorder: Turn[] = [];
 
   const base: Result = {
-    id: c.id, family: c.family, pass, question: c.question, why: c.why, answer: "", tools: [],
+    id: c.id, family: c.family, pass, question: c.question, why: c.why, answer: "", tools: [], steps: [],
     iterations: 0, stopReason: "", toolJaccard: null, forbidden: [], overIterations: false,
     failedMatch: [], failedNotMatch: [], refusalOk: null, missingTool: false, ok: false, ms: 0,
     costMicroUsd: null, tokens: 0,
@@ -161,7 +164,7 @@ async function runOne(c: EvalCase, pass: number, mkLive: ((r?: Turn[]) => any) |
     const jac = jaccard(c.expectTools ?? [], called, c.allow ?? []);
 
     return {
-      ...base, answer: out.text, tools: called, iterations: out.iterations, stopReason: out.stopReason,
+      ...base, answer: out.text, tools: called, steps: tools, iterations: out.iterations, stopReason: out.stopReason,
       toolJaccard: jac, forbidden, overIterations, failedMatch, failedNotMatch, refusalOk,
       ok: !forbidden.length && !failedMatch.length && !failedNotMatch.length && !overIterations
           && !missingTool && (refusalOk ?? true),
