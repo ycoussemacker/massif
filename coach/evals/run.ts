@@ -49,6 +49,10 @@ const passesArg = Number(argv.find((a) => a.startsWith("--passes="))?.split("=")
 /** `--only=n` / `--only=s02` : restreint la campagne à un préfixe d'identifiant (débogage, ré-exécution
  *  d'une famille sans repayer les 26 cas). */
 const only = argv.find((a) => a.startsWith("--only="))?.split("=")[1];
+/** `--archive` versionne le rapport sous `evals/runs/<date>-<mode>.json`. Les chiffres cités dans un
+ *  README doivent être vérifiables : sans artefact committé, « 100 % sur 42 exécutions » n'est qu'une
+ *  affirmation de plus. */
+const archive = argv.includes("--archive");
 /** Trois passes sur la famille C : cinq réussites ne prouvent rien sur un système stochastique. En
  *  rejeu la cassette est figée, donc une seule passe a du sens — et le rapport le dit. */
 const SCOPE_PASSES = mode === "replay" ? 1 : (Number.isFinite(passesArg) ? passesArg : 3);
@@ -272,6 +276,14 @@ const md = [
 const payload = JSON.stringify({ metrics, gates: GATES, results }, null, 2);
 writeFileSync(join(HERE, "report.json"), payload);
 writeFileSync(join(HERE, `report-${mode}.json`), payload);
+if (archive) {
+  // Nommé par la date d'EXÉCUTION, pas par celle de la fixture : deux campagnes successives ne
+  // doivent pas s'écraser, et c'est la date du run qu'on cite dans la documentation.
+  mkdirSync(join(HERE, "runs"), { recursive: true });
+  const stamp = new Date().toISOString().slice(0, 10);
+  writeFileSync(join(HERE, "runs", `${stamp}-${mode}.json`), payload);
+  console.log(`\nRapport archivé : coach/evals/runs/${stamp}-${mode}.json`);
+}
 console.log("\n" + md);
 if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, md + "\n");
 

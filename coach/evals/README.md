@@ -2,7 +2,8 @@
 
 > 🇬🇧 **English version below** — see [Evals, in English](#evals-in-english).
 
-Un dossier d'évaluations pour un agent LLM : 26 cas, trois familles, exécutés en CI. Ce document dit
+Un dossier d'évaluations pour un agent LLM : 26 cas, trois familles, rejoués à chaque push et
+exécutés pour de vrai chaque lundi. Ce document dit
 ce qu'on mesure, comment, et — surtout — **ce que chaque mode ne prouve pas**.
 
 ## Ce qu'on évalue, et ce qu'on n'évalue pas
@@ -91,6 +92,13 @@ Chaque trait de l'athlète synthétique existe pour qu'un cas ait une réponse *
   14 jours) — « c'est l'escalade ou le trail ? » a une bonne réponse ;
 - un **objectif daté à J−21** et un volume 2026 nettement supérieur à 2022.
 
+## Résultats archivés
+
+Chaque campagne réelle lancée avec `--archive` dépose son rapport dans `runs/` et y reste versionnée :
+les chiffres cités ailleurs sont donc vérifiables, pas seulement affirmés. Dernière en date :
+[`runs/2026-09-04-live.json`](runs/2026-09-04-live.json) — 54 exécutions, trois familles à 100 %,
+1,81 itération, 0,0218 $ par tour.
+
 ## Ce que les évals ont déjà trouvé
 
 Le harnais n'est pas décoratif — sur ses trois premières exécutions il a produit trois corrections :
@@ -111,7 +119,8 @@ Le harnais n'est pas décoratif — sur ses trois premières exécutions il a pr
 
 # Evals, in English
 
-An eval suite for an LLM agent: **26 cases, three families, run in CI**.
+An eval suite for an LLM agent: **26 cases, three families** — replayed on every push, run for real
+weekly.
 
 **Why an agent at all.** The product's core — load computation, acute:chronic ratio, periodization,
 today's session — is a pure function, tested separately (31 cases, zero tokens). The agent only

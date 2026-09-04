@@ -4,7 +4,7 @@
 
 Le coach conversationnel de [Massif](../README.md) : une boucle d'outils Anthropic qui répond aux
 questions ouvertes d'un athlète sur son propre entraînement. **10 outils typés, 6 itérations au
-plafond, zéro écriture directe, 26 évals en CI.**
+plafond, zéro écriture directe, 26 évals rejouées à chaque push.**
 
 Ce dossier est la porte d'entrée ; le détail vit dans [`docs/AGENT_PLAN.md`](../docs/AGENT_PLAN.md)
 (le plan de durcissement), [`coach/evals/README.md`](evals/README.md) (la méthode d'évaluation) et
@@ -141,24 +141,29 @@ produit ça — et le coach corrige au passage la prémisse de la question.
 
 ## 6. Les évals
 
-26 cas, trois familles, exécutés en CI. Méthode complète : [`evals/README.md`](evals/README.md).
+26 cas, trois familles. Méthode complète : [`evals/README.md`](evals/README.md).
 
-**Dernière campagne réelle — 2 septembre 2026, 54 exécutions** (la famille périmètre en 3 passes) :
+**Où elles tournent, précisément.** À chaque push, `tests.yml` rejoue les 26 cas — modèle rejoué depuis les cassettes, **outils réels** — sans un token ; ça attrape une régression d'outil, pas une régression de routage. La campagne RÉELLE, elle, tourne chaque lundi (`evals.yml`) et à la demande : c'est la seule qui mesure le routage et la tenue du garde-fou.
 
-| Famille | Cas | Réussite |
+**Dernière campagne réelle — 4 septembre 2026, 54 exécutions** (la famille périmètre en 3 passes).
+Rapport versionné, donc vérifiable :
+[`evals/runs/2026-09-04-live.json`](evals/runs/2026-09-04-live.json).
+
+| Famille | Exécutions | Réussite |
 |---|---|---|
-| Nominal | 7 | 86 % *(6/7 ; une réexécution redonne 7/7)* |
+| Nominal | 7 | 100 % |
 | Données manquantes | 5 | 100 % |
-| **Hors périmètre** | 14 | **100 %** — 42/42, porte dure |
+| **Hors périmètre** | 42 | **100 %** — porte dure, 3 passes |
 
-Jaccard outils 1,00 · outils interdits 0 · erreurs 0 · **1,5 itération** en moyenne · latence 12,9 s ·
-**0,024 $ par tour**.
+Jaccard outils 1,00 · outils interdits 0 · erreurs 0 · **1,81 itération** en moyenne (6 au maximum) ·
+latence 13,5 s · **0,0218 $ par tour** · 21 709 tokens · 1,18 $ la campagne entière.
 
 Deux choses valent d'être dites. La famille « hors périmètre » compte **12 refus attendus et 2
 contrôles qui ne doivent surtout pas l'être** — sans eux, un garde-fou qui refuserait tout obtiendrait
-100 % tout en rendant le produit inutilisable. Et le 6/7 nominal est de la **variance
-d'échantillonnage** : c'est exactement pourquoi ce seuil est agrégé et pourquoi seule la sécurité a
-une porte dure, vérifiée en trois passes.
+100 % tout en rendant le produit inutilisable. Et une campagne antérieure (2 septembre) donnait 6/7 en
+nominal : c'est de la **variance d'échantillonnage** sur un cas, exactement ce pour quoi ce seuil est
+agrégé et pourquoi seule la sécurité a une porte dure vérifiée en trois passes. Un 100 % sur une
+campagne ne veut pas dire que le prochain sera à 100 %.
 
 On ne parle pas de déterminisme : une boucle LLM n'est pas reproductible au bit près et
 `temperature: 0` n'y change rien. Ce qui est visé est une **reproductibilité sous tolérance** —
@@ -170,7 +175,7 @@ données et horloge figées, assertions ensemblistes, seuils agrégés.
 pnpm -C coach ask ["question"]   # CLI de questions-réponses (lecture seule)
 pnpm -C coach evals              # 26 évals, modèle rejoué, aucun appel API
 pnpm -C coach evals:live         # évals réelles
-pnpm -C coach traces             # agrégat de production : coût, itérations, latence, outils
+pnpm -C coach traces             # agrège les tours DÉJÀ tracés (vide tant que l'agent n'a pas tourné)
 pnpm -C web test                 # 68 tests, dont l'invariant d'écriture et le garde-fou
 ```
 
@@ -219,12 +224,15 @@ Supabase client that throws on any write outside `coach_proposals`, asserts the 
 `pending`, traps the network so a self-built client cannot escape the guard, and records forbidden
 attempts *even when the caller swallows the exception*. It already caught one real bypass.
 
-**Evals — 2026-09-02, 54 runs.** Out-of-scope 100 % (42/42, hard gate over three passes) · missing
-data 100 % · nominal 86 % (6/7; a re-run gives 7/7 — sampling variance, which is why that threshold is
-aggregate) · zero forbidden tool calls · 1.5 mean iterations · **$0.024 per turn**. The out-of-scope
+**Evals — 2026-09-04, 54 runs**, versioned report at
+[`evals/runs/2026-09-04-live.json`](evals/runs/2026-09-04-live.json). Out-of-scope 100 % (42/42, hard
+gate over three passes) · missing data 100 % · nominal 100 % · zero forbidden tool calls · 1.81 mean
+iterations · **$0.0218 per turn**. An earlier campaign scored 6/7 on nominal — sampling variance on
+one case, which is exactly why that threshold is aggregate and only safety is a hard gate. The out-of-scope
 family holds 12 expected refusals **and 2 controls that must not be refused** — without them a
 guardrail that refused everything would score 100 % while making the product unusable. Method:
 [`evals/README.md`](evals/README.md).
 
 **Running it:** `pnpm -C coach evals` (replayed model, no API calls) · `evals:live` · `traces`
-(production aggregate: cost, iterations, latency, tools) · `ask` (read-only Q&A CLI).
+(aggregates the turns already traced — empty until the agent has run since the migration) · `ask`
+(read-only Q&A CLI).

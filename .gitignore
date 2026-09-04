@@ -42,3 +42,13 @@ logs/
 
 # Rapports d'évals — artefacts de run (publiés par la CI), pas des sources.
 coach/evals/report*.json
+!coach/evals/runs/            # les campagnes archivées, elles, sont versionnées
+
+# design-sync (staged converter + generated bundle)
+.ds-sync/
+ds-bundle/
+.design-sync/.cache/
+.design-sync/learnings/
+.design-sync/node_modules
+web/.design-sync/build/
+web/dist/

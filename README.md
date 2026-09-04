@@ -49,9 +49,12 @@ Six itérations au plafond, contexte récent injecté en tête et mis en cache.
 **Rien de ce que l'agent appelle ne mute l'état d'entraînement.** Les outils `propose_*` insèrent une
 ligne `pending` dans `coach_proposals` — une intention, sans effet. La seule voie d'écriture vers
 `planned_sessions` / `activities` est un clic humain sur la carte. Cet invariant est **prouvé par un
-test** (`web/src/lib/agent/invariants.test.ts`), pas affirmé. L'agent porte aussi un garde-fou de
-périmètre médical partagé par les trois prompts, et une suite de **26 évals** — trois familles, porte
-dure à 100 % sur le refus médical en trois passes. Détail : **[`coach/README.md`](coach/README.md)**.
+test** (`web/src/lib/agent/invariants.test.ts`), pas affirmé. Le modèle de charge, lui, est écrit deux
+fois — Python (source de vérité) et TypeScript — et leur **parité est vérifiée à 1e-9 sur 141 cas d'or**
+à chaque push ([`tests/golden/`](tests/golden/)), au lieu de reposer sur des commentaires
+« KEEP IN SYNC ». L'agent porte aussi un garde-fou de
+périmètre médical partagé par les trois prompts, et une suite de **26 évals** — trois familles, rejouées à
+chaque push, campagne réelle chaque lundi, porte dure à 100 % sur le refus médical en trois passes. Détail : **[`coach/README.md`](coach/README.md)**.
 
 ## Démarrage rapide
 
@@ -70,8 +73,8 @@ python -m massif_ingest.sync          # 30 j de pull + recalcul du modèle
 supabase db push
 
 # 4. Tests
-ingest/.venv/bin/python -m pytest ingest/tests   # 74 — ingestion + modèle de charge
-pnpm -C web test                                 # 68 — moteur, bornes, garde-fou, invariant
+ingest/.venv/bin/python -m pytest ingest/tests   # 265 — ingestion, modèle de charge, parité
+pnpm -C web test                                 # 76 — moteur, bornes, garde-fou, invariant, parité
 pnpm -C coach evals                              # 26 — évals de l'agent, sans appel API
 ```
 
@@ -187,8 +190,8 @@ python -m massif_ingest.sync          # pull 30 d + roll up the fitness model
 supabase db push
 
 # 4. Tests
-ingest/.venv/bin/python -m pytest ingest/tests   # 74 — ingestion + load model
-pnpm -C web test                                 # 68 — engine, read bounds, guardrail, write invariant
+ingest/.venv/bin/python -m pytest ingest/tests   # 265 — ingestion, load model, parity
+pnpm -C web test                                 # 76 — engine, bounds, guardrail, write invariant, parity
 pnpm -C coach evals                              # 26 — agent evals, replayed model, zero API calls
 ```
 

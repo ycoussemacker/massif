@@ -14,8 +14,16 @@ real mountain coach (with an explicit "assumptions to validate" section). Keep i
 
 **Ground rules carried by every upgrade**
 - `load.py` is the source of truth. The TS mirrors (`web/src/lib/load.ts`, `web/src/lib/rollup.ts`,
-  `web/src/lib/strava-sync.ts`) and the coach mirrors (`coach/src/context.ts` ↔ `web/src/lib/coach-context.ts`,
-  `coach/src/coach.ts` ↔ `web/src/lib/coach-briefing.ts`) must stay behaviourally identical.
+  `web/src/lib/strava-sync.ts`) and the coach mirror (`coach/src/context.ts` ↔ `web/src/lib/coach-context.ts`)
+  must stay behaviourally identical.
+- **`load.py` ↔ `load.ts` parity is now ENFORCED, not asked for.** `tests/golden/load-parity.json`
+  holds 141 `compute_load` cases (all six ladder methods) plus the shared pure helpers, with values
+  computed by Python; `ingest/tests/test_load_parity.py` and `web/src/lib/load.parity.test.ts` replay
+  the same file at 1e-9, on every push. **Every model change must regenerate it**
+  (`ingest/.venv/bin/python ingest/scripts/gen_load_golden.py`) and commit the result with the change —
+  the golden diff is the review of what the change actually moves. Forgetting is not silent: pytest
+  fails immediately. Its first run found two real divergences, both in rounding (half-to-even vs
+  half-up, and scale-then-round vs round-on-the-exact-value) — see `tests/golden/README.md`.
 - New coefficients/time-constants are **population starting points** — tunable, to be personalized from
   the athlete's own history later (see ARCHITECTURE.md → personalization).
 - A model change reaches history without a provider re-pull via

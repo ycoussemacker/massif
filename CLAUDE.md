@@ -450,3 +450,25 @@ GOTCHAS : `MASSIF_TODAY` fige l'horloge (évals/tests uniquement) · `pnpm -C we
 `web/pnpm-workspace.yaml` a besoin d'`allowBuilds: esbuild` · le plafond d'itérations est passé de 8 à
 6 (convergence mesurée à 1,6) · secret `ANTHROPIC_API_KEY` à ajouter dans les GitHub Actions pour les
 évals hebdomadaires.
+
+**PARITÉ load.py ↔ load.ts VERROUILLÉE (2026-09-04).** Le trou le plus attaquable du dépôt : le modèle
+de charge est écrit deux fois (601 lignes Python, source de vérité ; 516 lignes TS, exécutées par la
+synchro à la demande et chaque correction depuis l'app), **une seule était testée**, et la parité
+reposait sur UNE vérification manuelle (« 395/395 activités ») invalidée depuis par cinq commits, plus
+des commentaires « KEEP IN SYNC ». Un commentaire n'est pas un test.
+`tests/golden/load-parity.json` — 141 cas `compute_load` (les 6 méthodes de l'échelle : hrtss 27,
+vertical_duration 28, session_rpe 12, rtss 6, tss 5, duration_fallback 63) + les fonctions pures
+partagées (descent_factor, descent_recovery_factor, altitude_power_factor, ewma_variable_tau,
+descent_familiarity_ratios, resolve_profile), valeurs calculées par PYTHON. Rejoué à 1e-9 par
+`ingest/tests/test_load_parity.py` (garde la régression Python) ET `web/src/lib/load.parity.test.ts`
+(garde LA PARITÉ), les deux dans la CI de chaque push. pytest 74 → 265, node 68 → 76.
+⚠️ **RÈGLE : toute évolution du modèle régénère le fichier d'or** (`ingest/.venv/bin/python
+ingest/scripts/gen_load_golden.py`) et le committe AVEC le changement — son diff est la revue de ce que
+le changement déplace. Oublier n'est pas silencieux : pytest rougit.
+**Deux divergences RÉELLES trouvées au premier run**, toutes deux dans l'arrondi et invisibles à l'œil :
+(1) `Math.round` arrondit la moitié vers le haut, `round()` de Python vers le PAIR (105,125 → 105,13
+contre 105,12) ; (2) `Math.round(x*100)/100` multiplie AVANT d'arrondir, ce qui introduit une erreur
+(50,495 est 50,49499… en binaire, mais ×100 rend 5049,500000000001 → TS montait, Python descendait).
+`load.ts` a désormais `roundPy`, qui arrondit sur le développement décimal EXACT, au pair. Écart de
+0,01 point par activité concernée — minuscule, mais c'était deux chemins d'écriture d'une même donnée
+qui ne s'accordaient pas.

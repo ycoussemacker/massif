@@ -159,7 +159,40 @@ export function differentialSplit(
 // NB: JS rounds half UP, Python round() rounds half-to-even, so a value landing exactly on a
 // half-cent can differ by 0.01 pt from load.py. Harmless — Python is the source of truth and
 // overwrites this on the next sync; this value is only for instant UI feedback.
-const round2 = (n: number) => Math.round(n * 100) / 100;
+/** Arrondi IDENTIQUE à `round()` de Python. Deux différences avec `Math.round`, et les deux mordent.
+ *
+ *  1. ÉGALITÉ → PAIR. `Math.round` arrondit la moitié vers le haut, Python vers le pair : 105,125
+ *     donne 105,13 en JS et 105,12 en Python.
+ *  2. PAS DE MISE À L'ÉCHELLE. `Math.round(x * 100) / 100` multiplie d'abord, ce qui introduit une
+ *     erreur AVANT l'arrondi : 50,495 vaut en réalité 50,49499999… en binaire, mais `50.495 * 100`
+ *     rend 5049,500000000001, donc JS arrondit vers le haut là où Python, qui arrondit sur la valeur
+ *     exacte, descend. On travaille donc sur le développement décimal exact du double.
+ *
+ *  Sans ça, la même activité recevait une charge différente de 0,01 selon qu'elle avait été calculée
+ *  par le cron Python ou par la synchro TypeScript. Écart minuscule, divergence silencieuse : le test
+ *  de parité (`load.parity.test.ts`) l'a trouvée sur 4 cas sur 141.
+ *
+ *  `toFixed(70)` suffit : un double de l'ordre de grandeur d'une charge a une fraction dyadique d'au
+ *  plus ~52 décimales, donc le développement est exact, pas arrondi. */
+function roundPy(x: number, digits: number): number {
+  if (!Number.isFinite(x)) return x;
+  const neg = x < 0;
+  const s = Math.abs(x).toFixed(70);
+  const dot = s.indexOf(".");
+  const intPart = s.slice(0, dot);
+  const frac = s.slice(dot + 1);
+  const keep = frac.slice(0, digits);
+  const rest = frac.slice(digits);
+  const scaled = Number(intPart + keep); // entier mis à l'échelle, sans multiplication flottante
+  const lastDigit = Number((keep || intPart).slice(-1));
+  const up = /^50*$/.test(rest)
+    ? lastDigit % 2 === 1        // égalité exacte → vers le pair, comme Python
+    : rest !== "" && Number(rest[0]) >= 5;
+  const r = (up ? scaled + 1 : scaled) / 10 ** digits;
+  return neg ? -r : r;
+}
+
+const round2 = (n: number) => roundPy(n, 2);
 
 export function sessionRpeLoad(
   durationS: number,
@@ -207,7 +240,7 @@ export function sessionRpeLoad(
   return {
     aerobic_load: round2(aerobic),
     neuromuscular_load: round2(neuromuscular),
-    intensity_factor: Math.round(intensity * 1000) / 1000,
+    intensity_factor: roundPy(intensity, 3),
   };
 }
 
@@ -504,7 +537,7 @@ export function computeLoad(activity: LoadActivity, sport: LoadSport, profile: L
   }
 
   const effectiveDays = activitySpanDays(activity.started_at, activity.duration_s, activity.moving_s);
-  const intensityFactor = Math.round(intensity * 1000) / 1000;
+  const intensityFactor = roundPy(intensity, 3);
   return {
     aerobic_load: round2(aerobic),
     neuromuscular_load: round2(neuromuscular),
